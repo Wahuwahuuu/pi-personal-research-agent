@@ -50,7 +50,11 @@ powershell -NoProfile -File scripts/stop-node.ps1
 
 ## 模型与费用
 
-默认 `MODEL_MODE=mock`。可选的 OpenAI-compatible 适配器目前仅有模拟 HTTP 测试覆盖。启用前需明确授权并配置 `ALLOW_PAID_CALLS=explicitly-authorized`、`MODEL_API_KEY`、`MODEL_BASE_URL`、`MODEL_ID`，同时修改模型模式。密钥只放 Worker Secret。
+仓库默认 `MODEL_MODE=mock`，也提供可配置的 OpenAI-compatible 模型适配器。启用前需明确授权并配置 `ALLOW_PAID_CALLS=explicitly-authorized`、`MODEL_API_KEY`、`MODEL_BASE_URL`、`MODEL_ID`，同时修改模型模式。密钥只放 Worker Secret。软件测试使用模拟 HTTP；实际可用性和科研质量需要分别验证。
+
+低成本配置模板位于 `config/model.qwen.example.json`，模型为 `qwen3.7-flash`。复制到忽略跟踪的 `.local/model-settings.json` 后，`scripts/deploy-free.ts` 会保留该模型选择，后续部署不会自动退回 mock。模板及本地模型设置只允许模式、模型 ID、Base URL 和 `thinking: "off"`；不接受 API Key。请通过 Cloudflare Worker Secret 配置 `MODEL_API_KEY` 和授权标志，勿在聊天任务、配置模板或源码中保存密钥。
+
+Qwen 请求显式发送 `enable_thinking=false`、`preserve_thinking=false`，输出上限保持 2,048 token。网页登录后展示实际运行模型；仓库默认和软件测试仍为 mock，不会因为存在本机模型部署配置而调用真实模型。切换为其他提供方前，应单独验证其思考参数、价格与兼容性。
 
 适配器仅向 Pi 转交可见文本，不转交 provider reasoning 字段；未知 usage 按预留量计费。当前是“应用先检索，再交给 Pi 回答”的验证路径，尚未实现模型自主选择工具、多项目多轮对话或生产审批流程。
 

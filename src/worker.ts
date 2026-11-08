@@ -153,6 +153,10 @@ export class PersonalAgent extends DurableObject<Env> {
       tasks: this.state.tasks.map(({ modelPrompt, ...t }) => t),
       deviceOnline: !!this.device(),
       mode: this.env.MODEL_MODE,
+      model: {
+        id: this.env.MODEL_MODE === "mock" ? MODEL.id : this.env.MODEL_ID,
+        thinking: "off",
+      },
     };
   }
   send(ws: WebSocket, data: unknown) {

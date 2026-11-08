@@ -26,6 +26,7 @@ console.log(
   JSON.stringify(
     {
       mode: s.mode,
+      model: s.model,
       deviceOnline: s.deviceOnline,
       tasks: s.tasks?.map((t: any) => ({
         id: t.id,

@@ -53,6 +53,10 @@ const labels = {
   cancelled: "已取消",
 };
 function render(s) {
+  $("model-status").textContent =
+    s.mode === "mock"
+      ? "当前为模拟模型验证环境，输出不代表科研结论。"
+      : `当前模型：${s.model?.id ?? "已配置模型"} · 深度思考关闭。回答请结合原文证据核对。`;
   $("device").textContent = s.deviceOnline
     ? "本地节点已连接"
     : "本地节点离线 · 检索任务将等待";

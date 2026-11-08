@@ -1,8 +1,21 @@
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import {
+  parseModelSettings,
+  modelDeploymentArgs,
+} from "../src/model-settings.ts";
 // No billing mutations; the operator has confirmed Workers Free for this account.
 const env = { ...process.env, WRANGLER_SEND_METRICS: "false" };
+const settingsText = await readFile(".local/model-settings.json", "utf8").catch(
+  (error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  },
+);
+const settings = settingsText
+  ? parseModelSettings(JSON.parse(settingsText))
+  : undefined;
 const cli = (args: string[], input?: string) =>
   execFileSync(
     process.execPath,
@@ -67,7 +80,7 @@ if (previous) {
   );
 }
 // Secret is sent on stdin, never as a command argument or log line.
-const output = cli(["deploy"]);
+const output = cli(["deploy", ...modelDeploymentArgs(settings)]);
 const url = output.match(
   /https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev/,
 )?.[0];
@@ -78,7 +91,9 @@ await writeFile(
     {
       name,
       url,
-      mode: "mock",
+      mode: settings?.mode ?? "mock",
+      modelId: settings?.mode === "live" ? settings.modelId : "deterministic-v1",
+      thinking: "off",
       freePlanConfirmedByUser: true,
       deployed: new Date().toISOString(),
     },
@@ -90,8 +105,9 @@ cli(["secret", "bulk"], JSON.stringify({ ADMIN_TOKEN: token }));
 console.log(
   JSON.stringify({
     url,
-    mode: "mock",
-    paidModelCalls: 0,
+    mode: settings?.mode ?? "mock",
+    modelId: settings?.mode === "live" ? settings.modelId : "deterministic-v1",
+    thinking: "off",
     adminCredential: "DPAPI protected .local/admin.secret",
     planChanged: false,
   }),

@@ -76,6 +76,9 @@ export function liveModels(
             messages,
             max_tokens: 2048,
             stream: false,
+            ...(config.modelId.startsWith("qwen")
+              ? { enable_thinking: false, preserve_thinking: false }
+              : {}),
           }),
           signal: options?.signal
             ? AbortSignal.any([options.signal, AbortSignal.timeout(90000)])

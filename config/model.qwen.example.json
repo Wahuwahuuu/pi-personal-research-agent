@@ -1,0 +1,6 @@
+{
+  "mode": "live",
+  "modelId": "qwen3.7-flash",
+  "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+  "thinking": "off"
+}
