@@ -1,0 +1,151 @@
+:root {
+  font-family: system-ui, "Microsoft YaHei", sans-serif;
+  color: #183b35;
+  background: #f3f5ed;
+  font-size: 15px;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+}
+header {
+  padding: 22px 6vw;
+  border-bottom: 1px solid #d6dfd4;
+  display: flex;
+  justify-content: space-between;
+}
+.brand {
+  font-weight: 750;
+  font-size: 20px;
+}
+main {
+  max-width: 1200px;
+  margin: auto;
+  padding: 36px 24px;
+}
+.intro {
+  background: transparent;
+  padding: 12px 0 30px;
+  border: 0;
+}
+.eyebrow {
+  letter-spacing: 2px;
+  font-size: 11px;
+  color: #587367;
+}
+h1 {
+  font-size: clamp(32px, 5vw, 54px);
+  line-height: 1.2;
+  font-weight: 650;
+  margin: 18px 0;
+}
+h2 {
+  font-size: 18px;
+  margin: 0 0 16px;
+}
+p {
+  color: #587367;
+  line-height: 1.7;
+}
+section {
+  background: #fff;
+  border: 1px solid #dbe3d7;
+  border-radius: 12px;
+  padding: 24px;
+  margin-bottom: 20px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 1fr);
+  gap: 20px;
+}
+.grid > section {
+  align-self: start;
+}
+aside section {
+  padding: 20px;
+}
+input,
+textarea,
+select {
+  font: inherit;
+  border: 1px solid #bdccbf;
+  border-radius: 6px;
+  padding: 11px;
+  background: #fff;
+  color: inherit;
+  max-width: 100%;
+}
+input,
+textarea {
+  width: 100%;
+  margin-bottom: 10px;
+}
+textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+button {
+  font: inherit;
+  padding: 10px 15px;
+  background: #205e4c;
+  color: white;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  margin: 0 6px 6px 0;
+}
+button.secondary {
+  background: #e6eee4;
+  color: #234c3c;
+}
+.row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.badge {
+  font-size: 12px;
+  background: #edf2e8;
+  padding: 7px 10px;
+  border-radius: 20px;
+}
+.item {
+  padding: 16px 0;
+  border-top: 1px solid #e2e8df;
+  overflow-wrap: anywhere;
+}
+.item p {
+  white-space: pre-wrap;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  color: #476454;
+}
+summary {
+  cursor: pointer;
+  color: #476454;
+  font-size: 13px;
+}
+#error {
+  color: #a23030;
+}
+[hidden] {
+  display: none !important;
+}
+@media (max-width: 760px) {
+  .grid {
+    grid-template-columns: 1fr;
+  }
+  main {
+    padding: 24px 16px;
+  }
+  .row {
+    flex-wrap: wrap;
+  }
+}

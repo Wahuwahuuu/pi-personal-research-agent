@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Personal Research Agent · 验证工作台</title>
+    <link rel="stylesheet" href="/style.css" />
+  </head>
+  <body>
+    <header>
+      <span class="brand">Pi / Research</span
+      ><span id="connection">未登录</span>
+    </header>
+    <main>
+      <section class="intro">
+        <p class="eyebrow">PERSONAL RESEARCH AGENT · TECHNICAL PREVIEW</p>
+        <h1>研究持续进行，<br />进度随时可见。</h1>
+        <p>
+          云端保存任务与记忆，本地节点提供论文检索。当前为模拟模型验证环境，输出不代表科研结论。
+        </p>
+      </section>
+      <section id="login">
+        <h2>登录你的工作台</h2>
+        <form id="login-form">
+          <input
+            id="token"
+            type="password"
+            autocomplete="off"
+            placeholder="管理员凭证"
+            required
+          /><button>登录</button>
+        </form>
+      </section>
+      <div id="workspace" hidden>
+        <section>
+          <div class="row">
+            <h2>交代一个任务</h2>
+            <span id="device" class="badge">本地节点未连接</span>
+          </div>
+          <form id="task-form">
+            <textarea
+              id="prompt"
+              placeholder="例如：比较这些论文使用的检索方法"
+              maxlength="1000"
+              required
+            ></textarea>
+            <div class="row">
+              <select id="kind">
+                <option value="research">本地论文研究</option>
+                <option value="chat">云端对话</option></select
+              ><button>提交任务</button>
+            </div>
+          </form>
+        </section>
+        <div class="grid">
+          <section>
+            <h2>任务与对话</h2>
+            <div id="tasks"></div>
+          </section>
+          <aside>
+            <section>
+              <h2>收件箱</h2>
+              <div id="notices"></div>
+            </section>
+            <section>
+              <h2>个人记忆</h2>
+              <form id="memory-form">
+                <input
+                  id="memory"
+                  maxlength="1200"
+                  placeholder="明确告诉 Agent 要记住的偏好"
+                  required
+                /><button>保存</button>
+              </form>
+              <div id="memories"></div>
+            </section>
+            <section>
+              <h2>关注主题</h2>
+              <form id="plan-form">
+                <input
+                  id="query"
+                  maxlength="300"
+                  placeholder="arXiv 主题关键词"
+                  required
+                /><button>关注</button>
+              </form>
+              <div id="plans"></div>
+            </section>
+            <section>
+              <h2>本地设备</h2>
+              <p>配对凭证只展示一次，请用本地加密脚本保存。</p>
+              <button id="pair" type="button">生成设备凭证</button
+              ><button id="revoke" class="secondary" type="button">
+                撤销所有设备</button
+              ><input
+                id="device-token"
+                type="password"
+                readonly
+                hidden
+                aria-label="设备配对凭证"
+              /><button id="copy" type="button" hidden>复制凭证</button>
+            </section>
+          </aside>
+        </div>
+        <section>
+          <h2>验证用量</h2>
+          <pre id="usage"></pre>
+          <p>这些是应用调用计数，不是 Cloudflare 平台账单或账户剩余额度。</p>
+        </section>
+      </div>
+      <p id="error" role="alert"></p>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
