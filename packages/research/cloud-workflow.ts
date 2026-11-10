@@ -81,12 +81,12 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   domain.pending_inferences=[];
   summary.conversation_only=boundedItems(summary.conversation_only.slice(-4),2500);
   const shared={request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
-  if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION,...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
+  if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);
   if(w.phase==="comparison"){
     const evidence=boundedItems(m?.window(18000)??[],18000);w.visibleSourceIds=evidence.map(e=>e.chunk_id);
-    return JSON.stringify({stage:"comparison",instruction:COMPARISON_CHECK_INSTRUCTION,...shared,workspace:m?.report(),evidence});
+    return JSON.stringify({stage:"comparison",instruction:COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension EXACTLY from response_template. Do not rename or split dimensions. Assess only the full user request, without adding unrelated experimental details or limitations.",...shared,workspace:m?.report(),response_template:{cells:m!.report().cells.map(cell=>({paper_id:cell.paper_id,dimension:cell.dimension,status:"supported|partial|missing",summary:"finding or actual gap",citations:[]}))},evidence});
   }
   progress(w,c);
   // Results remain complete in durable storage. The model sees each whole source at most once.

@@ -170,3 +170,9 @@ test("completion checks reuse the original fenced JSON decoder",()=>{
  const c=setup("你好"),w=newWorkflow();advanceWorkflow(w,c,prepared("session_update"));c.calls=2;advanceWorkflow(w,c,"你好。");c.calls=3;
  assert.equal(advanceWorkflow(w,c,'```json\n{"state":"complete","remaining_needs":[],"needs_sources":false}\n```').status,"completed");
 });
+
+test("comparison response template preserves exact paper and requested-dimension identities",()=>{
+ const c=setup("Compare A and B"),w=newWorkflow();c.catalog={...catalog,papers:[{paper_id:"a",title:"A",abstract:"a"},{paper_id:"b",title:"B",abstract:"b"}]};
+ advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["core method"]}));w.phase="comparison";
+ const body=JSON.parse(workflowPrompt(w,c));assert.deepEqual(body.response_template.cells.map((x:any)=>[x.paper_id,x.dimension]),[["a","core method"],["b","core method"]]);
+});
