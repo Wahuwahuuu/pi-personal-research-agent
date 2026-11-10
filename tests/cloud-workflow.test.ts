@@ -165,3 +165,8 @@ test("missing optional dimensions never add unrequested experiments or limitatio
  advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[]}));
  const prompt=JSON.parse(workflowPrompt(w,c));assert.match(prompt.comparison,/用户要求的比较内容/);assert.ok(!prompt.comparison.includes("方法与实验设置"));assert.equal(prompt.request,c.input);
 });
+
+test("completion checks reuse the original fenced JSON decoder",()=>{
+ const c=setup("你好"),w=newWorkflow();advanceWorkflow(w,c,prepared("session_update"));c.calls=2;advanceWorkflow(w,c,"你好。");c.calls=3;
+ assert.equal(advanceWorkflow(w,c,'```json\n{"state":"complete","remaining_needs":[],"needs_sources":false}\n```').status,"completed");
+});

@@ -132,14 +132,14 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }
   if(w.phase==="comparison"){
     const m=comparison(w,c)!;
-    try{m.applyCheck(JSON.parse(output),new Map(c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id)).map(e=>[e.chunk_id,e])));}
+    try{m.applyCheck(stageObject(output),new Map(c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id)).map(e=>[e.chunk_id,e])));}
     catch{m.checkFailed();w.warnings.push("COMPARISON_CHECK_INCOMPLETE");}
     w.comparison=m.report();w.comparisonRevision=c.evidence.map(e=>e.chunk_id).sort().join(",");
     w.phase="agent";return {};
   }
   let declared:TurnExecution|undefined;
   if(w.phase==="completion"){
-    try{declared=parseTurnExecution(JSON.parse(output),"completion_check");}catch{}
+    try{declared=parseTurnExecution(stageObject(output),"completion_check");}catch{}
     if(!declared){declared={state:"partial",remaining_needs:["完成状态未能确认"],origin:"host"};w.warnings.push("COMPLETION_CHECK_INCOMPLETE");}
     output=w.candidate??"";
   }else{
