@@ -154,3 +154,29 @@ test("unsafe model output and provider errors never enter persisted events", asy
     assert.ok(!encoded.includes(config.apiKey));
   }
 });
+
+test("tool protocol retains declarations, call identity and tool observations without reasoning", async()=>{
+ const bodies:any[]=[];
+ const models=liveModels(config,()=>{},()=>{},(async(_url,init)=>{
+   bodies.push(JSON.parse(String(init?.body)));
+   return Response.json({choices:[{message:{content:null,reasoning_content:"HIDDEN_SENTINEL",tool_calls:[{id:"call_1",type:"function",function:{name:"search_papers",arguments:JSON.stringify({query:"method"})}}]},finish_reason:"tool_calls"}],usage:{prompt_tokens:10,completion_tokens:4}});
+ }) as typeof fetch);
+ const model=models.getModel("pra","test")!;
+ const first=await models.stream(model,{messages:[{role:"user",content:"find",timestamp:0}],tools:[{name:"search_papers",description:"search",parameters:{type:"object",properties:{query:{type:"string"}},required:["query"]}}]}).result();
+ assert.equal(first.stopReason,"toolUse");
+ assert.equal(first.content.find(c=>c.type==="toolCall")?.name,"search_papers");
+ assert.ok(!JSON.stringify(first).includes("HIDDEN_SENTINEL"));
+ await models.stream(model,{messages:[{role:"user",content:"find",timestamp:0},first,{role:"toolResult",toolCallId:"call_1",toolName:"search_papers",content:[{type:"text",text:"observed"}],isError:false,timestamp:1}],
+ tools:[{name:"search_papers",description:"search",parameters:{type:"object"}}]}).result();
+ assert.equal(bodies[0].tools[0].function.name,"search_papers");
+ assert.equal(bodies[1].messages.find((m:any)=>m.role==="assistant").tool_calls[0].id,"call_1");
+ assert.deepEqual(bodies[1].messages.find((m:any)=>m.role==="tool"),{role:"tool",tool_call_id:"call_1",content:"observed"});
+});
+test("unregistered tool calls and secret arguments are rejected",async()=>{
+ for(const name of ["shell","search_papers"]){
+ const models=liveModels(config,()=>{},()=>{},(async()=>Response.json({choices:[{message:{tool_calls:[{id:"bad",type:"function",function:{name,arguments:JSON.stringify({query:config.apiKey})}}]}}]})) as typeof fetch);
+ const result=await models.stream(models.getModel("pra","test")!,{messages:[],tools:[{name:"search_papers",description:"search",parameters:{type:"object"}}]}).result();
+ assert.equal(result.stopReason,"error");
+ assert.ok(!JSON.stringify(result).includes(config.apiKey));
+ }
+});

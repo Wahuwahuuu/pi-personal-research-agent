@@ -1,6 +1,8 @@
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import {
   createAssistantMessageEventStream,
+  getCurrentTools,
+  type ToolCall,
   type AssistantMessage,
   type ProviderStreams,
 } from "@earendil-works/pi-ai";
@@ -51,17 +53,21 @@ export function liveModels(
       let admitted = false,
         settled = false;
       try {
-        const messages = context.messages.map((m) => ({
-          role: m.role === "toolResult" ? "user" : m.role,
-          content:
-            typeof m.content === "string"
-              ? m.content
-              : m.content
-                  .filter((c) => c.type === "text")
-                  .map((c) => (c as { text: string }).text)
-                  .join("\n"),
-        }));
-        if (new TextEncoder().encode(JSON.stringify(messages)).length > 20000)
+        const tools = getCurrentTools(context.messages);
+        const messages = context.messages.map((m) => {
+          const content = typeof m.content === "string" ? m.content :
+            m.content.filter(c => c.type === "text").map(c => c.text).join("\\n");
+          if (m.role === "toolResult") return {role:"tool",tool_call_id:m.toolCallId,content};
+          if (m.role === "assistant") {
+            const calls=m.content.filter(c=>c.type==="toolCall").map(c=>({
+              id:c.id,type:"function",function:{name:c.name,arguments:JSON.stringify(c.arguments)}
+            }));
+            return {role:"assistant",content:content||null,...(calls.length?{tool_calls:calls}:{})};
+          }
+          return {role:m.role,content};
+        });
+        const declarations=tools.map(t=>({type:"function",function:{name:t.name,description:t.description,parameters:t.parameters}}));
+        if (new TextEncoder().encode(JSON.stringify({messages,tools:declarations})).length > 20000)
           throw new Error("CONTEXT_LIMIT");
         before();
         admitted = true;
@@ -74,6 +80,7 @@ export function liveModels(
           body: JSON.stringify({
             model: config.modelId,
             messages,
+            ...(declarations.length ? {tools:declarations,tool_choice:"auto"} : {}),
             max_tokens: 2048,
             stream: false,
             ...(config.modelId.startsWith("qwen")
@@ -103,7 +110,20 @@ export function liveModels(
         }
         raw += decoder.decode();
         const data = JSON.parse(raw);
-        const content = data.choices?.[0]?.message?.content;
+        const rawMessage = data.choices?.[0]?.message;
+        const content = rawMessage?.content ?? "";
+        const rawCalls = rawMessage?.tool_calls ?? [];
+        if (!Array.isArray(rawCalls) || rawCalls.length > 10) throw new Error("INVALID_TOOLS");
+        const callIds=new Set<string>();
+        const calls:ToolCall[]=rawCalls.map((call: any) => {
+          if (call.type!=="function" || typeof call.id!=="string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(call.id) ||
+              callIds.has(call.id) || !tools.some(t=>t.name===call.function?.name) || typeof call.function?.arguments!=="string")
+            throw new Error("INVALID_TOOL_CALL");
+          callIds.add(call.id);
+          const args=JSON.parse(call.function.arguments);
+          if (!args || Array.isArray(args) || typeof args!=="object") throw new Error("INVALID_ARGUMENTS");
+          return {type:"toolCall",id:call.id,name:call.function.name,arguments:args};
+        });
         const input = data.usage?.prompt_tokens,
           output = data.usage?.completion_tokens;
         const usage =
@@ -117,10 +137,10 @@ export function liveModels(
         settled = true;
         if (
           typeof content !== "string" ||
-          !content.trim() ||
+          (!content.trim() && !calls.length) ||
           /<\/?(?:think|thinking|analysis)>/i.test(content) ||
-          content.includes(config.apiKey) ||
-          data.choices?.[0]?.message?.tool_calls?.length
+          JSON.stringify({content,calls}).includes(config.apiKey) ||
+          /<\/?(?:think|thinking|analysis)>/i.test(JSON.stringify(calls))
         )
           throw new Error("UNSAFE_OR_UNSUPPORTED_RESPONSE");
         message.usage.input = usage?.input ?? 24000;
@@ -142,7 +162,14 @@ export function liveModels(
           content,
           partial: message,
         });
-        events.push({ type: "done", reason: "stop", message });
+        for (const call of calls) {
+          const contentIndex=message.content.length;
+          message.content.push(call);
+          events.push({type:"toolcall_start",contentIndex,partial:message});
+          events.push({type:"toolcall_end",contentIndex,toolCall:call,partial:message});
+        }
+        message.stopReason=data.choices?.[0]?.finish_reason==="length"?"length":calls.length?"toolUse":"stop";
+        events.push({ type: "done", reason: message.stopReason, message });
         events.end(message);
       } catch {
         if (admitted && !settled) after();
