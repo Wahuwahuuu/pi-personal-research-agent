@@ -153,3 +153,9 @@ test("plain Markdown comparison still runs dimension coverage before generic com
  c.calls=4;advanceWorkflow(w,c,"A method [cite:a1]. B remains unknown.");
  assert.equal(w.phase,"comparison");
 });
+
+test("invalid preference provenance does not discard valid comparison dimensions",()=>{
+ const c=setup("Compare Paper A and Paper B methods"),w=newWorkflow();c.catalog={...catalog,papers:[{paper_id:"a",title:"Paper A",abstract:"a"},{paper_id:"b",title:"Paper B",abstract:"b"}]};
+ advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,comparison_dimensions:["methods"],constraints:[{key:"language",value:"French",source_quote:"invented"}]}));
+ assert.deepEqual(w.prepared?.frame.comparison_dimensions,["methods"]);assert.deepEqual(c.conversation.domain?.user_constraints,[]);
+});

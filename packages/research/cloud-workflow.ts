@@ -1,3 +1,4 @@
+import {stageObject} from "./internal/agent/p2-stages.ts";
 import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "./translation.ts";
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
 import {parseQuestionPreparation,planPreparedRetrieval,QUESTION_PREPARATION_INSTRUCTION,type PreparedQuestion} from "./internal/agent/question-preparation.ts";
@@ -117,7 +118,13 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
       d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
     }catch{
       w.warnings.push("QUESTION_PREPARATION_FALLBACK");
-      w.prepared=parseQuestionPreparation(JSON.stringify({intent:"answer",targets:[],rewrite:c.input,queries:[],constraints:[]}),preparationContext);
+      try{
+        const parsed=stageObject(output),raw=(parsed.preparation??parsed) as Record<string,unknown>;
+        w.prepared=parseQuestionPreparation(JSON.stringify({...raw,constraints:[]}),preparationContext);
+        w.warnings.push("INVALID_CONSTRAINTS_NOT_SAVED");
+      }catch{
+        w.prepared=parseQuestionPreparation(JSON.stringify({intent:"answer",targets:[],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:[c.input]}),preparationContext);
+      }
       w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);
       d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
     }
