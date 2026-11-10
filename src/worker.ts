@@ -1,3 +1,4 @@
+import {cloudMemory,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {newWorkflow,workflowPrompt,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -95,6 +96,10 @@ export class PersonalAgent extends DurableObject<Env> {
       .exec<{ value: string }>("SELECT value FROM pra_state WHERE id=1")
       .toArray()[0];
     this.state = row ? JSON.parse(row.value) : initialState();
+    if(!this.state.cloudMemory){
+      this.state.cloudMemory=newCloudMemory();
+      this.state.cloudMemory.entries=this.state.memories.map(m=>({id:m.id,kind:"note",content:m.content,paper_ids:[],source_session:"",source_turn:"",created_at:new Date(m.updated).toISOString(),updated_at:new Date(m.updated).toISOString(),slot:"manual:"+m.id,edited:true}));
+    }
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_catalog (version TEXT PRIMARY KEY, value TEXT NOT NULL, digest TEXT NOT NULL)",
     );
@@ -177,7 +182,13 @@ export class PersonalAgent extends DurableObject<Env> {
       new WebSocketRequestResponsePair("ping", "pong"),
     );
   }
+  memoryService(){
+    const version=this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex)?.researchIndex;
+    const papers=version?this.catalog(version).papers:[];
+    return cloudMemory(this.state.cloudMemory!,papers,this.env.OWNER_ID,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""]);
+  }
   save() {
+    this.state.memories=this.state.cloudMemory!.entries.map(m=>({id:m.id,content:m.content,source:m.source_session||"user",updated:Date.parse(m.updated_at)}));
     this.ctx.storage.sql.exec(
       "INSERT INTO pra_state(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
       JSON.stringify(this.state),
@@ -398,20 +409,13 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (path === "/api/memories" && r.method === "POST") {
       const b = await this.body(r);
-      const m = memory(
-        this.state,
-        typeof b.id === "string" ? b.id : undefined,
-        b.content,
-        "user",
-      );
+      const m = await this.memoryService().save({id:typeof b.id==="string"?b.id:undefined,kind:"note",content:text(b.content,1200),edited:true});
       this.save();
       this.publish();
       return json(m);
     }
     if (path.startsWith("/api/memories/") && r.method === "DELETE") {
-      this.state.memories = this.state.memories.filter(
-        (m) => m.id !== path.split("/").at(-1),
-      );
+      await this.memoryService().remove(path.split("/").at(-1)!);
       this.save();
       this.publish();
       return json({ ok: true });
@@ -808,6 +812,9 @@ export class PersonalAgent extends DurableObject<Env> {
             const outcome = advanceWorkflow(t.workflow,this.workflowContext(t),result.text ?? "");
             if (!outcome.status) { t.status="queued"; this.save(); continue; }
             t.status=outcome.status; t.answer=outcome.answer;
+            const conversation=this.state.conversations!.find(c=>c.id===t.conversationId)!;
+            await this.memoryService().remember(conversation.id,t.id,t.input,conversation.domain!,t.status);
+
           } else {
             t.status = validateResearchAnswer(t, result.text ?? "");
             t.answer = result.text;
@@ -908,7 +915,9 @@ export class PersonalAgent extends DurableObject<Env> {
       if (terminal(t)) return;
       const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
       if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:workflowTools(t.workflow,t.calls).length ? null : []},BACKGROUND_CONTEXT);
-      const prompt = t.workflow ? workflowPrompt(t.workflow,this.workflowContext(t), observations.ids.length ? JSON.parse(observations.prompt) : undefined) : observations.ids.length
+      const context=t.workflow?this.workflowContext(t):undefined;
+      if(context)context.memories=(await this.memoryService().recall(t.input,context.conversation.scope)).items;
+      const prompt = t.workflow ? workflowPrompt(t.workflow,context!, observations.ids.length ? JSON.parse(observations.prompt) : undefined) : observations.ids.length
         ? observations.prompt
         : JSON.stringify({
             instruction:

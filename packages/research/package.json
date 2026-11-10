@@ -9,7 +9,8 @@
     "./catalog": "./catalog.ts",
     "./transport": "./transport.ts",
     "./local-reading": "./local-reading.ts",
-    "./cloud-workflow": "./cloud-workflow.ts"
+    "./cloud-workflow": "./cloud-workflow.ts",
+    "./cloud-memory": "./cloud-memory.ts"
   },
   "engines": {
     "node": ">=24.11.1"

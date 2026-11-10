@@ -55,7 +55,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const d=memory(c);
   d.revalidate(c.catalog.indexVersion,new Map(c.catalog.evidence.map(e=>[e.chunk_id,e])),new Map(c.evidence.map(e=>[e.chunk_id,e])));
   c.conversation.domain=d.state;
-  const shared={request:c.input,conversation:JSON.parse(d.summary(c.conversation.history,true)),memory:c.memories.slice(-20),remaining_model_requests:6-c.calls};
+  const shared={request:c.input,conversation:JSON.parse(d.summary(c.conversation.history,true)),memory:c.memories.slice(-20),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION,...shared,catalog:c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})).slice(0,200)});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:c.evidence.map(e=>e.chunk_id)});
   const m=comparison(w,c);

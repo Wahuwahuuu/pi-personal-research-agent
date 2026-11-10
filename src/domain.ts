@@ -1,3 +1,4 @@
+import type {CloudMemoryState} from "../packages/research/cloud-memory.ts";
 import type { ResearchConversation, ResearchWorkflow } from "../packages/research/cloud-workflow.ts";
 import type { Chunk } from "../packages/research/core.ts";
 export type Status =
@@ -73,6 +74,7 @@ export interface Plan {
 }
 export interface State {
   conversations?: ResearchConversation[];
+  cloudMemory?: CloudMemoryState;
   tasks: Task[];
   operations: Operation[];
   memories: Memory[];
