@@ -2,7 +2,7 @@ import {readFile} from "node:fs/promises";
 import {createReadStream} from "node:fs";
 import {join} from "node:path";
 import {createHash} from "node:crypto";
-import {sha,containedPath} from "./config.ts";
+import {sha,containedPath} from "./paths.ts";
 import {object,RuntimeFailure,type Paper,type EvidenceIdentity} from "./contracts.ts";
 export async function fileHash(path:string):Promise<string>{
  const h=createHash("sha256");for await(const part of createReadStream(path))h.update(part as Buffer);return h.digest("hex");

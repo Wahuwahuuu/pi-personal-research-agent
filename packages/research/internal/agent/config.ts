@@ -5,7 +5,8 @@ import { InMemoryCredentialStore, InMemoryModelsStore, type OpenAICompletionsCom
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { RuntimeFailure, object } from "./contracts.ts";
 
-export const sha = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+export {sha,projectPath,containedPath} from "./paths.ts";
+import {containedPath} from "./paths.ts";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export interface AppConfig {
   version: 1;
@@ -18,26 +19,6 @@ function exact(v: Record<string, unknown>, keys: string[], label: string) {
   if (Object.keys(v).sort().join() !== keys.sort().join()) throw new RuntimeFailure("INVALID_CONFIG", label + " fields differ; credentials and arbitrary headers are forbidden");
 }
 function integer(v: unknown, min: number, max: number): v is number { return Number.isSafeInteger(v) && Number(v)>=min && Number(v)<=max; }
-export function projectPath(root: string, path: string): string {
-  const target=resolve(root,path), rel=relative(resolve(root),target);
-  if (!path || isAbsolute(path) || rel===".." || rel.startsWith("..\\") || rel.startsWith("../") || isAbsolute(rel)) throw new RuntimeFailure("INVALID_PATH","Path must remain inside the project");
-  return target;
-}
-/** Existing links must stay in the project; missing paths validate their nearest existing parent. */
-export async function containedPath(root: string, path: string): Promise<string> {
-  const target=projectPath(root,path), realRoot=await realpath(root);
-  let probe=target;
-  while (true) {
-    try {
-      const actual=await realpath(probe), rel=relative(realRoot,actual);
-      if (rel===".." || rel.startsWith("..\\") || rel.startsWith("../") || isAbsolute(rel)) throw new RuntimeFailure("INVALID_PATH","Linked path escapes the project");
-      return target;
-    } catch(e) {
-      if ((e as NodeJS.ErrnoException).code!=="ENOENT") throw e;
-      const parent=dirname(probe); if(parent===probe) throw e; probe=parent;
-    }
-  }
-}
 export function parseConfig(value: unknown): AppConfig {
   const v=object(value); exact(v,["version","model","retrieval","session"],"Config");
   if(v.version!==1)throw new RuntimeFailure("INVALID_CONFIG","Unsupported configuration version");

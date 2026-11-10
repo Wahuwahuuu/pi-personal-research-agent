@@ -1,5 +1,5 @@
 import {readFile} from 'node:fs/promises';
-import {containedPath,sha} from './config.ts';
+import {containedPath,sha} from './paths.ts';
 import {RuntimeFailure,codepoints,type Chunk,type EvidenceIdentity,type ScientificReadingPort,type ScientificParams,type RetrieveResult,type WorkerTransport,type P2HarnessConfig} from './contracts.ts';
 
 export function scientificContentType(question:string,query=''):'table'|'equation'|'all'|undefined{

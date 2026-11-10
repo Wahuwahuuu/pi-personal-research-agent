@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { containedPath } from "./config.ts";
+import { containedPath } from "./paths.ts";
 import { RuntimeFailure } from "./contracts.ts";
 
 const MAX_PDF = 30 * 1024 * 1024;
