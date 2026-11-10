@@ -1,9 +1,14 @@
 import { Problem, text } from "./domain.ts";
-import type { Paper, EvidenceIdentity } from "../packages/research/core.ts";
+import type {
+  Paper,
+  EvidenceIdentity,
+  Chunk,
+} from "../packages/research/core.ts";
 export interface ResearchCatalog {
   indexVersion: string;
   papers: Paper[];
   evidence: EvidenceIdentity[];
+  sources?: Chunk[];
 }
 /** Accept metadata only; never retain arbitrary device-provided fields. */
 export function validateCatalog(value: unknown): ResearchCatalog {

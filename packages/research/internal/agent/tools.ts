@@ -114,6 +114,30 @@ export function validatePaperParams(name: string, value: unknown, ctx: ToolConte
   if (scope.length && params.paper_ids.some((id) => !scope.includes(id as string))) throw new RuntimeFailure("SCOPE_VIOLATION", "Retrieval cannot expand the user-declared paper scope");
 }
 
+export interface OriginalReadParams {query?:string;paper_ids:string[];top_k?:number;section?:"abstract";content_type?:"text"|"table"|"equation"|"all";offset?:number}
+/** Shared source dispatch used by both the original Harness and the remote local-node facade. */
+export async function retrieveOriginal(worker:WorkerTransport,ctx:ToolContext,params:OriginalReadParams,signal?:AbortSignal):Promise<RetrieveResult>{
+  validatePaperParams("retrieve_chunks",params,ctx);
+  const abstract=Boolean(ctx.p2?.abstractSources)&&(params.section==='abstract'||params.section===undefined&&ctx.preferredSection?.()==='abstract');
+  const requestQuery=params.query??(abstract?'Read the original abstract':'');
+  const topK=params.top_k??(ctx.workbench?8:5),offset=params.offset??0,kind=params.content_type??ctx.preferredContentType?.()??'text';
+        let structured:RetrieveResult|undefined;
+        if(!abstract&&ctx.workbench&&kind!=='text'&&ctx.p2?.scientificSources){
+          structured=await ctx.p2.scientificSources.retrieve({query:requestQuery,paper_ids:params.paper_ids,top_k:topK,offset,content_type:kind},signal);
+          const index=ctx.p2.evidenceIndex as Map<string,import('./contracts.ts').EvidenceIdentity>;
+          for(const chunk of structured.chunks){const identity=ctx.p2.scientificSources.identities.get(chunk.chunk_id);if(!identity)throw new RuntimeFailure('INVALID_RESPONSE','Missing structured source registration');index.set(chunk.chunk_id,identity);}
+        }
+        const structuredAvailable=structured&&(structured.chunks.length>0||structured.selection&&(structured.selection.unavailable_papers?.length??0)<params.paper_ids.length);
+        const raw=structuredAvailable?structured:abstract?{backend:'corpus_abstract_v1',index_version:ctx.p2!.indexVersion,chunks:params.paper_ids.flatMap(id=>{const source=ctx.p2!.abstractSources!.get(id);return source?[source]:[];})}:await worker.request("retrieve_chunks", { query: requestQuery, paper_ids: params.paper_ids, top_k: topK,
+          ...(ctx.workbench?{reading_mode:'workbench-v1' as const,offset:kind==='text'?offset:0}:{}),
+          ...(ctx.p2 ? { allowed_paper_ids: [...(ctx.getScope().length ? ctx.getScope() : ctx.knownPaperIds)] } : {}),
+        }, signal);
+        const result = retrieveResult(raw, params.paper_ids, abstract?5:topK, ctx, requestQuery);
+        if(structured&&!structuredAvailable)result.reading_note='未取得可用的结构化原文，以下仅为文本片段。不能据此补造表格单元格或数学公式。';
+        else if(ctx.workbench&&!structuredAvailable&&!abstract)result.reading_note='本次返回完整片段，没有在片段中间截断。selection.total 是当前查询候选的数量，不代表全文全部证据；可按 next_offset 续读，或改变查询补充缺项。';
+  return result;
+}
+
 export function createPaperTools(worker: WorkerTransport, ctx: ToolContext): ToolDefinition[] {
   const search: ToolDefinition<typeof searchSchema> = {
     name: "search_papers", label: "Search papers", description: "Find papers in the fixed corpus. Only the user-declared paper scope may be used.",
@@ -162,20 +186,7 @@ export function createPaperTools(worker: WorkerTransport, ctx: ToolContext): Too
         const scope = ctx.getScope();
         if (scope.length && params.paper_ids.some((id) => !scope.includes(id))) throw new RuntimeFailure("SCOPE_VIOLATION", "Retrieval cannot expand the user-declared paper scope");
         if (ctx.p2) ledger.dispatchedTool(toolCallId);
-        let structured:RetrieveResult|undefined;
-        if(!abstract&&ctx.workbench&&kind!=='text'&&ctx.p2?.scientificSources){
-          structured=await ctx.p2.scientificSources.retrieve({query:requestQuery,paper_ids:params.paper_ids,top_k:topK,offset,content_type:kind},signal);
-          const index=ctx.p2.evidenceIndex as Map<string,import('./contracts.ts').EvidenceIdentity>;
-          for(const chunk of structured.chunks){const identity=ctx.p2.scientificSources.identities.get(chunk.chunk_id);if(!identity)throw new RuntimeFailure('INVALID_RESPONSE','Missing structured source registration');index.set(chunk.chunk_id,identity);}
-        }
-        const structuredAvailable=structured&&(structured.chunks.length>0||structured.selection&&(structured.selection.unavailable_papers?.length??0)<params.paper_ids.length);
-        const raw=structuredAvailable?structured:abstract?{backend:'corpus_abstract_v1',index_version:ctx.p2!.indexVersion,chunks:params.paper_ids.flatMap(id=>{const source=ctx.p2!.abstractSources!.get(id);return source?[source]:[];})}:await worker.request("retrieve_chunks", { query: requestQuery, paper_ids: params.paper_ids, top_k: topK,
-          ...(ctx.workbench?{reading_mode:'workbench-v1' as const,offset:kind==='text'?offset:0}:{}),
-          ...(ctx.p2 ? { allowed_paper_ids: [...(ctx.getScope().length ? ctx.getScope() : ctx.knownPaperIds)] } : {}),
-        }, signal);
-        const result = retrieveResult(raw, params.paper_ids, abstract?5:topK, ctx, requestQuery);
-        if(structured&&!structuredAvailable)result.reading_note='未取得可用的结构化原文，以下仅为文本片段。不能据此补造表格单元格或数学公式。';
-        else if(ctx.workbench&&!structuredAvailable&&!abstract)result.reading_note='本次返回完整片段，没有在片段中间截断。selection.total 是当前查询候选的数量，不代表全文全部证据；可按 next_offset 续读，或改变查询补充缺项。';
+        const result=await retrieveOriginal(worker,ctx,params,signal);
         if (ctx.p2) { entry.query = requestQuery; entry.effective_query = result.effective_query ?? requestQuery;
           entry.query_normalization = result.query_normalization ?? "none"; }
         entry.paper_ids = params.paper_ids;

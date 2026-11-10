@@ -1,3 +1,5 @@
+import { createLocalReading } from "../packages/research/local-reading.ts";
+import { readingSources, withReadingSources } from "../src/reading-sources.ts";
 import { nodeCatalog, catalogPages } from "./catalog.ts";
 import { checkedResult, researchContext } from "../src/research-coordinator.ts";
 import { validatePaperParams } from "../packages/research/core.ts";
@@ -6,7 +8,7 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import { DatabaseSync } from "node:sqlite";
 import { readFile, mkdir } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
-import { createServer } from "node:net";
+import { createServer } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PythonBridge, type PythonConfig } from "./python.ts";
@@ -54,7 +56,51 @@ if (!token && config.secretFile && process.platform === "win32") {
 if (!token || token.length < 32) throw new Error("DEVICE_CREDENTIAL_REQUIRED");
 await mkdir(resolve(config.dataDir), { recursive: true });
 // OS-owned singleton lock disappears after termination; no stale PID files.
-const lock = createServer();
+let reading: Awaited<ReturnType<typeof createLocalReading>> | undefined;
+const lock = createServer(async (req, res) => {
+  try {
+    if (
+      req.headers.host !== "127.0.0.1:" + (config.port ?? 48731) ||
+      (req.headers.origin && req.headers.origin !== url.origin)
+    ) {
+      res.writeHead(403).end();
+      return;
+    }
+    if (req.headers.origin === url.origin) {
+      res.setHeader("Access-Control-Allow-Origin", url.origin);
+      res.setHeader("Access-Control-Allow-Private-Network", "true");
+    }
+    if (req.method === "OPTIONS") {
+      res.setHeader("Access-Control-Allow-Methods", "GET");
+      res.writeHead(204).end();
+      return;
+    }
+    if (req.method !== "GET") {
+      res.writeHead(405).end();
+      return;
+    }
+    if (req.url === "/health") {
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({ ready: !!reading }));
+      return;
+    }
+    const match = req.url?.match(/^\/papers\/(\d{4}\.\d{4,5})$/);
+    if (!match || !reading) {
+      res.writeHead(404).end();
+      return;
+    }
+    const bytes = await reading.pdf(match[1]);
+    res.writeHead(200, {
+      "Content-Type": "application/pdf",
+      "Cache-Control": "private, no-store",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Disposition": "inline",
+    });
+    res.end(bytes);
+  } catch {
+    res.writeHead(502).end("PAPER_UNAVAILABLE");
+  }
+});
 await new Promise<void>((ok, no) => {
   lock.once("error", () => no(new Error("NODE_ALREADY_RUNNING")));
   lock.listen(config.port ?? 48731, "127.0.0.1", ok);
@@ -63,6 +109,11 @@ const db = new DatabaseSync(join(resolve(config.dataDir), "node.sqlite"));
 db.exec(
   "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,frame TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY);",
 );
+if (config.python)
+  config.python.scientificCacheDir = resolve(
+    config.dataDir,
+    ".cache/scientific-reading",
+  );
 const bridge = config.python ? new PythonBridge(config.python) : undefined;
 if (!bridge && !config.fixture) throw new Error("PYTHON_CONFIG_REQUIRED");
 const catalog = await nodeCatalog(config.python, config.fixture);
@@ -70,6 +121,58 @@ const pages = catalogPages(catalog);
 const indexVersion = config.fixture
   ? "fixture-v1"
   : config.python!.indexVersion;
+reading = await createLocalReading({
+  root: resolve(config.dataDir),
+  indexVersion: catalog.indexVersion,
+  papers: catalog.papers,
+  evidence: catalog.evidence,
+  worker: {
+    request: async (tool, params, signal) => {
+      if (!config.fixture)
+        return bridge!.request(
+          tool,
+          { ...params },
+          signal ?? AbortSignal.timeout(60000),
+        );
+      return tool === "search_papers"
+        ? {
+            backend: "fixture",
+            index_version: indexVersion,
+            papers: [
+              {
+                paper_id: "fixture-paper",
+                title: "Deterministic research fixture",
+                abstract: "Not a scientific evaluation.",
+              },
+            ],
+          }
+        : {
+            backend: "fixture",
+            index_version: indexVersion,
+            chunks: [
+              {
+                paper_id: "fixture-paper",
+                chunk_id: "fixture-chunk",
+                paragraph_id: "p1",
+                citation: "[fixture-chunk]",
+                truncated: false,
+                section: "abstract",
+                start: 0,
+                end: 9,
+                text: "Evidence.",
+                index_version: indexVersion,
+              },
+            ],
+          };
+    },
+    ...(bridge
+      ? {
+          readScientificSources: (params: any, signal?: AbortSignal) =>
+            bridge.readScientificSources(params, signal),
+        }
+      : {}),
+  },
+});
 let socket: WebSocket | undefined,
   retry = 0,
   stopping = false,
@@ -136,46 +239,26 @@ async function execute(op: Operation) {
   );
   try {
     validatePaperParams(op.tool, op.params, researchContext(catalog));
-    const result = config.fixture
-      ? op.tool === "search_papers"
-        ? {
-            backend: "fixture",
-            index_version: indexVersion,
-            papers: [
-              {
-                paper_id: "fixture-paper",
-                title: "Deterministic research fixture",
-                abstract: "Not a scientific evaluation.",
-              },
-            ],
-          }
-        : {
-            backend: "fixture",
-            index_version: indexVersion,
-            chunks: [
-              {
-                paper_id: "fixture-paper",
-                chunk_id: "fixture-chunk",
-                paragraph_id: "p1",
-                citation: "[fixture-chunk]",
-                truncated: false,
-                section: "abstract",
-                start: 0,
-                end: 9,
-                text: "Evidence.",
-                index_version: indexVersion,
-              },
-            ],
-          }
-      : await bridge!.request(op.tool, op.params, abort.signal);
+    const { result, sources } = await reading!.execute(
+      op.tool,
+      op.params,
+      abort.signal,
+    );
     if (abort.signal.aborted) throw new Error("CANCELLED");
     validateEvidence(op.tool, result, indexVersion);
-    checkedResult(op, result, catalog);
+    checkedResult(
+      op,
+      result,
+      sources.length
+        ? withReadingSources(catalog, readingSources(catalog, op, sources))
+        : catalog,
+    );
     frame(op.id, {
       type: "result",
       operationId: op.id,
       indexVersion,
       result,
+      sources,
       executionMs: Math.ceil(performance.now() - started),
     });
   } catch {
@@ -218,6 +301,8 @@ function connect() {
       deviceId: "windows-primary",
       indexVersion,
       tools: ["search_papers", "retrieve_chunks"],
+      capabilities: ["abstract-v1", "scientific-html-v1", "pdf-public-v1"],
+      readerPort: config.port ?? 48731,
     });
   });
   ws.on("message", (data) => {

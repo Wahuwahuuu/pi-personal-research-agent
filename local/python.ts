@@ -3,6 +3,7 @@ import {
   PythonWorkerClient,
   type SearchParams,
   type RetrieveParams,
+  type ScientificParams,
 } from "../packages/research/transport.ts";
 import type { Tool } from "../src/domain.ts";
 export interface PythonConfig {
@@ -14,6 +15,7 @@ export interface PythonConfig {
   profile?: string;
   device?: "cpu" | "cuda";
   indexVersion: string;
+  scientificCacheDir?: string;
 }
 /** Restricted facade over AsterCite's existing JSONL transport. Model loading is readiness, not tool execution. */
 export class PythonBridge {
@@ -28,6 +30,7 @@ export class PythonBridge {
       config.corpus,
       config.index,
       config.models,
+      config.scientificCacheDir,
     ].filter(Boolean))
       if (!isAbsolute(p!)) throw Error("ABSOLUTE_LOCAL_PATH_REQUIRED");
   }
@@ -45,6 +48,7 @@ export class PythonBridge {
       readyTimeoutMs: 180000,
       timeoutMs: 180000,
       maxFrameBytes: 1500000,
+      scientificCacheDir: c.scientificCacheDir,
     }));
   }
   async ready() {
@@ -74,8 +78,15 @@ export class PythonBridge {
       throw Error("INVALID_QUERY");
     const allowed =
       tool === "search_papers"
-        ? ["query", "limit"]
-        : ["query", "paper_ids", "top_k", "offset"];
+        ? ["query", "limit", "allowed_paper_ids"]
+        : [
+            "query",
+            "paper_ids",
+            "top_k",
+            "offset",
+            "reading_mode",
+            "allowed_paper_ids",
+          ];
     if (Object.keys(params).some((k) => !allowed.includes(k)))
       throw Error("PARAMETER_DENIED");
     signal.throwIfAborted();
@@ -101,6 +112,21 @@ export class PythonBridge {
     } finally {
       signal.removeEventListener("abort", abort);
       this.pending = false;
+    }
+  }
+  async readScientificSources(params: ScientificParams, signal?: AbortSignal) {
+    if (this.pending) throw Error("RETRIEVER_BUSY");
+    this.pending = true;
+    const abort = () => this.stop();
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      signal?.throwIfAborted();
+      await this.ready();
+      signal?.throwIfAborted();
+      return await this.client!.readScientificSources(params, signal);
+    } finally {
+      this.pending = false;
+      signal?.removeEventListener("abort", abort);
     }
   }
   stop() {

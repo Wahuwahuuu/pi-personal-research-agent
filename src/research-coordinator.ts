@@ -10,6 +10,7 @@ import {
   retrieveResult,
   validatePaperParams,
   executionFromOutput,
+  withAbstractReading,
   type ToolContext,
 } from "../packages/research/core.ts";
 import type { ResearchCatalog } from "./research-catalog.ts";
@@ -34,13 +35,24 @@ export function researchContext(c: ResearchCatalog): ToolContext {
       throw Error("LEDGER_NOT_USED_BY_VALIDATORS");
     },
     workbench: true,
-    p2: {
+    p2: withAbstractReading({
       profile: "B",
       executionVersion: "full-v1",
       indexVersion: c.indexVersion,
       evidenceIndex: new Map(c.evidence.map((e) => [e.chunk_id, e])),
       publicPapers: c.papers,
-    },
+      ...(c.sources?.length
+        ? {
+            scientificSources: {
+              sources: new Map(c.sources.map((e) => [e.chunk_id, e])),
+              identities: new Map(c.evidence.map((e) => [e.chunk_id, e])),
+              async retrieve() {
+                throw Error("LOCAL_READING_REQUIRED");
+              },
+            },
+          }
+        : {}),
+    }),
   };
 }
 export function checkedResult(op: Operation, raw: unknown, c: ResearchCatalog) {
@@ -56,9 +68,9 @@ export function checkedResult(op: Operation, raw: unknown, c: ResearchCatalog) {
     : retrieveResult(
         raw,
         op.params.paper_ids as string[],
-        Number(op.params.top_k ?? 8),
+        op.params.section === "abstract" ? 5 : Number(op.params.top_k ?? 8),
         ctx,
-        String(op.params.query),
+        String(op.params.query ?? "Read the original abstract"),
       );
 }
 /** Synchronous state transitions are saved by the host before acknowledging device frames. */
@@ -114,6 +126,7 @@ export function createResearchPorts(
         indexVersion: c.indexVersion,
         scope: [],
         evidence: new Map(c.evidence.map((e) => [e.chunk_id, e])),
+        sources: c.sources,
       };
     },
     async execute(r, signal) {

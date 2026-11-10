@@ -1,8 +1,10 @@
+import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
 import {
   createResearchPorts,
   acceptResearchResult,
+  checkedResult,
   resumePrompt,
   validateResearchAnswer,
   terminal,
@@ -100,6 +102,9 @@ export class PersonalAgent extends DurableObject<Env> {
     );
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_catalog_upload (upload TEXT, page INTEGER, value TEXT NOT NULL, PRIMARY KEY(upload,page))",
+    );
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS pra_reading_sources (version TEXT, id TEXT, value TEXT NOT NULL, PRIMARY KEY(version,id))",
     );
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
@@ -268,6 +273,27 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (path === "/api/export" && r.method === "GET")
       return json(this.snapshot());
+    if (path === "/api/papers" && r.method === "GET") {
+      const version =
+        new URL(r.url).searchParams.get("indexVersion") ??
+        this.device()?.deserializeAttachment().indexVersion;
+      if (!version) return json([]);
+      const c = this.catalog(version),
+        port = this.device()?.deserializeAttachment().readerPort;
+      return json(
+        c.papers.map((p) => ({
+          ...p,
+          indexVersion: version,
+          originalUrl: /^\d{4}\.\d{4,5}$/.test(p.paper_id)
+            ? "https://arxiv.org/pdf/" + p.paper_id + "v1"
+            : null,
+          localUrl:
+            port && /^\d{4}\.\d{4,5}$/.test(p.paper_id)
+              ? "http://127.0.0.1:" + port + "/papers/" + p.paper_id
+              : null,
+        })),
+      );
+    }
     if (path === "/api/device/pair" && r.method === "POST") {
       const token = crypto.randomUUID() + crypto.randomUUID();
       this.ctx.storage.sql.exec(
@@ -449,6 +475,19 @@ export class PersonalAgent extends DurableObject<Env> {
         a.deviceId = text(m.deviceId, 128);
         a.version = m.version;
         a.tools = ["search_papers", "retrieve_chunks"];
+        a.capabilities = Array.isArray(m.capabilities)
+          ? m.capabilities.filter((v: unknown) =>
+              ["abstract-v1", "scientific-html-v1", "pdf-public-v1"].includes(
+                String(v),
+              ),
+            )
+          : [];
+        a.readerPort =
+          Number.isInteger(m.readerPort) &&
+          m.readerPort >= 1024 &&
+          m.readerPort <= 65535
+            ? m.readerPort
+            : undefined;
         a.indexVersion = text(m.indexVersion, 256);
         a.ready = false;
         a.catalogReady = false;
@@ -528,7 +567,7 @@ export class PersonalAgent extends DurableObject<Env> {
           "DELETE FROM pra_catalog_upload WHERE upload=?",
           a.upload,
         );
-        this.catalogCache.set(c.indexVersion, c);
+        this.catalogCache.delete(c.indexVersion);
         a.catalogReady = true;
         delete a.upload;
         ws.serializeAttachment(a);
@@ -536,6 +575,31 @@ export class PersonalAgent extends DurableObject<Env> {
       } else if (m.type === "result") {
         const op = this.state.operations.find((o) => o.id === m.operationId);
         const task = op && getTask(this.state, op.taskId);
+        if (
+          op &&
+          task?.engine === "durable" &&
+          !terminal(task) &&
+          op.state !== "done" &&
+          op.state !== "cancelled" &&
+          m.sources?.length
+        ) {
+          if (m.indexVersion !== op.indexVersion)
+            throw new Problem("INDEX_CHANGED");
+          const base = this.catalog(op.indexVersion),
+            patch = readingSources(base, op, m.sources),
+            merged = withReadingSources(base, patch);
+          checkedResult(op, m.result, merged);
+          if (merged.sources!.length > 5000)
+            throw new Problem("READING_CAPACITY");
+          for (const source of patch.sources)
+            this.ctx.storage.sql.exec(
+              "INSERT OR IGNORE INTO pra_reading_sources VALUES(?,?,?)",
+              op.indexVersion,
+              source.chunk_id,
+              JSON.stringify(source),
+            );
+          this.catalogCache.set(op.indexVersion, merged);
+        }
         const result =
           task?.engine === "durable"
             ? acceptResearchResult(
@@ -628,6 +692,27 @@ export class PersonalAgent extends DurableObject<Env> {
           .map((r) => r.value)
           .join("");
       c = JSON.parse(raw) as ResearchCatalog;
+      const stored = this.ctx.storage.sql
+        .exec<{ value: string }>(
+          "SELECT value FROM pra_reading_sources WHERE version=?",
+          version,
+        )
+        .toArray()
+        .map((r) => JSON.parse(r.value));
+      if (stored.length) {
+        const patch = stored.flatMap(
+          (source) =>
+            readingSources(
+              c!,
+              {
+                tool: "retrieve_chunks",
+                params: { paper_ids: [source.paper_id] },
+              } as any,
+              [source],
+            ).identities,
+        );
+        c = withReadingSources(c, { sources: stored, identities: patch });
+      }
       this.catalogCache.set(version, c);
     }
     return c;

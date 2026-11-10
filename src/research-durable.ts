@@ -10,6 +10,7 @@ import {
   type ToolRegistration,
 } from "@earendil-works/pi-durable";
 import {
+  withAbstractReading,
   searchSchema,
   productRetrieveSchema,
   validatePaperParams,
@@ -30,6 +31,7 @@ export interface ResearchPorts {
     indexVersion: string;
     evidence: ReadonlyMap<string, EvidenceIdentity>;
     scope: readonly string[];
+    sources?: readonly Chunk[];
   };
   /** Must persist admission/result by operationId before resolving; no infinite device waits. */
   execute(
@@ -53,15 +55,6 @@ export interface ResearchPorts {
 }
 export function createResearchRegistry(ports: ResearchPorts) {
   const registry = createRegistry();
-  const retrieveParameters = {
-    ...productRetrieveSchema,
-    properties: Object.fromEntries(
-      Object.entries(productRetrieveSchema.properties).filter(([key]) =>
-        ["query", "paper_ids", "top_k", "offset"].includes(key),
-      ),
-    ),
-    required: ["query", "paper_ids"],
-  };
   const tools: ToolRegistration<any>[] = (
     ["search_papers", "retrieve_chunks"] as const
   ).map((name) => ({
@@ -69,11 +62,8 @@ export function createResearchRegistry(ports: ResearchPorts) {
     description:
       name === "search_papers"
         ? "Find papers in the authorized catalog."
-        : "Read original evidence; use returned sources for claims.",
-    parameters:
-      name === "search_papers"
-        ? searchSchema
-        : (retrieveParameters as typeof productRetrieveSchema),
+        : "Read original evidence. section=abstract reads complete original abstracts; content_type=table/equation/all reads structured originals. Follow selection.next_offset to continue. Cite returned chunk IDs.",
+    parameters: name === "search_papers" ? searchSchema : productRetrieveSchema,
     replay: "safe",
     executionMode: "sequential",
     async execute(args, api, context) {
@@ -85,13 +75,24 @@ export function createResearchRegistry(ports: ResearchPorts) {
           throw new Error("LEDGER_NOT_USED_BY_VALIDATORS");
         },
         workbench: true,
-        p2: {
+        p2: withAbstractReading({
           profile: "B",
           executionVersion: "full-v1",
           indexVersion: catalog.indexVersion,
           evidenceIndex: catalog.evidence,
           publicPapers: catalog.papers,
-        },
+          ...(catalog.sources?.length
+            ? {
+                scientificSources: {
+                  sources: new Map(catalog.sources.map((e) => [e.chunk_id, e])),
+                  identities: catalog.evidence,
+                  async retrieve() {
+                    throw Error("LOCAL_READING_REQUIRED");
+                  },
+                },
+              }
+            : {}),
+        }),
       };
       validatePaperParams(name, args, ctx);
       const operationId = await api.memo(
@@ -135,7 +136,7 @@ export function createResearchRegistry(ports: ResearchPorts) {
           : retrieveResult(
               raw,
               args.paper_ids,
-              args.top_k ?? 8,
+              args.section === "abstract" ? 5 : (args.top_k ?? 8),
               ctx,
               args.query ?? "Read the original abstract",
             );

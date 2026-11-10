@@ -2,3 +2,7 @@ export {searchSchema,productRetrieveSchema,validatePaperParams,searchResult,retr
 export {TURN_EXECUTION_INSTRUCTION,executionFromOutput,TurnExecutionTracker} from "./internal/agent/turn-execution.ts";
 export {parseQuestionPreparation,planPreparedRetrieval} from "./internal/agent/question-preparation.ts";
 export type {Chunk,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
+
+export {withAbstractReading,corpusAbstracts,abstractReadingSection} from "./internal/agent/paper-reading.ts";
+export {retrieveOriginal,type OriginalReadParams} from "./internal/agent/tools.ts";
+export type {ScientificParams,ScientificReadingPort,WorkerTransport,RetrieveResult} from "./internal/agent/contracts.ts";
