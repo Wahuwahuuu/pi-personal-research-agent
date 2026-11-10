@@ -176,3 +176,9 @@ test("comparison response template preserves exact paper and requested-dimension
  advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["core method"]}));w.phase="comparison";
  const body=JSON.parse(workflowPrompt(w,c));assert.deepEqual(body.response_template.cells.map((x:any)=>[x.paper_id,x.dimension]),[["a","core method"],["b","core method"]]);
 });
+
+test("cloud-only conversations share memory and history without requiring a local catalog or tools",()=>{
+ const c=setup("你好"),w={...newWorkflow(),cloudOnly:true};c.catalog={indexVersion:"cloud-only",papers:[],evidence:[]};
+ advanceWorkflow(w,c,prepared("session_update"));assert.deepEqual(workflowTools(w,2),[]);assert.equal(JSON.parse(workflowPrompt(w,c)).cloud_only,true);
+ const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"你好。"}));assert.equal(out.status,"completed");assert.equal(c.conversation.history.length,1);
+});

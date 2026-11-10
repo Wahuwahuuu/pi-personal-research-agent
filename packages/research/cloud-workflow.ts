@@ -14,6 +14,7 @@ export interface ResearchConversation {
 }
 export interface ResearchWorkflow {
   phase:"prepare"|"agent"|"completion"|"comparison"|"translation"|"finished";
+  cloudOnly?:boolean;
   translation?:{sources:TranslationSource[];items?:TranslationSource[]};
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
   tracker?:ReturnType<TurnExecutionTracker["snapshot"]>;
@@ -30,7 +31,7 @@ export interface WorkflowContext {
 }
 export function workflowInstruction(w:ResearchWorkflow):string{
  const instruction=w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION;
- return "The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
+ return (w.cloudOnly?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
 }
 export const newWorkflow=():ResearchWorkflow=>({phase:"prepare",warnings:[]});
 const history=(c:WorkflowContext)=>c.conversation.history.filter(h=>!c.invalidatedMemoryTurns?.includes(h.turn_id));
@@ -44,7 +45,7 @@ const memory=(c:WorkflowContext)=>{
  return d;
 };
 const targets=(w:ResearchWorkflow)=>w.prepared?.frame.ordered_targets??[];
-const nonFactual=(w:ResearchWorkflow)=>["session_control","paper_discovery"].includes(w.prepared?.frame.intent??"");
+const nonFactual=(w:ResearchWorkflow)=>w.cloudOnly||["session_control","paper_discovery"].includes(w.prepared?.frame.intent??"");
 function comparison(w:ResearchWorkflow,c:WorkflowContext){
   if(targets(w).length<2)return;
   const m=new MultiPaperComparison(c.input,targets(w),{requests:6,retrievals:10,searches:2,checks:1},w.prepared?.frame.comparison_dimensions.length?w.prepared.frame.comparison_dimensions:["用户要求的比较内容"]);
@@ -84,7 +85,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   domain.unresolved_questions=boundedItems(domain.unresolved_questions.slice(-6),1500);
   domain.pending_inferences=[];
   summary.conversation_only=boundedItems(summary.conversation_only.slice(-4),2500);
-  const shared={request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
+  const shared={cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);
@@ -107,7 +108,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   payload.evidence_window={archived:c.evidence.length,visible:evidence.length,omitted:c.evidence.length-evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
   return JSON.stringify(payload);
 }
-export function workflowTools(w:ResearchWorkflow,calls:number){return w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
+export function workflowTools(w:ResearchWorkflow,calls:number){return !w.cloudOnly&&w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
 export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
   if(w.phase==="translation"){
     w.translation!.items=parseTranslations(output,w.translation!.sources);
@@ -132,6 +133,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
       w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);
       d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
     }
+    if(w.cloudOnly){w.prepared!.frame.intent="session_control";w.prepared!.frame.ordered_targets=[];w.prepared!.frame.comparison_dimensions=[];}
     w.phase="agent";progress(w,c);return {};
   }
   if(w.phase==="comparison"){
@@ -154,6 +156,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     if(!declared&&c.calls<6){w.phase="completion";return {};}
     if(!declared)declared={state:"partial",remaining_needs:["模型额度耗尽，完成状态未确认"],origin:"host"};
   }
+  if(w.cloudOnly)declared.needs_sources=false;
   const visible=c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id));
   const answer=prepareWorkbenchAnswer(output,{evidence:new Map(visible.map(e=>[e.chunk_id,e])),allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,expectedKind:nonFactual(w)?w.prepared?.frame.intent==="session_control"?"session_control":"catalog":"paper_fact",execution:declared});
   if(!answer){

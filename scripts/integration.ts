@@ -127,6 +127,11 @@ try {
     return t.status === "completed" ? t : false;
   });
   assert.match(done.answer, /模拟模型/);
+  assert.equal(done.engine,"durable");
+  const followChat=await api("tasks","POST",{input:"continue cloud conversation",kind:"chat",conversationId:done.conversationId,requestId:"chat-follow"});
+  const cloudFollow=await until(async()=>{const t=(await api("state")).tasks.find((t:any)=>t.id===followChat.id);return t.status==="completed"?t:false;});
+  assert.equal(cloudFollow.sessionId,done.sessionId);assert.equal(cloudFollow.tools,0);
+  checks.push("cloud-only turns reuse one Pi conversation before any device or corpus exists");
   checks.push(
     "official PiHarness deterministic provider completed cloud-only task",
   );

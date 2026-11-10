@@ -199,7 +199,7 @@ export class PersonalAgent extends DurableObject<Env> {
     );
   }
   memoryService(){
-    const version=this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex)?.researchIndex;
+    const version=this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex&&t.researchIndex!=="cloud-only")?.researchIndex;
     const papers=version?this.catalog(version).papers:[];
     return cloudMemory(this.state.cloudMemory!,papers,this.env.OWNER_ID,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""]);
   }
@@ -371,12 +371,11 @@ export class PersonalAgent extends DurableObject<Env> {
       }
       t.conversationId = conversationId;
       if (
-        t.kind === "research" &&
         !t.sessionId &&
         t.tools === 0 &&
         (this.env.RESEARCH_ENGINE === "durable" || b.engine === "durable")
       )
-        { t.engine = "durable"; t.workflow ??= newWorkflow(); }
+        { t.engine = "durable"; t.workflow ??= {...newWorkflow(),cloudOnly:t.kind==="chat"}; }
       this.save();
       await this.maintenance.arm();
       this.publish();
@@ -742,6 +741,7 @@ export class PersonalAgent extends DurableObject<Env> {
     await this.maintenance.arm(Date.now() + 60000);
   }
   catalog(version: string): ResearchCatalog {
+    if(version==="cloud-only")return {indexVersion:version,papers:[],evidence:[]};
     let c = this.catalogCache.get(version);
     if (!c) {
       const row = this.ctx.storage.sql
@@ -919,6 +919,7 @@ export class PersonalAgent extends DurableObject<Env> {
         !this.state.tasks.some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
     );
     if (!t) return;
+    if(!t.researchIndex&&t.workflow?.cloudOnly)t.researchIndex=attachment?.catalogReady?attachment.indexVersion:this.state.conversations?.find(c=>c.id===t.conversationId)?.domain?.index_version??this.state.tasks.findLast(previous=>previous.researchIndex&&previous.researchIndex!=="cloud-only")?.researchIndex??"cloud-only";
     if (!t.researchIndex) {
       if (!dev || !attachment.catalogReady) {
         t.status = "waiting_device";
@@ -926,7 +927,7 @@ export class PersonalAgent extends DurableObject<Env> {
       }
       t.researchIndex = attachment.indexVersion;
     }
-    if (dev && attachment.indexVersion !== t.researchIndex) {
+    if (!t.workflow?.cloudOnly && dev && attachment.indexVersion !== t.researchIndex) {
       failResearch(this.state, t, "INDEX_CHANGED");
       return;
     }

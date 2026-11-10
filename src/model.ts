@@ -83,6 +83,7 @@ export function mockModels(
           (source.includes("chunks")
             ? "已收到本地证据 [cite:fixture-chunk]；请查看任务的 evidence 字段核对片段与出处。"
             : "云端 PiHarness 已完成持久化模型轮次。");
+        if(frame?.cloud_only)content="[模拟模型验证输出，不是科研结论] 云端对话已完成。";
         if (research || frame?.stage==="agent")
           content = JSON.stringify({
             execution: {
