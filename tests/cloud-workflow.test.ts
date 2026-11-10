@@ -159,3 +159,9 @@ test("invalid preference provenance does not discard valid comparison dimensions
  advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,comparison_dimensions:["methods"],constraints:[{key:"language",value:"French",source_quote:"invented"}]}));
  assert.deepEqual(w.prepared?.frame.comparison_dimensions,["methods"]);assert.deepEqual(c.conversation.domain?.user_constraints,[]);
 });
+
+test("missing optional dimensions never add unrequested experiments or limitations",()=>{
+ const c=setup("Compare Paper A and Paper B research questions"),w=newWorkflow();c.catalog={...catalog,papers:[{paper_id:"a",title:"Paper A",abstract:"a"},{paper_id:"b",title:"Paper B",abstract:"b"}]};
+ advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[]}));
+ const prompt=JSON.parse(workflowPrompt(w,c));assert.match(prompt.comparison,/用户要求的比较内容/);assert.ok(!prompt.comparison.includes("方法与实验设置"));assert.equal(prompt.request,c.input);
+});

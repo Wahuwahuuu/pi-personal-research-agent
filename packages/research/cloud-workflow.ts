@@ -43,7 +43,7 @@ const targets=(w:ResearchWorkflow)=>w.prepared?.frame.ordered_targets??[];
 const nonFactual=(w:ResearchWorkflow)=>["session_control","paper_discovery"].includes(w.prepared?.frame.intent??"");
 function comparison(w:ResearchWorkflow,c:WorkflowContext){
   if(targets(w).length<2)return;
-  const m=new MultiPaperComparison(c.input,targets(w),{requests:6,retrievals:10,searches:2,checks:1},w.prepared?.frame.comparison_dimensions);
+  const m=new MultiPaperComparison(c.input,targets(w),{requests:6,retrievals:10,searches:2,checks:1},w.prepared?.frame.comparison_dimensions.length?w.prepared.frame.comparison_dimensions:["用户要求的比较内容"]);
   for(const op of c.operations.filter(o=>o.tool==="retrieve_chunks")){
     const ids=Array.isArray(op.params.paper_ids)?op.params.paper_ids as string[]:[];
     m.claimQuery(String(op.params.query??""),ids,op.params);
@@ -123,7 +123,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
         w.prepared=parseQuestionPreparation(JSON.stringify({...raw,constraints:[]}),preparationContext);
         w.warnings.push("INVALID_CONSTRAINTS_NOT_SAVED");
       }catch{
-        w.prepared=parseQuestionPreparation(JSON.stringify({intent:"answer",targets:[],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:[c.input]}),preparationContext);
+        w.prepared=parseQuestionPreparation(JSON.stringify({intent:"answer",targets:[],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["用户要求的比较内容"]}),preparationContext);
       }
       w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);
       d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
