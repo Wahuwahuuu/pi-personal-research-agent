@@ -1,7 +1,7 @@
 const object=value=>value!==null&&typeof value==='object'&&!Array.isArray(value);
-const controls=new Set(['status','answer_kind','execution','needs_sources','remaining_needs','paper_coverage','exact_quotes']);
+const controls=new Set(['answer','status','answer_kind','execution','needs_sources','remaining_needs','paper_coverage','exact_quotes']);
 function control(value){
-  if(!object(value)||Object.keys(value).some(key=>!controls.has(key)))return false;
+  if(!object(value)||Object.keys(value).some(key=>!controls.has(key))||Object.hasOwn(value,'answer')&&value.answer!=='')return false;
   return object(value.execution)&&['working','complete','partial','clarification'].includes(value.execution.state)
     ||typeof value.answer_kind==='string'&&['complete','answer','partial','clarification','refusal'].includes(value.status)&&typeof value.needs_sources==='boolean';
 }

@@ -31,7 +31,7 @@ export interface WorkflowContext {
 }
 export function workflowInstruction(w:ResearchWorkflow):string{
  const instruction=w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION;
- return (w.cloudOnly?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
+ return (w.cloudOnly?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals. For greetings and capabilities, answer briefly without citation markers or made-up source examples.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
 }
 export const newWorkflow=():ResearchWorkflow=>({phase:"prepare",warnings:[]});
 const history=(c:WorkflowContext)=>c.conversation.history.filter(h=>!c.invalidatedMemoryTurns?.includes(h.turn_id));

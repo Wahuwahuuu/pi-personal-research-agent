@@ -182,3 +182,9 @@ test("cloud-only conversations share memory and history without requiring a loca
  advanceWorkflow(w,c,prepared("answer"));assert.deepEqual(workflowTools(w,2),[]);assert.equal(JSON.parse(workflowPrompt(w,c)).cloud_only,true);
  const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"你好。"}));assert.equal(out.status,"completed");assert.equal(c.conversation.history.length,1);
 });
+
+test("valid prose survives an empty answer envelope used as trailing execution metadata",()=>{
+ const c=setup("你好"),w={...newWorkflow(),cloudOnly:true};advanceWorkflow(w,c,prepared("session_update"));
+ const out=advanceWorkflow(w,c,'你好，我可以帮助你研究论文。\n\n{"execution":{"state":"complete","remaining_needs":[],"needs_sources":false},"answer":""}');
+ assert.equal(out.status,"completed");assert.equal(out.answer,"你好，我可以帮助你研究论文。");
+});
