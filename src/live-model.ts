@@ -1,3 +1,4 @@
+import {modelResponse} from "./model-response.ts";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import {
   createAssistantMessageEventStream,
@@ -13,6 +14,7 @@ export interface LiveConfig {
   baseUrl: string;
   modelId: string;
   maxOutput?:()=>number;
+  onVisible?:(text:string)=>void;
 }
 /** Only visible text crosses this adapter into Pi persistence. Provider-native reasoning is never forwarded. */
 export function liveModels(
@@ -86,7 +88,8 @@ export function liveModels(
             messages,
             ...(declarations.length ? {tools:declarations,tool_choice:"auto"} : {}),
             max_tokens: config.maxOutput?.() ?? 2048,
-            stream: false,
+            stream: true,
+            stream_options: {include_usage:true},
             ...(config.modelId.startsWith("qwen")
               ? { enable_thinking: false, preserve_thinking: false }
               : {}),
@@ -96,24 +99,13 @@ export function liveModels(
             : AbortSignal.timeout(90000),
         });
         if (!response.ok) throw new Error("MODEL_HTTP_ERROR");
-        // Bounded body, do not retain/log raw API responses.
-        const reader = response.body?.getReader();
-        if (!reader) throw new Error("EMPTY_RESPONSE");
-        let raw = "",
-          bytes = 0;
-        const decoder = new TextDecoder();
-        while (true) {
-          const r = await reader.read();
-          if (r.done) break;
-          bytes += r.value.length;
-          if (bytes > 1000000) {
-            await reader.cancel();
-            throw new Error("RESPONSE_TOO_LARGE");
-          }
-          raw += decoder.decode(r.value, { stream: true });
-        }
-        raw += decoder.decode();
-        const data = JSON.parse(raw);
+        let started=false,visible="";
+        const pushText=(delta:string)=>{
+          if(!started){events.push({type:"start",partial:message});message.content=[{type:"text",text:""}];events.push({type:"text_start",contentIndex:0,partial:message});started=true;}
+          visible+=delta;message.content=[{type:"text",text:visible}];
+          events.push({type:"text_delta",contentIndex:0,delta,partial:message});config.onVisible?.(visible);
+        };
+        const data=await modelResponse(response,config.apiKey,pushText);
         const rawMessage = data.choices?.[0]?.message;
         const content = rawMessage?.content ?? "";
         const rawCalls = rawMessage?.tool_calls ?? [];
@@ -150,16 +142,7 @@ export function liveModels(
         message.usage.input = usage?.input ?? 52000;
         message.usage.output = usage?.output ?? config.maxOutput?.() ?? 2048;
         message.usage.totalTokens = message.usage.input + message.usage.output;
-        events.push({ type: "start", partial: message });
-        message.content = [{ type: "text", text: "" }];
-        events.push({ type: "text_start", contentIndex: 0, partial: message });
-        message.content = [{ type: "text", text: content }];
-        events.push({
-          type: "text_delta",
-          contentIndex: 0,
-          delta: content,
-          partial: message,
-        });
+        if(!started)pushText(content);
         events.push({
           type: "text_end",
           contentIndex: 0,

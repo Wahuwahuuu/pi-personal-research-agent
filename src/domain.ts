@@ -33,6 +33,7 @@ export interface Task {
   modelStoppedAt?: number;
   resumeSeq?: number;
   answer?: string;
+  preview?: string;
   error?: string;
   evidence?: unknown;
   operationId?: string;

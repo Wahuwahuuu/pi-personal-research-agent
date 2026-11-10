@@ -157,3 +157,5 @@ dialog::backdrop{background:#10251e88}
 .markdown-body td,.markdown-body th,.task-table td,.task-table th{padding:9px;border:1px solid #cbd8cd;vertical-align:top}
 .markdown-body pre{overflow-x:auto}.citation{padding:1px 6px;margin:0 2px}.task-label,.task-source-count{display:block}
 #scope{min-height:110px;width:100%}.item{overflow:hidden}.katex-display{overflow:auto}
+
+.answer-preview{white-space:pre-wrap;overflow-wrap:anywhere;max-width:100%;font:inherit;opacity:.85}

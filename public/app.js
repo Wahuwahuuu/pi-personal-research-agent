@@ -96,6 +96,7 @@ function render(s) {
   for (const t of [...s.tasks].reverse()) {
     if($("conversation").value&&t.conversationId!==$("conversation").value)continue;
     const d = item(labels[t.status]+" · "+t.input, t.error);
+    if(t.preview&&t.status==="running"){const preview=document.createElement("pre");preview.className="answer-preview";preview.textContent=t.preview;d.append(preview);}
     if(t.answer){const answer=document.createElement("div");renderMarkdown(answer,t.answer,{sources:t.researchEvidence??[],onCitation:index=>openSource(t,t.researchEvidence[index])});d.append(answer);}
     if(t.workflow?.progress){
       const b=button("查看逐项进度",()=>{});

@@ -37,7 +37,7 @@ test("Qwen requests explicitly disable thinking and never persist provider reaso
   assert.equal(sent?.enable_thinking, false);
   assert.equal(sent?.preserve_thinking, false);
   assert.equal(sent?.max_tokens, 2048);
-  assert.equal(sent?.stream, false);
+  assert.equal(sent?.stream, true);
   assert.ok(!JSON.stringify(events).includes("HIDDEN_SENTINEL"));
 });
 test("deployment profile carries only non-secret settings and keeps mock as the default", () => {
@@ -186,4 +186,25 @@ test("Pi named system sections reach the actual provider payload once with lates
  const models=liveModels(config,()=>{},()=>{},(async(_url,init)=>{sent=JSON.parse(String(init?.body));return Response.json({choices:[{message:{content:"OK"}}],usage:{prompt_tokens:4,completion_tokens:1}});}) as typeof fetch);
  await models.stream(models.getModel("pra","test")!,{messages:[{role:"system",content:"Base",sections:{research:"OLD_SECTION"},timestamp:0},{role:"system",content:"",sections:{research:"ACTUAL_RESEARCH_RULE"},timestamp:1},{role:"user",content:"question",timestamp:2}]}).result();
  const systems=sent.messages.filter((m:any)=>m.role==="system");assert.equal(systems.length,1);assert.match(systems[0].content,/ACTUAL_RESEARCH_RULE/);assert.ok(!systems[0].content.includes("OLD_SECTION"));
+});
+
+
+test("SSE forwards visible text before completion, drops reasoning and joins split tools",async()=>{
+ const {modelResponse,answerPreview}=await import("../src/model-response.ts");
+ const chunks=[{choices:[{delta:{reasoning_content:"HIDDEN_SENTINEL",content:"Visible ".repeat(20)}}]},{choices:[{delta:{tool_calls:[{index:0,id:"call1",type:"function",function:{name:"search_papers",arguments:'{"query":'}}]}}]},{choices:[{delta:{tool_calls:[{index:0,function:{arguments:'"method"}'}}]},finish_reason:"tool_calls"}],usage:{prompt_tokens:1,completion_tokens:2}}];
+ let controller:ReadableStreamDefaultController<Uint8Array>;const rs=new ReadableStream<Uint8Array>({start(c){controller=c;}});const seen:string[]=[];
+ const result=modelResponse(new Response(rs,{headers:{"content-type":"text/event-stream"}}),config.apiKey,t=>seen.push(t));
+ controller!.enqueue(new TextEncoder().encode("data: "+JSON.stringify(chunks[0])+"\n\n"));await new Promise(r=>setTimeout(r,5));assert.ok(seen.length>0);
+ for(const c of chunks.slice(1))controller!.enqueue(new TextEncoder().encode("data: "+JSON.stringify(c)+"\n\n"));controller!.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));controller!.close();
+ const data=await result;assert.equal(data.choices[0].message.tool_calls[0].function.arguments,'{"query":"method"}');assert.ok(!JSON.stringify({seen,data}).includes("HIDDEN_SENTINEL"));
+ assert.equal(answerPreview('{"execution":{"state":"complete"},"answer":"你好'),"你好");assert.equal(answerPreview('{"execution":{"state":"working"}'),"");
+});
+test("SSE rejects incomplete streams and secrets split across network frames",async()=>{
+ const {modelResponse}=await import("../src/model-response.ts");
+ for(const content of [[config.apiKey.slice(0,9),config.apiKey.slice(9)],["<thi","nk>HIDDEN_SENTINEL"]]){
+  const seen:string[]=[];const raw=content.map(text=>"data: "+JSON.stringify({choices:[{delta:{content:text}}]})+"\n\n").join("");
+  await assert.rejects(()=>modelResponse(new Response(raw,{headers:{"content-type":"text/event-stream"}}),config.apiKey,t=>seen.push(t)));
+  assert.ok(!seen.join("").includes(config.apiKey));assert.ok(!seen.join("").includes("HIDDEN_SENTINEL"));
+ }
+ await assert.rejects(()=>modelResponse(new Response('data: {"choices":[]}\n\n',{headers:{"content-type":"text/event-stream"}}),config.apiKey,()=>{}),/INCOMPLETE_STREAM/);
 });

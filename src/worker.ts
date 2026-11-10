@@ -1,3 +1,4 @@
+import {answerPreview} from "./model-response.ts";
 import {cloudMemory,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {newWorkflow,workflowPrompt,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
@@ -114,7 +115,7 @@ export class PersonalAgent extends DurableObject<Env> {
     );
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
-        let reservedOutput=2048;
+        let reservedOutput=2048,lastPreview=0;
         const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
         const before = () => {
           const t = this.state.tasks.find(
@@ -142,6 +143,12 @@ export class PersonalAgent extends DurableObject<Env> {
                   baseUrl: env.MODEL_BASE_URL ?? "",
                   modelId: env.MODEL_ID ?? "",
                   maxOutput:outputLimit,
+                  onVisible:(text)=>{
+                    const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");
+                    if(!task||Date.now()-lastPreview<1000)return;
+                    const preview=answerPreview(text);if(!preview)return;
+                    task.preview=preview;lastPreview=Date.now();this.publish();
+                  },
                 },
                 before,
                 after,
@@ -823,6 +830,7 @@ export class PersonalAgent extends DurableObject<Env> {
       t.activeMs += elapsed;
       if(t.budgetTaskId)getTask(this.state,t.budgetTaskId).activeMs+=elapsed;
       t.runOpen = false;
+      t.preview=undefined;
       t.modelPrompt = undefined;
       if (terminal(t)) continue;
       if (t.researchWaiting) {
@@ -957,6 +965,7 @@ export class PersonalAgent extends DurableObject<Env> {
       t.researchWaiting = false;
       t.status = "running";
       t.runOpen = true;
+      t.preview=undefined;
       t.resumeSeq = (t.resumeSeq ?? 0) + 1;
       t.modelOperation = t.id + ":research:" + t.resumeSeq;
       t.modelStarted = Date.now();
