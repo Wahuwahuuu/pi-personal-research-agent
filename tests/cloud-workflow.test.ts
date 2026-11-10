@@ -93,3 +93,12 @@ test("large retrieval keeps complete sources once in a bounded visible window an
  assert.equal(body.evidence_window.omitted,20-body.evidence.length);
  assert.equal(c.evidence.length,20);
 });
+
+test("empty working answers continue into real tools instead of failing as invalid citations",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ const output=JSON.stringify({execution:{state:"working",remaining_needs:["Read originals"],needs_sources:true},answer:""});
+ c.calls=2;assert.deepEqual(advanceWorkflow(w,c,output),{});assert.equal(w.phase,"agent");
+ assert.match(w.warnings.join(" "),/actual research tool/);
+ const restored=JSON.parse(JSON.stringify(w));c.calls=3;
+ assert.equal(advanceWorkflow(restored,c,output).status,"waiting_user");assert.equal(restored.execution.stop_reason,"no_execution_progress");
+});

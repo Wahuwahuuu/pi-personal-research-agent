@@ -2,6 +2,7 @@ import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import {
   createAssistantMessageEventStream,
   getCurrentTools,
+  getCurrentSystemPrompt,
   type ToolCall,
   type AssistantMessage,
   type ProviderStreams,
@@ -55,7 +56,8 @@ export function liveModels(
         settled = false;
       try {
         const tools = getCurrentTools(context.messages);
-        const messages = context.messages.map((m) => {
+        const system=getCurrentSystemPrompt(context.messages);
+        const messages = context.messages.filter(m=>m.role!=="system").map((m) => {
           const content = typeof m.content === "string" ? m.content :
             m.content.filter(c => c.type === "text").map(c => c.text).join("\n");
           if (m.role === "toolResult") return {role:"tool",tool_call_id:m.toolCallId,content};
@@ -67,6 +69,7 @@ export function liveModels(
           }
           return {role:m.role,content};
         });
+        if(system)messages.unshift({role:"system",content:system});
         const declarations=tools.map(t=>({type:"function",function:{name:t.name,description:t.description,parameters:t.parameters}}));
         if (new TextEncoder().encode(JSON.stringify({messages,tools:declarations})).length > 48000)
           throw new Error("CONTEXT_LIMIT");

@@ -129,7 +129,17 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }
   const visible=c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id));
   const answer=prepareWorkbenchAnswer(output,{evidence:new Map(visible.map(e=>[e.chunk_id,e])),allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,expectedKind:nonFactual(w)?w.prepared?.frame.intent==="session_control"?"session_control":"catalog":"paper_fact",execution:declared});
-  if(!answer)throw Error("EMPTY_RESEARCH_ANSWER");
+  if(!answer){
+    if(declared.state==="working"){
+      const tracker=new TurnExecutionTracker(w.tracker);
+      const decision=tracker.decide(declared,{progress_key:c.evidence.map(e=>e.chunk_id).sort().join(","),source_count:c.evidence.length,retrieval_attempts:c.operations.filter(o=>o.tool==="retrieve_chunks").length,successful_retrievals:c.operations.filter(o=>o.tool==="retrieve_chunks"&&o.state==="done").length,running_tools:0,can_continue:c.calls<6,requires_sources:!nonFactual(w),cited_source_count:0});
+      w.tracker=tracker.snapshot();w.execution=decision;
+      if(decision.state==="working"){w.phase="agent";w.warnings.push("A working declaration is not an action. Invoke the actual research tool now; do not return an empty answer describing a planned action.");return {};}
+      w.phase="finished";const text="本轮没有完成所需原文读取。尚待处理："+decision.remaining_needs.join("；");progress(w,c,decision,text);
+      return {answer:text,status:"waiting_user"};
+    }
+    throw Error("EMPTY_RESEARCH_ANSWER");
+  }
   const tracker=new TurnExecutionTracker(w.tracker);
   const retrievals=c.operations.filter(o=>o.tool==="retrieve_chunks");
   const decision=tracker.decide(declared,{progress_key:c.evidence.map(e=>e.chunk_id).sort().join(","),source_count:c.evidence.length,retrieval_attempts:retrievals.length,successful_retrievals:retrievals.filter(o=>o.state==="done").length,running_tools:0,can_continue:c.calls<6,requires_sources:!nonFactual(w),cited_source_count:answer.visibleCitationCount,citation_issues:answer.citationIssues});

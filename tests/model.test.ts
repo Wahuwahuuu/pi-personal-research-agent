@@ -180,3 +180,10 @@ test("unregistered tool calls and secret arguments are rejected",async()=>{
  assert.ok(!JSON.stringify(result).includes(config.apiKey));
  }
 });
+
+test("Pi named system sections reach the actual provider payload once with latest values",async()=>{
+ let sent:any;
+ const models=liveModels(config,()=>{},()=>{},(async(_url,init)=>{sent=JSON.parse(String(init?.body));return Response.json({choices:[{message:{content:"OK"}}],usage:{prompt_tokens:4,completion_tokens:1}});}) as typeof fetch);
+ await models.stream(models.getModel("pra","test")!,{messages:[{role:"system",content:"Base",sections:{research:"OLD_SECTION"},timestamp:0},{role:"system",content:"",sections:{research:"ACTUAL_RESEARCH_RULE"},timestamp:1},{role:"user",content:"question",timestamp:2}]}).result();
+ const systems=sent.messages.filter((m:any)=>m.role==="system");assert.equal(systems.length,1);assert.match(systems[0].content,/ACTUAL_RESEARCH_RULE/);assert.ok(!systems[0].content.includes("OLD_SECTION"));
+});

@@ -853,8 +853,8 @@ export class PersonalAgent extends DurableObject<Env> {
             (t.status === "completed" ? "任务完成：" : "研究结果待确认：") +
               t.input.slice(0, 100),
           );
-        } catch {
-          failResearch(this.state, t, "INVALID_ANSWER_CITATION");
+        } catch (error) {
+          failResearch(this.state,t,error instanceof Error&&/^[A-Z_]{1,64}$/.test(error.message)?error.message:"RESEARCH_WORKFLOW_FAILED");
         }
       } else failResearch(this.state, t, result.reason ?? "MODEL_FAILED");
       this.save();
