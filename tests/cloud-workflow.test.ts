@@ -178,7 +178,7 @@ test("comparison response template preserves exact paper and requested-dimension
 });
 
 test("cloud-only conversations share memory and history without requiring a local catalog or tools",()=>{
- const c=setup("你好"),w={...newWorkflow(),cloudOnly:true};c.catalog={indexVersion:"cloud-only",papers:[],evidence:[]};
- advanceWorkflow(w,c,prepared("session_update"));assert.deepEqual(workflowTools(w,2),[]);assert.equal(JSON.parse(workflowPrompt(w,c)).cloud_only,true);
+ const c=setup("cloud only"),w={...newWorkflow(),cloudOnly:true};c.catalog={indexVersion:"cloud-only",papers:[],evidence:[]};
+ advanceWorkflow(w,c,prepared("answer"));assert.deepEqual(workflowTools(w,2),[]);assert.equal(JSON.parse(workflowPrompt(w,c)).cloud_only,true);
  const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"你好。"}));assert.equal(out.status,"completed");assert.equal(c.conversation.history.length,1);
 });

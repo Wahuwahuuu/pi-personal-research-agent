@@ -119,6 +119,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     const preparationContext={original:c.input,allowed,publicPapers:c.catalog.papers,frameId:c.id,history:history(c).slice(-8),activeConstraints:d.activeConstraints(),priorObjects:{targets:d.state.comparison_order.length?d.state.comparison_order:d.state.current_paper?[d.state.current_paper.paper_id]:[],comparison_dimensions:d.state.comparison_dimensions},personalMemory:true,preferResolvedPaper:true};
     try{
       w.prepared=parseQuestionPreparation(output,preparationContext);
+      if(w.cloudOnly){w.prepared.frame.intent="session_control";w.prepared.frame.ordered_targets=[];w.prepared.frame.queries=[];w.prepared.frame.comparison_dimensions=[];}
       w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);
       d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
     }catch{
@@ -130,6 +131,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
       }catch{
         w.prepared=parseQuestionPreparation(JSON.stringify({intent:"answer",targets:[],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["用户要求的比较内容"]}),preparationContext);
       }
+      if(w.cloudOnly){w.prepared.frame.intent="session_control";w.prepared.frame.ordered_targets=[];w.prepared.frame.queries=[];w.prepared.frame.comparison_dimensions=[];}
       w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);
       d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
     }
