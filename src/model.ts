@@ -45,7 +45,7 @@ export function mockModels(
         const hasSearch =
           current.includes('"papers"') || current.includes('\\\"papers\\\"');
         const hasChunks =
-          current.includes('"chunks"') || current.includes('\\\"chunks\\\"');
+          Boolean(frame?.evidence?.length) || current.includes('"chunks"') || current.includes('\\\"chunks\\\"');
         if (research && !hasChunks) {
           const name = hasSearch ? "retrieve_chunks" : "search_papers";
           const call: ToolCall = {

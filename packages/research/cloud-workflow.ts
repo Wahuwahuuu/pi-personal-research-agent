@@ -17,6 +17,7 @@ export interface ResearchWorkflow {
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
   tracker?:ReturnType<TurnExecutionTracker["snapshot"]>;
   comparison?:ComparisonReport; comparisonRevision?:string; progress?:TaskProgress;
+  visibleSourceIds?:string[];
   warnings:string[];
 }
 export interface WorkflowContext {
@@ -53,19 +54,43 @@ function progress(w:ResearchWorkflow,c:WorkflowContext,execution?:TurnExecution,
   p.update(execution?.goal_updates,new Map(c.evidence.map(e=>[e.chunk_id,e])),!nonFactual(w));
   w.progress=execution?p.finish(execution,answer,[...answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1])):p.snapshot();
 }
+const byteSize=(v:unknown)=>new TextEncoder().encode(JSON.stringify(v)).length;
+function boundedItems<T>(items:readonly T[],maximum:number):T[]{const result:T[]=[];let used=2;for(const item of items){const n=byteSize(item)+1;if(used+n<=maximum){result.push(item);used+=n;}}return result;}
 export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations?:unknown):string{
   if(w.phase==="translation")return JSON.stringify({stage:"translation",instruction:TRANSLATION_INSTRUCTION,excerpts:w.translation!.sources});
   const d=memory(c);
   d.revalidate(c.catalog.indexVersion,new Map(c.catalog.evidence.map(e=>[e.chunk_id,e])),new Map(c.evidence.map(e=>[e.chunk_id,e])));
   c.conversation.domain=d.state;
-  const shared={request:c.input,conversation:JSON.parse(d.summary(c.conversation.history,true)),memory:c.memories.slice(-20),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
-  if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION,...shared,catalog:c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})).slice(0,200)});
-  if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:c.evidence.map(e=>e.chunk_id)});
+  const summary=JSON.parse(d.summary(c.conversation.history,true));
+  const domain=summary.domain_memory;
+  domain.conclusion_candidates=[]; // Prior claims are never reintroduced as source evidence.
+  domain.reading_notes=(domain.reading_notes??[]).slice(-2).map((n:any)=>({...n,answer_excerpt:Array.from(n.answer_excerpt??"").slice(0,400).join(""),excerpt_truncated:true}));
+  domain.user_constraints=boundedItems(domain.user_constraints.slice(-12),2500);
+  domain.unresolved_questions=boundedItems(domain.unresolved_questions.slice(-6),1500);
+  domain.pending_inferences=[];
+  summary.conversation_only=boundedItems(summary.conversation_only.slice(-4),2500);
+  const shared={request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
+  if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION,...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
+  if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);
-  if(w.phase==="comparison")return JSON.stringify({stage:"comparison",instruction:COMPARISON_CHECK_INSTRUCTION,...shared,workspace:m?.report(),evidence:m?.window(18000)});
+  if(w.phase==="comparison"){
+    const evidence=boundedItems(m?.window(18000)??[],18000);w.visibleSourceIds=evidence.map(e=>e.chunk_id);
+    return JSON.stringify({stage:"comparison",instruction:COMPARISON_CHECK_INSTRUCTION,...shared,workspace:m?.report(),evidence});
+  }
   progress(w,c);
-  return JSON.stringify({stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning.",citation_feedback:w.warnings,progress:w.progress,evidence:c.evidence.slice(-20),execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations,
-    ...(c.calls>=5?{final_instruction:"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})});
+  // Results remain complete in durable storage. The model sees each whole source at most once.
+  const delivered=(observations as any)?.observations??[];
+  const projected=delivered.map((o:any)=>({...o,result:{...o.result,...(o.result?.chunks?{chunks:undefined,chunk_ids:o.result.chunks.map((e:any)=>e.chunk_id)}:{})}}));
+  const payload:any={stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning.",citation_feedback:w.warnings,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
+    ...(c.calls>=5?{final_instruction:"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
+  const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
+  const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
+  const ordered=m?m.window(30000):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
+  const evidence=boundedItems(ordered,Math.max(0,Math.min(22000,40000-byteSize(payload))));
+  w.visibleSourceIds=evidence.map(e=>e.chunk_id);
+  payload.evidence=evidence;
+  payload.evidence_window={archived:c.evidence.length,visible:evidence.length,omitted:c.evidence.length-evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
+  return JSON.stringify(payload);
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
 export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
@@ -84,7 +109,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }
   if(w.phase==="comparison"){
     const m=comparison(w,c)!;
-    try{m.applyCheck(JSON.parse(output),new Map(c.evidence.map(e=>[e.chunk_id,e])));}
+    try{m.applyCheck(JSON.parse(output),new Map(c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id)).map(e=>[e.chunk_id,e])));}
     catch{m.checkFailed();w.warnings.push("COMPARISON_CHECK_INCOMPLETE");}
     w.comparison=m.report();w.comparisonRevision=c.evidence.map(e=>e.chunk_id).sort().join(",");
     w.phase="agent";return {};
@@ -102,11 +127,13 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     const m=comparison(w,c),revision=c.evidence.map(e=>e.chunk_id).sort().join(",");
     if(m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}
   }
-  const answer=prepareWorkbenchAnswer(output,{evidence:new Map(c.evidence.map(e=>[e.chunk_id,e])),allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,expectedKind:nonFactual(w)?w.prepared?.frame.intent==="session_control"?"session_control":"catalog":"paper_fact",execution:declared});
+  const visible=c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id));
+  const answer=prepareWorkbenchAnswer(output,{evidence:new Map(visible.map(e=>[e.chunk_id,e])),allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,expectedKind:nonFactual(w)?w.prepared?.frame.intent==="session_control"?"session_control":"catalog":"paper_fact",execution:declared});
   if(!answer)throw Error("EMPTY_RESEARCH_ANSWER");
   const tracker=new TurnExecutionTracker(w.tracker);
   const retrievals=c.operations.filter(o=>o.tool==="retrieve_chunks");
   const decision=tracker.decide(declared,{progress_key:c.evidence.map(e=>e.chunk_id).sort().join(","),source_count:c.evidence.length,retrieval_attempts:retrievals.length,successful_retrievals:retrievals.filter(o=>o.state==="done").length,running_tools:0,can_continue:c.calls<6,requires_sources:!nonFactual(w),cited_source_count:answer.visibleCitationCount,citation_issues:answer.citationIssues});
+  if(!nonFactual(w))decision.needs_sources=true;
   const m=comparison(w,c);
   if(decision.state==="complete"&&m&&(m.baselineMissing.length||w.comparison&&!m.complete)){decision.state=c.calls<6?"working":"partial";decision.remaining_needs=["比较范围仍有未确认的论文或维度"];}
   w.tracker=tracker.snapshot();w.execution=decision;

@@ -80,3 +80,16 @@ test("an immediately cited original block quote retains verified metrics without
  assert.ok(inspectCitationAttribution("> The accuracy reaches 99%.\n\n[cite:c]",evidence).issues.length);
  assert.ok(inspectCitationAttribution("> The accuracy reaches 80.34%.\n\nUnrelated paragraph\n\n[cite:c]",evidence).issues.length);
 });
+
+test("large retrieval keeps complete sources once in a bounded visible window and reports archived omissions",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));
+ c.evidence=Array.from({length:20},(_,i)=>({paper_id:"fixture-paper",chunk_id:"long"+i,paragraph_id:"p"+i,section:"Methods",text:"A method detail. ".repeat(140),start:0,end:2380,index_version:"fixture-v1",citation:"[cite:long"+i+"]",truncated:false}));
+ const observations={observations:[{operationId:"op",tool:"retrieve_chunks",result:{index_version:"fixture-v1",chunks:c.evidence}}]};
+ const prompt=workflowPrompt(w,c,observations),body=JSON.parse(prompt);
+ assert.ok(Buffer.byteLength(prompt)<42000);assert.ok(body.evidence.length>0&&body.evidence.length<20);
+ assert.equal(body.observations[0].result.chunks,undefined);
+ assert.equal(body.observations[0].result.chunk_ids.length,20);
+ assert.equal(body.evidence[0].text,c.evidence[0].text);
+ assert.equal(body.evidence_window.omitted,20-body.evidence.length);
+ assert.equal(c.evidence.length,20);
+});
