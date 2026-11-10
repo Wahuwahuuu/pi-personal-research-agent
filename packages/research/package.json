@@ -1,0 +1,36 @@
+{
+  "name": "@personal-research/research",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.ts"
+  },
+  "engines": {
+    "node": ">=24.11.1"
+  },
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "node --test --test-isolation=none tests/agent/*.test.ts tests/api.test.ts"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "typebox": "1.3.27"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@earendil-works/chord": "1.0.4",
+    "@earendil-works/pi-agent-core": "1.0.4",
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@earendil-works/pi-codemode": "1.0.4",
+    "@earendil-works/pi-mcp": "1.0.4",
+    "@earendil-works/pi-tui": "1.0.4",
+    "@earendil-works/pi-telemetry": "1.0.4"
+  }
+}
