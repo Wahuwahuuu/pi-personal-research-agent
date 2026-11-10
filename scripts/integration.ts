@@ -178,6 +178,13 @@ try {
   checks.push(
     "real DO registered research tools; preparation and three model runs reused one session across two validated observations",
   );
+  const translation = await api("tasks/"+research.id+"/translate","POST",{sourceIds:["fixture-chunk"],requestId:"translation-1"});
+  await until(async()=>{const t=(await api("state")).tasks.find((t:any)=>t.id===translation.id);assert.notEqual(t.status,"failed",t.error);return t.status==="completed";},45000);
+  const translatedState=await api("state");
+  assert.equal(translatedState.tasks.find((t:any)=>t.id===translation.id).calls,1);
+  assert.equal(translatedState.tasks.find((t:any)=>t.id===research.id).calls,5);
+  assert.equal((await api("tasks/"+research.id+"/translate","POST",{sourceIds:["fixture-chunk"],requestId:"translation-cached"})).id,translation.id);
+  checks.push("Pi source translation reuses source identity and cache, charging the original task budget");
   const duplicate = await api("tasks", "POST", {
     input: "offline research",
     kind: "research",

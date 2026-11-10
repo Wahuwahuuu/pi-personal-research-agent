@@ -11,6 +11,7 @@ export interface LiveConfig {
   apiKey: string;
   baseUrl: string;
   modelId: string;
+  maxOutput?:()=>number;
 }
 /** Only visible text crosses this adapter into Pi persistence. Provider-native reasoning is never forwarded. */
 export function liveModels(
@@ -81,7 +82,7 @@ export function liveModels(
             model: config.modelId,
             messages,
             ...(declarations.length ? {tools:declarations,tool_choice:"auto"} : {}),
-            max_tokens: 2048,
+            max_tokens: config.maxOutput?.() ?? 2048,
             stream: false,
             ...(config.modelId.startsWith("qwen")
               ? { enable_thinking: false, preserve_thinking: false }
@@ -143,8 +144,8 @@ export function liveModels(
           /<\/?(?:think|thinking|analysis)>/i.test(JSON.stringify(calls))
         )
           throw new Error("UNSAFE_OR_UNSUPPORTED_RESPONSE");
-        message.usage.input = usage?.input ?? 24000;
-        message.usage.output = usage?.output ?? 2048;
+        message.usage.input = usage?.input ?? 52000;
+        message.usage.output = usage?.output ?? config.maxOutput?.() ?? 2048;
         message.usage.totalTokens = message.usage.input + message.usage.output;
         events.push({ type: "start", partial: message });
         message.content = [{ type: "text", text: "" }];
@@ -202,7 +203,7 @@ export function liveModels(
           input: ["text"],
           reasoning: false,
           contextWindow: 65536,
-          maxTokens: 2048,
+          maxTokens: 8192,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         },
       ],

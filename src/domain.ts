@@ -24,6 +24,8 @@ export interface Task {
   engine?: "durable";
   conversationId?: string;
   workflow?: ResearchWorkflow;
+  budgetTaskId?: string;
+  translationKey?: string;
   researchIndex?: string;
   researchEvidence?: Chunk[];
   researchWaiting?: boolean;

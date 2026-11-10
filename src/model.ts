@@ -92,6 +92,7 @@ export function mockModels(
             },
             answer: content,
           });
+        if(frame?.stage==="translation")content=JSON.stringify({translations:frame.excerpts.map((s:any)=>({chunk_id:s.chunk_id,text:"[模拟翻译] "+s.text}))});
         if(frame?.stage==="prepare")content=JSON.stringify({intent:"answer",targets:[],rewrite:frame.request,queries:[],constraints:[]});
         if(frame?.stage==="completion")content=JSON.stringify({state:"complete",remaining_needs:[],needs_sources:true});
         if(frame?.stage==="comparison")content=JSON.stringify({cells:frame.workspace.cells.map((c:any)=>({...c,status:"missing",summary:"Mock has not semantically verified the evidence",citations:[]}))});

@@ -26,4 +26,3 @@ export class MemoryOwners {
   }
   async configure(credential:string,enabled:boolean){const owner=await this.authenticate(credential),path=await this.path(owner.id),data=JSON.parse(await readFile(path,'utf8')),temp=path+'.'+randomUUID()+'.partial';await writeFile(temp,JSON.stringify({...data,enabled})+'\n',{flag:'wx'});await rename(temp,path);return {...owner,enabled};}
 }
-

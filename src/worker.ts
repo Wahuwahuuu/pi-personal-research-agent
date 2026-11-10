@@ -114,16 +114,22 @@ export class PersonalAgent extends DurableObject<Env> {
     );
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
+        let reservedOutput=2048;
+        const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
         const before = () => {
           const t = this.state.tasks.find(
             (t) => t.status === "running" && t.modelOperation,
           );
           if (!t) throw new Error("NO_ACTIVE_TASK");
-          reserve(this.state, t, 52000, 2048);
+          const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
+          reservedOutput=outputLimit();
+          reserve(this.state, budget, 52000, reservedOutput);
+          if(budget!==t)t.calls++;
+
           this.save();
         };
         const after = (usage?: { input: number; output: number }) => {
-          settle(this.state, 52000, 2048, usage);
+          settle(this.state, 52000, reservedOutput, usage);
           this.save();
         };
         const models =
@@ -135,6 +141,7 @@ export class PersonalAgent extends DurableObject<Env> {
                   apiKey: env.MODEL_API_KEY ?? "",
                   baseUrl: env.MODEL_BASE_URL ?? "",
                   modelId: env.MODEL_ID ?? "",
+                  maxOutput:outputLimit,
                 },
                 before,
                 after,
@@ -364,6 +371,26 @@ export class PersonalAgent extends DurableObject<Env> {
       await this.maintenance.arm();
       this.publish();
       return json(t, 202);
+    }
+    const translateMatch=path.match(/^\/api\/tasks\/([^/]+)\/translate$/);
+    if(translateMatch&&r.method==="POST"){
+      const sourceTask=getTask(this.state,translateMatch[1]),b=await this.body(r);
+      if(sourceTask.engine!=="durable"||sourceTask.runOpen||!["completed","waiting_user"].includes(sourceTask.status)||!sourceTask.researchIndex)throw new Problem("SOURCE_TASK_NOT_READY",409);
+      const ids=b.sourceIds;
+      if(!Array.isArray(ids)||ids.length<1||ids.length>2||new Set(ids).size!==ids.length)throw new Problem("INVALID_SOURCES");
+      const sources=ids.map(id=>sourceTask.researchEvidence?.find(e=>e.chunk_id===id));
+      if(sources.some(e=>!e))throw new Problem("UNKNOWN_SOURCE");
+      if(sources.reduce((n,e)=>n+Array.from(e!.text).length,0)>6000)throw new Problem("TRANSLATION_BATCH_TOO_LARGE",413);
+      const key=await digest(JSON.stringify({model:this.env.MODEL_ID??MODEL.id,recipe:"zh-source-structures-v2",sources:sources.map(e=>({chunk_id:e!.chunk_id,text:e!.text}))}));
+      const cached=this.state.tasks.find(t=>t.translationKey===key&&t.status==="completed");
+      if(cached)return json(cached);
+      if(sourceTask.calls>=6||sourceTask.activeMs>=180000)throw new Problem("MODEL_BUDGET",429);
+      const t=submit(this.state,"翻译所选原文",b.requestId,"research");
+      if(t.budgetTaskId&&(t.budgetTaskId!==sourceTask.id||t.translationKey!==key))throw new Problem("REQUEST_CONFLICT",409);
+      if(!t.budgetTaskId&&t.calls)throw new Problem("REQUEST_CONFLICT",409);
+      t.engine="durable";t.conversationId=sourceTask.conversationId;t.budgetTaskId=sourceTask.id;t.researchIndex=sourceTask.researchIndex;t.translationKey=key;
+      t.workflow??={phase:"translation",warnings:[],translation:{sources:sources.map(e=>({chunk_id:e!.chunk_id,text:e!.text}))}};
+      this.save();await this.maintenance.arm();return json(t,202);
     }
     const match = path.match(/^\/api\/tasks\/([^/]+)\/(cancel|continue)$/);
     if (match && r.method === "POST") {
@@ -792,10 +819,9 @@ export class PersonalAgent extends DurableObject<Env> {
         session: t.sessionId,
         signal: AbortSignal.timeout(1000),
       });
-      t.activeMs += Math.max(
-        0,
-        (t.modelStoppedAt ?? Date.now()) - (t.modelStarted ?? Date.now()),
-      );
+      const elapsed=Math.max(0,(t.modelStoppedAt??Date.now())-(t.modelStarted??Date.now()));
+      t.activeMs += elapsed;
+      if(t.budgetTaskId)getTask(this.state,t.budgetTaskId).activeMs+=elapsed;
       t.runOpen = false;
       t.modelPrompt = undefined;
       if (terminal(t)) continue;
@@ -813,7 +839,7 @@ export class PersonalAgent extends DurableObject<Env> {
             if (!outcome.status) { t.status="queued"; this.save(); continue; }
             t.status=outcome.status; t.answer=outcome.answer;
             const conversation=this.state.conversations!.find(c=>c.id===t.conversationId)!;
-            await this.memoryService().remember(conversation.id,t.id,t.input,conversation.domain!,t.status);
+            if(!t.workflow.translation)await this.memoryService().remember(conversation.id,t.id,t.input,conversation.domain!,t.status);
 
           } else {
             t.status = validateResearchAnswer(t, result.text ?? "");
@@ -901,7 +927,8 @@ export class PersonalAgent extends DurableObject<Env> {
       t.status = "waiting_device";
       return;
     }
-    if (t.calls >= 6 || t.activeMs >= 180000) {
+    const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
+    if (budget.calls >= 6 || budget.activeMs >= 180000) {
       failResearch(this.state, t, "MODEL_BUDGET");
       return;
     }

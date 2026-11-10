@@ -1,3 +1,4 @@
+import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "./translation.ts";
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
 import {parseQuestionPreparation,planPreparedRetrieval,QUESTION_PREPARATION_INSTRUCTION,type PreparedQuestion} from "./internal/agent/question-preparation.ts";
 import {TurnExecutionTracker,executionFromOutput,parseTurnExecution,COMPLETION_CHECK_INSTRUCTION,TURN_EXECUTION_INSTRUCTION,type TurnExecution} from "./internal/agent/turn-execution.ts";
@@ -11,7 +12,8 @@ export interface ResearchConversation {
   sessionId?:string; domain?:DomainState; history:DialogueRecord[];
 }
 export interface ResearchWorkflow {
-  phase:"prepare"|"agent"|"completion"|"comparison"|"finished";
+  phase:"prepare"|"agent"|"completion"|"comparison"|"translation"|"finished";
+  translation?:{sources:TranslationSource[];items?:TranslationSource[]};
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
   tracker?:ReturnType<TurnExecutionTracker["snapshot"]>;
   comparison?:ComparisonReport; comparisonRevision?:string; progress?:TaskProgress;
@@ -52,6 +54,7 @@ function progress(w:ResearchWorkflow,c:WorkflowContext,execution?:TurnExecution,
   w.progress=execution?p.finish(execution,answer,[...answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1])):p.snapshot();
 }
 export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations?:unknown):string{
+  if(w.phase==="translation")return JSON.stringify({stage:"translation",instruction:TRANSLATION_INSTRUCTION,excerpts:w.translation!.sources});
   const d=memory(c);
   d.revalidate(c.catalog.indexVersion,new Map(c.catalog.evidence.map(e=>[e.chunk_id,e])),new Map(c.evidence.map(e=>[e.chunk_id,e])));
   c.conversation.domain=d.state;
@@ -66,6 +69,10 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
 export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
+  if(w.phase==="translation"){
+    w.translation!.items=parseTranslations(output,w.translation!.sources);
+    w.phase="finished";return {status:"completed",answer:w.translation!.items.map(i=>i.text).join("\n\n")};
+  }
   if(w.phase==="prepare"){
     const d=memory(c),allowed=new Set(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>p.paper_id));
     try{
