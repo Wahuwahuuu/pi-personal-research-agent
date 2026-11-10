@@ -134,3 +134,13 @@ test("double brackets normalize exact known citation identities only",async()=>{
  const invalid=prepareWorkbenchAnswer("Claim [[cite:invented]]",{evidence:new Map([["c",chunk]]),allowAnswer:true})!;
  assert.equal(invalid.visibleCitationCount,0);
 });
+
+test("corrected or deleted memory provenance cannot re-enter fresh model context through domain history",()=>{
+ const c=setup("以后用中文回答"),w=newWorkflow();
+ advanceWorkflow(w,c,JSON.stringify({intent:"session_update",targets:[],rewrite:c.input,queries:[],constraints:[{key:"language",value:"OLD_SENTINEL",source_quote:"中文"}]}));
+ advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:false},answer:"OLD_SENTINEL"}));
+ c.conversation.history[0].user_text="OLD_SENTINEL";
+ const next={...c,id:"turn2",input:"你好",invalidatedMemoryTurns:["turn1"]};
+ const prompt=workflowPrompt(newWorkflow(),next);
+ assert.ok(!prompt.includes("OLD_SENTINEL"));assert.ok(c.conversation.history.length===1);
+});

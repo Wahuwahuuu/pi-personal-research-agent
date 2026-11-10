@@ -22,13 +22,22 @@ export interface ResearchWorkflow {
   warnings:string[];
 }
 export interface WorkflowContext {
-  id:string; input:string; calls:number; evidence:readonly Chunk[];
+  id:string; input:string; calls:number; evidence:readonly Chunk[]; invalidatedMemoryTurns?:readonly string[];
   catalog:{papers:readonly Paper[];indexVersion:string;evidence:readonly EvidenceIdentity[]};
   conversation:ResearchConversation; memories:readonly {content:string}[];
   operations:readonly {tool:string;params:Record<string,unknown>;state:string}[];
 }
 export const newWorkflow=():ResearchWorkflow=>({phase:"prepare",warnings:[]});
-const memory=(c:WorkflowContext)=>new DomainMemory(c.catalog.indexVersion,c.conversation.domain);
+const history=(c:WorkflowContext)=>c.conversation.history.filter(h=>!c.invalidatedMemoryTurns?.includes(h.turn_id));
+const memory=(c:WorkflowContext)=>{
+ const d=new DomainMemory(c.catalog.indexVersion,c.conversation.domain),invalid=new Set(c.invalidatedMemoryTurns??[]);
+ d.state.user_constraints=d.state.user_constraints.filter(e=>!invalid.has(e.source_turn));
+ d.state.reading_notes=d.state.reading_notes?.filter(e=>!invalid.has(e.source_turn));
+ d.state.conclusions=d.state.conclusions.filter(e=>!invalid.has(e.source_turn));
+ d.state.pending_inferences=d.state.pending_inferences.filter(e=>!invalid.has(e.source_turn));
+ d.state.unresolved_questions=d.state.unresolved_questions.filter(e=>!invalid.has(e.source_turn));
+ return d;
+};
 const targets=(w:ResearchWorkflow)=>w.prepared?.frame.ordered_targets??[];
 const nonFactual=(w:ResearchWorkflow)=>["session_control","paper_discovery"].includes(w.prepared?.frame.intent??"");
 function comparison(w:ResearchWorkflow,c:WorkflowContext){
@@ -62,7 +71,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const d=memory(c);
   d.revalidate(c.catalog.indexVersion,new Map(c.catalog.evidence.map(e=>[e.chunk_id,e])),new Map(c.evidence.map(e=>[e.chunk_id,e])));
   c.conversation.domain=d.state;
-  const summary=JSON.parse(d.summary(c.conversation.history,true));
+  const summary=JSON.parse(d.summary(history(c),true));
   const domain=summary.domain_memory;
   domain.conclusion_candidates=[]; // Prior claims are never reintroduced as source evidence.
   domain.reading_notes=(domain.reading_notes??[]).slice(-2).map((n:any)=>({...n,answer_excerpt:Array.from(n.answer_excerpt??"").slice(0,400).join(""),excerpt_truncated:true}));
@@ -101,7 +110,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }
   if(w.phase==="prepare"){
     const d=memory(c),allowed=new Set(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>p.paper_id));
-    const preparationContext={original:c.input,allowed,publicPapers:c.catalog.papers,frameId:c.id,history:c.conversation.history.slice(-8),activeConstraints:d.activeConstraints(),priorObjects:{targets:d.state.comparison_order.length?d.state.comparison_order:d.state.current_paper?[d.state.current_paper.paper_id]:[],comparison_dimensions:d.state.comparison_dimensions},personalMemory:true,preferResolvedPaper:true};
+    const preparationContext={original:c.input,allowed,publicPapers:c.catalog.papers,frameId:c.id,history:history(c).slice(-8),activeConstraints:d.activeConstraints(),priorObjects:{targets:d.state.comparison_order.length?d.state.comparison_order:d.state.current_paper?[d.state.current_paper.paper_id]:[],comparison_dimensions:d.state.comparison_dimensions},personalMemory:true,preferResolvedPaper:true};
     try{
       w.prepared=parseQuestionPreparation(output,preparationContext);
       w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);

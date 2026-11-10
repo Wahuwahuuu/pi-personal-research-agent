@@ -436,7 +436,7 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (path === "/api/memories" && r.method === "POST") {
       const b = await this.body(r);
-      const m = await this.memoryService().save({id:typeof b.id==="string"?b.id:undefined,kind:"note",content:text(b.content,1200),edited:true});
+      const m = await this.memoryService().save({id:typeof b.id==="string"?b.id:undefined,kind:this.state.cloudMemory!.entries.find(e=>e.id===b.id)?.kind??"note",content:text(b.content,1200),edited:true});
       this.save();
       this.publish();
       return json(m);
@@ -780,7 +780,7 @@ export class PersonalAgent extends DurableObject<Env> {
   workflowContext(t: import("./domain.ts").Task): WorkflowContext {
     const conversation=this.state.conversations?.find(c=>c.id===t.conversationId);
     if(!conversation) throw new Problem("UNKNOWN_CONVERSATION");
-    return {id:t.id,input:t.input,calls:t.calls,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
+    return {id:t.id,input:t.input,calls:t.calls,invalidatedMemoryTurns:this.state.cloudMemory?.invalidatedTurns,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
   }
   async tickResearch() {
     // Settle the Pi run even if a fast device result already changed the business task state.

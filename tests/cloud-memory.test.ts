@@ -19,6 +19,7 @@ test("manual correction survives automatic extraction; deleted slots cannot resu
  await m.save({id:entry.id,kind:"preference",content:"回答语言：英文",edited:true});
  await m.remember("c","t2","以后用中文回答",d.state,"completed");
  assert.equal(state.entries[0].content,"回答语言：英文");
+ assert.deepEqual(state.invalidatedTurns,["t1"]);
  await m.remove(entry.id);
  await cloudMemory(JSON.parse(JSON.stringify(state)),papers,"owner").remember("c","t1","以后用中文回答",d.state,"completed");
  assert.equal(state.entries.length,0);
