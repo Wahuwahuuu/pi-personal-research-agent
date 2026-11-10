@@ -34,7 +34,7 @@ function metadata(value: unknown): Record<string, unknown> {
   return data;
 }
 
-function searchResult(value: unknown, ctx: ToolContext, limit: number): SearchResult {
+export function searchResult(value: unknown, ctx: ToolContext, limit: number): SearchResult {
   const data = metadata(value);
   if (!Array.isArray(data.papers) || data.papers.length > 10) throw new RuntimeFailure("INVALID_RESPONSE", "Invalid paper result list");
   const papers = data.papers.map((value) => {
@@ -52,7 +52,7 @@ function searchResult(value: unknown, ctx: ToolContext, limit: number): SearchRe
     backend: data.backend as string, index_version: data.index_version as string };
 }
 
-function retrieveResult(value: unknown, requested: readonly string[], topK: number, ctx: ToolContext, originalQuery: string): RetrieveResult {
+export function retrieveResult(value: unknown, requested: readonly string[], topK: number, ctx: ToolContext, originalQuery: string): RetrieveResult {
   const data = metadata(value);
   if (!Array.isArray(data.chunks) || data.chunks.length > topK) throw new RuntimeFailure("INVALID_RESPONSE", "Invalid chunk result list");
   const chunks = data.chunks.map((value): Chunk => {
@@ -197,7 +197,7 @@ export function createPaperTools(worker: WorkerTransport, ctx: ToolContext): Too
   return [search, retrieve];
 }
 
-const searchSchema = Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }, { additionalProperties: false });
+export const searchSchema = Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })) }, { additionalProperties: false });
 const retrieveSchema = Type.Object({ query: Type.String({ minLength: 1, maxLength: 1000 }), paper_ids: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, maxItems: 4, uniqueItems: true }), top_k: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })) }, { additionalProperties: false });
 const abstractRetrieveSchema=Type.Object({query:Type.Optional(Type.String({minLength:1,maxLength:1000})),paper_ids:Type.Array(Type.String({minLength:1}),{minItems:1,maxItems:4,uniqueItems:true}),top_k:Type.Optional(Type.Integer({minimum:1,maximum:5})),section:Type.Optional(Type.Literal('abstract'))},{additionalProperties:false});
-const productRetrieveSchema=Type.Object({query:Type.Optional(Type.String({minLength:1,maxLength:1000})),paper_ids:Type.Array(Type.String({minLength:1}),{minItems:1,maxItems:4,uniqueItems:true}),top_k:Type.Optional(Type.Integer({minimum:1,maximum:20})),section:Type.Optional(Type.Literal('abstract')),content_type:Type.Optional(Type.Union([Type.Literal('text'),Type.Literal('table'),Type.Literal('equation'),Type.Literal('all')])),offset:Type.Optional(Type.Integer({minimum:0,maximum:512}))},{additionalProperties:false});
+export const productRetrieveSchema=Type.Object({query:Type.Optional(Type.String({minLength:1,maxLength:1000})),paper_ids:Type.Array(Type.String({minLength:1}),{minItems:1,maxItems:4,uniqueItems:true}),top_k:Type.Optional(Type.Integer({minimum:1,maximum:20})),section:Type.Optional(Type.Literal('abstract')),content_type:Type.Optional(Type.Union([Type.Literal('text'),Type.Literal('table'),Type.Literal('equation'),Type.Literal('all')])),offset:Type.Optional(Type.Integer({minimum:0,maximum:512}))},{additionalProperties:false});
