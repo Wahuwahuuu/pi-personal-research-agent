@@ -171,12 +171,12 @@ try {
     (t: any) => t.id === research.id,
   );
   assert.equal(researchDone.engine, "durable");
-  assert.equal(researchDone.calls, 3);
+  assert.equal(researchDone.calls, 4);
   assert.equal(researchDone.tools, 2);
-  assert.equal(researchDone.resumeSeq, 3);
+  assert.equal(researchDone.resumeSeq, 4);
   assert.match(researchDone.answer, /cite:fixture-chunk/);
   checks.push(
-    "real DO registered research tools; three model runs reused one session across two validated observations",
+    "real DO registered research tools; preparation and three model runs reused one session across two validated observations",
   );
   const duplicate = await api("tasks", "POST", {
     input: "offline research",
@@ -185,6 +185,13 @@ try {
   });
   assert.equal(duplicate.id, research.id);
   checks.push("HTTP duplicate submission deduplicated");
+  const follow = await api("tasks","POST",{input:"Explain the same method again",kind:"research",requestId:"followup-1",conversationId:researchDone.conversationId});
+  await until(async()=>{const t=(await api("state")).tasks.find((t:any)=>t.id===follow.id);assert.notEqual(t.status,"failed",t.error);return t.status==="completed";},45000);
+  const followDone=(await api("state")).tasks.find((t:any)=>t.id===follow.id);
+  assert.equal(followDone.sessionId,researchDone.sessionId);
+  const conversations=await api("conversations");
+  assert.equal(conversations.find((c:any)=>c.id===researchDone.conversationId).history.length,2);
+  checks.push("same Pi conversation resumed a new budgeted turn with durable domain history");
   const m = await api("memories", "POST", { content: "中文回答" });
   await api("memories", "POST", { id: m.id, content: "提供原文引用" });
   await api("memories/" + m.id, "DELETE");
@@ -275,7 +282,7 @@ try {
   const suspended = (await api("state")).tasks.find(
     (t: any) => t.id === inFlight.id,
   );
-  assert.equal(suspended.calls, 1);
+  assert.equal(suspended.calls, 2);
   await stopChild(server);
   controlled!.terminate();
   server = child(serverArgs);
@@ -295,7 +302,7 @@ try {
     (t: any) => t.id === inFlight.id,
   );
   assert.equal(restoredWaiting.sessionId, suspended.sessionId);
-  assert.equal(restoredWaiting.calls, 1);
+  assert.equal(restoredWaiting.calls, 2);
   checks.push(
     "workerd restart DURING pending tool reused operation/session without another model call",
   );

@@ -113,18 +113,22 @@ export function createResearchPorts(
 ): ResearchPorts {
   const task = (id: string) => {
     const t = getState().tasks.find(
-      (t) => t.sessionId === id && t.engine === "durable",
+      (t) => t.sessionId === id && t.engine === "durable" && !terminal(t) && (t.runOpen || t.status === "running"),
     );
-    if (!t) throw new Problem("UNKNOWN_RESEARCH_SESSION");
+    if (!t) {
+      if(getState().tasks.some(t=>t.sessionId===id&&t.engine==="durable"&&terminal(t)))throw new Problem("TASK_CLOSED");
+      throw new Problem("UNKNOWN_RESEARCH_SESSION");
+    }
     return t;
   };
   return {
+    managed(id) { return getState().tasks.some(t=>t.sessionId===id&&t.runOpen&&!!t.workflow); },
     catalog(id) {
       const c = catalog(task(id).researchIndex!);
       return {
         papers: c.papers,
         indexVersion: c.indexVersion,
-        scope: [],
+        scope: getState().conversations?.find(c => c.id === task(id).conversationId)?.scope ?? [],
         evidence: new Map(c.evidence.map((e) => [e.chunk_id, e])),
         sources: c.sources,
       };
@@ -168,7 +172,7 @@ export function createResearchPorts(
     },
     async waiting(id) {
       return (
-        getState().tasks.find((t) => t.sessionId === id)?.researchWaiting ===
+        getState().tasks.find((t) => t.sessionId === id && t.runOpen)?.researchWaiting ===
         true
       );
     },
@@ -178,7 +182,7 @@ export function createResearchPorts(
     },
     async evidence(id) {
       return (
-        getState().tasks.find((t) => t.sessionId === id)?.researchEvidence ?? []
+        getState().tasks.find((t) => t.sessionId === id && t.runOpen)?.researchEvidence ?? []
       );
     },
   };

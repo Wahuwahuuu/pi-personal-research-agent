@@ -56,7 +56,7 @@ export function liveModels(
         const tools = getCurrentTools(context.messages);
         const messages = context.messages.map((m) => {
           const content = typeof m.content === "string" ? m.content :
-            m.content.filter(c => c.type === "text").map(c => c.text).join("\\n");
+            m.content.filter(c => c.type === "text").map(c => c.text).join("\n");
           if (m.role === "toolResult") return {role:"tool",tool_call_id:m.toolCallId,content};
           if (m.role === "assistant") {
             const calls=m.content.filter(c=>c.type==="toolCall").map(c=>({
@@ -67,7 +67,7 @@ export function liveModels(
           return {role:m.role,content};
         });
         const declarations=tools.map(t=>({type:"function",function:{name:t.name,description:t.description,parameters:t.parameters}}));
-        if (new TextEncoder().encode(JSON.stringify({messages,tools:declarations})).length > 20000)
+        if (new TextEncoder().encode(JSON.stringify({messages,tools:declarations})).length > 48000)
           throw new Error("CONTEXT_LIMIT");
         before();
         admitted = true;
@@ -201,7 +201,7 @@ export function liveModels(
           baseUrl: config.baseUrl,
           input: ["text"],
           reasoning: false,
-          contextWindow: 32768,
+          contextWindow: 65536,
           maxTokens: 2048,
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
         },

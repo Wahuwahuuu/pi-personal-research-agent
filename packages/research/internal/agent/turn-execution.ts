@@ -32,6 +32,8 @@ export class TurnExecutionTracker {
   private lastProgress:string|undefined;
   private noProgress=0;
   decisions=0;
+  constructor(restored?:{lastProgress?:string;noProgress:number;decisions:number}){if(restored){this.lastProgress=restored.lastProgress;this.noProgress=restored.noProgress;this.decisions=restored.decisions;}}
+  snapshot(){return {lastProgress:this.lastProgress,noProgress:this.noProgress,decisions:this.decisions};}
   decide(declared:TurnExecution,facts:ExecutionFacts):TurnExecution{
     this.decisions++;
     let result={...declared,remaining_needs:[...declared.remaining_needs]};

@@ -1,3 +1,4 @@
+import {newWorkflow,workflowPrompt,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
@@ -113,11 +114,11 @@ export class PersonalAgent extends DurableObject<Env> {
             (t) => t.status === "running" && t.modelOperation,
           );
           if (!t) throw new Error("NO_ACTIVE_TASK");
-          reserve(this.state, t, 24000, 2048);
+          reserve(this.state, t, 52000, 2048);
           this.save();
         };
         const after = (usage?: { input: number; output: number }) => {
-          settle(this.state, 24000, 2048, usage);
+          settle(this.state, 52000, 2048, usage);
           this.save();
         };
         const models =
@@ -310,16 +311,44 @@ export class PersonalAgent extends DurableObject<Env> {
         ws.close(1008, "revoked");
       return json({ ok: true });
     }
+    if (path === "/api/conversations" && r.method === "GET") return json(this.state.conversations ?? []);
+    const conversationMatch=path.match(/^\/api\/conversations\/([^/]+)$/);
+    if(conversationMatch && r.method==="PATCH"){
+      const c=this.state.conversations?.find(c=>c.id===conversationMatch[1]);
+      if(!c)throw new Problem("NOT_FOUND",404);
+      if(this.state.tasks.some(t=>t.conversationId===c.id&&!terminal(t)&&t.status!=="waiting_user"))throw new Problem("CONVERSATION_BUSY",409);
+      const b=await this.body(r);
+      if(b.scope!==undefined){
+        if(!Array.isArray(b.scope)||b.scope.length>20||b.scope.some((id:unknown)=>typeof id!=="string"))throw new Problem("INVALID_SCOPE");
+        const version=this.device()?.deserializeAttachment()?.indexVersion ?? c.domain?.index_version;
+        if(!version||b.scope.some((id:string)=>!this.catalog(version).papers.some(p=>p.paper_id===id)))throw new Problem("INVALID_SCOPE");
+        c.scope=[...new Set(b.scope as string[])];
+      }
+      if(b.title!==undefined)c.title=text(b.title,100);
+      if(b.projectId!==undefined)c.projectId=text(b.projectId,128);
+      this.save();return json(c);
+    }
     if (path === "/api/tasks" && r.method === "POST") {
       const b = await this.body(r);
+      const prior = this.state.tasks.find(t => t.requestId === b.requestId);
+      const conversationId = typeof b.conversationId === "string" ? text(b.conversationId,128) : prior?.conversationId ?? crypto.randomUUID();
+      this.state.conversations ??= [];
+      let conversation = this.state.conversations.find(c => c.id === conversationId);
+      if (b.conversationId && !conversation) throw new Problem("UNKNOWN_CONVERSATION",404);
+      if (prior && prior.conversationId !== conversationId) throw new Problem("REQUEST_CONFLICT",409);
       const t = submit(this.state, b.input, b.requestId, b.kind);
+      if (!conversation) {
+        conversation = {id:conversationId,title:t.input.slice(0,100),projectId:typeof b.projectId==="string"?text(b.projectId,128):"default",scope:[],created:Date.now(),history:[]};
+        this.state.conversations.push(conversation);
+      }
+      t.conversationId = conversationId;
       if (
         t.kind === "research" &&
         !t.sessionId &&
         t.tools === 0 &&
         this.env.RESEARCH_ENGINE === "durable"
       )
-        t.engine = "durable";
+        { t.engine = "durable"; t.workflow ??= newWorkflow(); }
       this.save();
       await this.maintenance.arm();
       this.publish();
@@ -717,6 +746,11 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     return c;
   }
+  workflowContext(t: import("./domain.ts").Task): WorkflowContext {
+    const conversation=this.state.conversations?.find(c=>c.id===t.conversationId);
+    if(!conversation) throw new Problem("UNKNOWN_CONVERSATION");
+    return {id:t.id,input:t.input,calls:t.calls,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
+  }
   async tickResearch() {
     // Settle the Pi run even if a fast device result already changed the business task state.
     for (const t of this.state.tasks.filter(
@@ -770,8 +804,14 @@ export class PersonalAgent extends DurableObject<Env> {
           : "queued";
       } else if (result.status === "done") {
         try {
-          t.status = validateResearchAnswer(t, result.text ?? "");
-          t.answer = result.text;
+          if (t.workflow) {
+            const outcome = advanceWorkflow(t.workflow,this.workflowContext(t),result.text ?? "");
+            if (!outcome.status) { t.status="queued"; this.save(); continue; }
+            t.status=outcome.status; t.answer=outcome.answer;
+          } else {
+            t.status = validateResearchAnswer(t, result.text ?? "");
+            t.answer = result.text;
+          }
           t.error =
             t.status === "waiting_user" ? "COMPLETION_UNCONFIRMED" : undefined;
           notice(
@@ -831,7 +871,8 @@ export class PersonalAgent extends DurableObject<Env> {
       (t) =>
         t.engine === "durable" &&
         (t.status === "queued" ||
-          (t.status === "waiting_device" && !t.sessionId && dev)),
+          (t.status === "waiting_device" && !t.sessionId && dev)) &&
+        !this.state.tasks.some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
     );
     if (!t) return;
     if (!t.researchIndex) {
@@ -859,12 +900,15 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     try {
       if (!t.sessionId) {
-        t.sessionId = (await this.harness.sessions.create()).id;
+        const conversation=this.state.conversations?.find(c=>c.id===t.conversationId);
+        t.sessionId = conversation?.sessionId ?? (await this.harness.sessions.create()).id;
+        if(conversation) conversation.sessionId=t.sessionId;
         this.save();
       }
       if (terminal(t)) return;
       const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
-      const prompt = observations.ids.length
+      if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:workflowTools(t.workflow,t.calls).length ? null : []},BACKGROUND_CONTEXT);
+      const prompt = t.workflow ? workflowPrompt(t.workflow,this.workflowContext(t), observations.ids.length ? JSON.parse(observations.prompt) : undefined) : observations.ids.length
         ? observations.prompt
         : JSON.stringify({
             instruction:
@@ -872,7 +916,7 @@ export class PersonalAgent extends DurableObject<Env> {
             request: t.input,
             memory: this.state.memories,
           });
-      if (new TextEncoder().encode(prompt).length > 19000)
+      if (new TextEncoder().encode(prompt).length > 45000)
         throw new Problem("CONTEXT_LIMIT");
       t.researchWaiting = false;
       t.status = "running";
@@ -1055,7 +1099,7 @@ export class PersonalAgent extends DurableObject<Env> {
             memory: this.state.memories,
             evidence: t.evidence,
           });
-          if (new TextEncoder().encode(prompt).length > 19000) {
+          if (new TextEncoder().encode(prompt).length > 45000) {
             t.status = "failed";
             t.error = "CONTEXT_LIMIT";
           } else {

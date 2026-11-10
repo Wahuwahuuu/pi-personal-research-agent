@@ -1,0 +1,72 @@
+import {test} from "node:test";
+import assert from "node:assert/strict";
+import {nodeCatalog} from "../local/catalog.ts";
+import {newWorkflow,advanceWorkflow,workflowPrompt,workflowTools,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+const catalog=await nodeCatalog(undefined,true);
+function setup(input="Explain the method"):WorkflowContext{return {id:"turn1",input,calls:1,evidence:[],catalog,conversation:{id:"c",title:"research",projectId:"p",scope:[],created:0,history:[]},memories:[],operations:[]};}
+const prepared=(intent="answer",targets:string[]=[])=>JSON.stringify({intent,targets,rewrite:"Explain the method",queries:[],constraints:[]});
+test("preparation uses migrated NLU and survives checkpoints; tools remain model-selected",()=>{
+ const c=setup(),w=newWorkflow();
+ assert.equal(JSON.parse(workflowPrompt(w,c)).stage,"prepare");
+ assert.deepEqual(workflowTools(w,0),[]);
+ advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));
+ const restored=JSON.parse(JSON.stringify(w));
+ assert.equal(restored.prepared.frame.ordered_targets[0],"fixture-paper");
+ assert.equal(c.conversation.domain?.current_paper?.paper_id,"fixture-paper");
+ assert.deepEqual(workflowTools(restored,2),["search_papers","retrieve_chunks"]);
+ assert.deepEqual(workflowTools(restored,5),[]);
+ assert.equal(JSON.parse(workflowPrompt(restored,c)).frame.question_text,c.input);
+});
+test("valid conversational answers need no fabricated paper citation",()=>{
+ const c=setup("你好"),w=newWorkflow();advanceWorkflow(w,c,prepared("session_update"));
+ const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:false},answer:"你好，可以一起研究论文。"}));
+ assert.equal(out.status,"completed");assert.equal(c.conversation.history.length,1);
+ assert.equal(w.progress?.phase,"completed");
+});
+test("plain Markdown goes through original semantic completion check; budget exhaustion stays partial",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ c.calls=2;advanceWorkflow(w,c,"I will search for this.");
+ assert.equal(w.phase,"completion");
+ c.calls=3;advanceWorkflow(w,c,JSON.stringify({state:"working",remaining_needs:["Read evidence"],needs_sources:true}));
+ assert.equal(w.phase,"agent");assert.equal(w.tracker?.decisions,1);
+ const restored=JSON.parse(JSON.stringify(w));c.calls=6;
+ const outcome=advanceWorkflow(restored,c,"No original evidence was available.");
+ assert.equal(outcome.status,"waiting_user");assert.equal(restored.execution.state,"partial");
+ assert.equal(restored.progress.phase,"partial");
+});
+test("completion guard rejects invented citations and carries no-progress state across restart",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ const output=JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"Claim [cite:made-up]"});
+ c.calls=2;assert.equal(advanceWorkflow(w,c,output).status,undefined);
+ const restored=JSON.parse(JSON.stringify(w));c.calls=3;
+ const outcome=advanceWorkflow(restored,c,output);
+ assert.equal(outcome.status,"waiting_user");assert.equal(restored.execution.stop_reason,"no_execution_progress");
+ assert.ok(!outcome.answer?.includes("[cite:made-up]"));
+});
+test("same conversation carries corrected constraints and original dialogue into a new task",()=>{
+ const c=setup("以后请用中文回答"),w=newWorkflow();
+ advanceWorkflow(w,c,JSON.stringify({intent:"session_update",targets:[],rewrite:c.input,queries:[],constraints:[{key:"language",value:"Chinese",source_quote:"中文"}]}));
+ advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:false},answer:"好的。"}));
+ const next={...c,id:"turn2",input:"现在改成英文回答",calls:1},nw=newWorkflow();
+ const prompt=JSON.parse(workflowPrompt(nw,next));assert.ok(JSON.stringify(prompt).includes("Chinese"));
+ advanceWorkflow(nw,next,JSON.stringify({intent:"session_update",targets:[],rewrite:next.input,queries:[],constraints:[{key:"language",value:"English",source_quote:"英文"}]}));
+ const constraints=next.conversation.domain!.user_constraints;
+ assert.equal(constraints.filter(x=>!x.superseded_by).length,1);assert.equal(constraints.at(-1)?.value,"English");
+});
+
+test("comparison validates paper-by-dimension source coverage rather than counting returned chunks",()=>{
+ const c=setup("比较 Paper A 和 Paper B"),w=newWorkflow();
+ c.catalog={...catalog,papers:[{paper_id:"a",title:"Paper A",abstract:"a"},{paper_id:"b",title:"Paper B",abstract:"b"}]};
+ advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["方法"]}));
+ c.evidence=[{paper_id:"a",chunk_id:"a1",paragraph_id:"p",section:"Methods",text:"Method A.",start:0,end:9,index_version:"fixture-v1",citation:"[cite:a1]",truncated:false}];
+ c.operations=[{tool:"retrieve_chunks",params:{paper_ids:["a"],query:"method"},state:"done"}];
+ c.calls=3;
+ advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"A [cite:a1]"}));
+ assert.equal(w.phase,"comparison");
+ c.calls=4;
+ advanceWorkflow(w,c,JSON.stringify({cells:[{paper_id:"a",dimension:"方法",status:"supported",summary:"A",citations:["a1"]},{paper_id:"b",dimension:"方法",status:"supported",summary:"B",citations:["a1"]}]}));
+ assert.equal(w.comparison?.cells.find(x=>x.paper_id==="b")?.status,"missing");
+ c.calls=6;
+ const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"A [cite:a1]"}));
+ assert.equal(out.status,"waiting_user");assert.equal(w.execution?.state,"partial");
+});

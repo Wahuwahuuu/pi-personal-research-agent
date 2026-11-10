@@ -8,7 +8,8 @@
     "./core": "./core.ts",
     "./catalog": "./catalog.ts",
     "./transport": "./transport.ts",
-    "./local-reading": "./local-reading.ts"
+    "./local-reading": "./local-reading.ts",
+    "./cloud-workflow": "./cloud-workflow.ts"
   },
   "engines": {
     "node": ">=24.11.1"

@@ -37,10 +37,15 @@ export function mockModels(
         const input = Math.ceil(new TextEncoder().encode(source).length / 3);
         const names = getCurrentTools(context.messages).map((t) => t.name);
         const research = names.includes("search_papers");
+        const users=context.messages.filter((m:any)=>m.role==="user");
+        const latest=users.at(-1) as any;
+        const raw=typeof latest?.content==="string"?latest.content:latest?.content?.filter((c:any)=>c.type==="text").map((c:any)=>c.text).join("\n");
+        let frame:any;try{frame=JSON.parse(raw??"");}catch{}
+        const current = frame?.stage ? JSON.stringify(frame.observations??{}) : source;
         const hasSearch =
-          source.includes('"papers"') || source.includes('\\\"papers\\\"');
+          current.includes('"papers"') || current.includes('\\\"papers\\\"');
         const hasChunks =
-          source.includes('"chunks"') || source.includes('\\\"chunks\\\"');
+          current.includes('"chunks"') || current.includes('\\\"chunks\\\"');
         if (research && !hasChunks) {
           const name = hasSearch ? "retrieve_chunks" : "search_papers";
           const call: ToolCall = {
@@ -78,7 +83,7 @@ export function mockModels(
           (source.includes("chunks")
             ? "已收到本地证据 [cite:fixture-chunk]；请查看任务的 evidence 字段核对片段与出处。"
             : "云端 PiHarness 已完成持久化模型轮次。");
-        if (research)
+        if (research || frame?.stage==="agent")
           content = JSON.stringify({
             execution: {
               state: "complete",
@@ -87,6 +92,9 @@ export function mockModels(
             },
             answer: content,
           });
+        if(frame?.stage==="prepare")content=JSON.stringify({intent:"answer",targets:[],rewrite:frame.request,queries:[],constraints:[]});
+        if(frame?.stage==="completion")content=JSON.stringify({state:"complete",remaining_needs:[],needs_sources:true});
+        if(frame?.stage==="comparison")content=JSON.stringify({cells:frame.workspace.cells.map((c:any)=>({...c,status:"missing",summary:"Mock has not semantically verified the evidence",citations:[]}))});
         message.usage.input = input;
         message.usage.output = 40;
         message.usage.totalTokens = input + 40;

@@ -1,3 +1,4 @@
+import {getCurrentSystemMessage} from "@earendil-works/pi-ai";
 import { digest } from "./auth.ts";
 import {
   awaitWithContext,
@@ -26,6 +27,7 @@ import {
 } from "../packages/research/core.ts";
 
 export interface ResearchPorts {
+  managed?(conversationId: string): boolean;
   catalog(conversationId: string): {
     papers: readonly Paper[];
     indexVersion: string;
@@ -162,11 +164,17 @@ export function createResearchRegistry(ports: ResearchPorts) {
     ],
     hooks: [
       hook(GenerationTask, {
-        async beforeRequest(_request, api) {
+        async beforeRequest(request, api) {
           if (await ports.waiting(String(api.conversationId)))
             throw new Error("RESEARCH_WAITING_DEVICE");
+          if(ports.managed?.(String(api.conversationId))){
+            const index=request.messages.findLastIndex(m=>m.role==="user");
+            const system=getCurrentSystemMessage(request.messages);
+            return {messages:[...(system?[system]:[]),...request.messages.slice(Math.max(0,index)).filter(m=>m.role!=="system")]};
+          }
         },
         async onYield(answer, api) {
+          if (ports.managed?.(String(api.conversationId))) return;
           const output = answer.content
             .filter((c) => c.type === "text")
             .map((c) => c.text)

@@ -1,3 +1,4 @@
+import type { ResearchConversation, ResearchWorkflow } from "../packages/research/cloud-workflow.ts";
 import type { Chunk } from "../packages/research/core.ts";
 export type Status =
   | "queued"
@@ -20,6 +21,8 @@ export interface Task {
   tools: number;
   activeMs: number;
   engine?: "durable";
+  conversationId?: string;
+  workflow?: ResearchWorkflow;
   researchIndex?: string;
   researchEvidence?: Chunk[];
   researchWaiting?: boolean;
@@ -69,6 +72,7 @@ export interface Plan {
   batch?: { from: number; until: number; offset: number; count: number };
 }
 export interface State {
+  conversations?: ResearchConversation[];
   tasks: Task[];
   operations: Operation[];
   memories: Memory[];
