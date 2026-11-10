@@ -45,3 +45,10 @@ Only the package root is exported. Internal imports are reserved for implementat
 and regression tests. Source code is derived from AsterCite under the included MIT
 license. Tests use synthetic inputs and mock providers; they are not research quality
 measurements.
+
+
+## DO 适配入口
+
+./core 提供不依赖旧会话运行时的工具参数、结果与证据校验，以及执行完成判定基础逻辑。云端使用根项目的 Pi Durable 运行时，不能在 Worker 中导入 Node 会话 facade。
+
+./catalog 为本地节点提供 loadCorpusIndex(corpusRoot,indexRoot,device)，复用原目录、哈希和原文范围验证。返回公开论文目录与来源身份映射；不会读取密钥或运行模型。此入口使用 Node 文件系统，不能在 Worker 中运行。

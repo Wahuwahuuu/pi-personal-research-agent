@@ -1,3 +1,14 @@
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { createResearchRegistry } from "./research-durable.ts";
+import {
+  createResearchPorts,
+  acceptResearchResult,
+  resumePrompt,
+  validateResearchAnswer,
+  terminal,
+  failResearch,
+} from "./research-coordinator.ts";
+import { validateCatalog, type ResearchCatalog } from "./research-catalog.ts";
 import { DurableObject } from "cloudflare:workers";
 import { PiHarness } from "agents/harness/pi";
 import {
@@ -5,7 +16,7 @@ import {
   LifecycleCapability,
   type LifecycleJobOutcome,
 } from "agents/lifecycle";
-import { Harness, createRegistry } from "@earendil-works/pi-durable";
+import { Harness, type ConversationId } from "@earendil-works/pi-durable";
 import {
   initialState,
   submit,
@@ -35,6 +46,7 @@ interface Env {
   ADMIN_TOKEN: string;
   OWNER_ID: string;
   MODEL_MODE: string;
+  RESEARCH_ENGINE?: string;
   ALLOW_PAID_CALLS?: string;
   MODEL_API_KEY?: string;
   MODEL_BASE_URL?: string;
@@ -63,6 +75,8 @@ class Maintenance extends LifecycleCapability {
 export class PersonalAgent extends DurableObject<Env> {
   state: State;
   private busy = false;
+  private runtime?: Harness;
+  private catalogCache = new Map<string, ResearchCatalog>();
   harness: PiHarness;
   maintenance: Maintenance;
   lifecycle: Lifecycle<Env>;
@@ -78,8 +92,17 @@ export class PersonalAgent extends DurableObject<Env> {
       .exec<{ value: string }>("SELECT value FROM pra_state WHERE id=1")
       .toArray()[0];
     this.state = row ? JSON.parse(row.value) : initialState();
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS pra_catalog (version TEXT PRIMARY KEY, value TEXT NOT NULL, digest TEXT NOT NULL)",
+    );
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS pra_catalog_parts (version TEXT, page INTEGER, value TEXT NOT NULL, PRIMARY KEY(version,page))",
+    );
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS pra_catalog_upload (upload TEXT, page INTEGER, value TEXT NOT NULL, PRIMARY KEY(upload,page))",
+    );
     this.harness = new PiHarness({
-      harness: ({ storage, context, onWake }) => {
+      harness: async ({ storage, context, onWake }) => {
         const before = () => {
           const t = this.state.tasks.find(
             (t) => t.status === "running" && t.modelOperation,
@@ -105,11 +128,17 @@ export class PersonalAgent extends DurableObject<Env> {
                 before,
                 after,
               );
-        return Harness.open(
+        this.runtime = await Harness.open(
           storage,
           {
             models,
-            registry: createRegistry(),
+            registry: createResearchRegistry(
+              createResearchPorts(
+                () => this.state,
+                (v) => this.catalog(v),
+                () => this.save(),
+              ),
+            ),
             onWake,
             settings: {
               retry: { maxRetries: 0 },
@@ -123,6 +152,7 @@ export class PersonalAgent extends DurableObject<Env> {
           },
           context,
         );
+        return this.runtime;
       },
       defaults: {
         model:
@@ -257,6 +287,13 @@ export class PersonalAgent extends DurableObject<Env> {
     if (path === "/api/tasks" && r.method === "POST") {
       const b = await this.body(r);
       const t = submit(this.state, b.input, b.requestId, b.kind);
+      if (
+        t.kind === "research" &&
+        !t.sessionId &&
+        t.tools === 0 &&
+        this.env.RESEARCH_ENGINE === "durable"
+      )
+        t.engine = "durable";
       this.save();
       await this.maintenance.arm();
       this.publish();
@@ -269,7 +306,10 @@ export class PersonalAgent extends DurableObject<Env> {
         cancel(this.state, t.id);
         this.save();
         for (const ws of this.ctx.getWebSockets("device"))
-          this.send(ws, { type: "cancel", operationId: t.operationId });
+          for (const op of this.state.operations.filter(
+            (o) => o.taskId === t.id && o.state === "cancelled",
+          ))
+            this.send(ws, { type: "cancel", operationId: op.id });
         if (t.sessionId)
           this.ctx.waitUntil(
             this.harness.abort({ session: t.sessionId }).catch(() => {}),
@@ -277,6 +317,14 @@ export class PersonalAgent extends DurableObject<Env> {
       } else if (
         ["failed", "waiting_device", "waiting_user"].includes(t.status)
       ) {
+        if (
+          t.engine === "durable" &&
+          (t.runOpen || t.status === "waiting_device")
+        ) {
+          await this.maintenance.arm();
+          return json(t); // A user retry must not reset an in-flight session or budgets.
+        }
+        if (t.engine === "durable") throw new Problem("NEW_TASK_REQUIRED", 409);
         t.status = "queued";
         t.error = undefined;
         if (t.modelOperation) {
@@ -403,17 +451,109 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.indexVersion = text(m.indexVersion, 256);
         a.ready = false;
+        a.catalogReady = false;
         ws.serializeAttachment(a);
         this.send(ws, { type: "hello_ack" });
-      } else if (m.type === "result") {
-        const result = acceptResult(
-          this.state,
-          text(m.operationId, 128),
-          text(m.indexVersion, 256),
-          m.result,
-          Date.now(),
-          m.executionMs ?? 0,
+      } else if (m.type === "catalog_begin") {
+        if (!a.indexVersion) throw new Problem("HELLO_REQUIRED");
+        if (!Number.isSafeInteger(m.pages) || m.pages < 1 || m.pages > 128)
+          throw new Problem("CATALOG_SIZE");
+        // Only one paired device is active; abandoned uploads are disposable.
+        this.ctx.storage.sql.exec("DELETE FROM pra_catalog_upload");
+        a.upload = crypto.randomUUID();
+        a.pages = m.pages;
+        a.nextPage = 0;
+        a.bytes = 0;
+        ws.serializeAttachment(a);
+      } else if (m.type === "catalog_page") {
+        if (
+          !a.upload ||
+          m.page !== a.nextPage ||
+          typeof m.value !== "string" ||
+          m.value.length > 250000 ||
+          a.nextPage >= a.pages
+        )
+          throw new Problem("CATALOG_PAGE");
+        a.bytes += new TextEncoder().encode(m.value).length;
+        if (a.bytes > 16000000) throw new Problem("CATALOG_SIZE");
+        this.ctx.storage.sql.exec(
+          "INSERT INTO pra_catalog_upload VALUES(?,?,?)",
+          a.upload,
+          m.page,
+          m.value,
         );
+        a.nextPage++;
+        ws.serializeAttachment(a);
+      } else if (m.type === "catalog_end") {
+        if (!a.upload || a.nextPage !== a.pages)
+          throw new Problem("CATALOG_INCOMPLETE");
+        const raw = this.ctx.storage.sql
+          .exec<{ value: string }>(
+            "SELECT value FROM pra_catalog_upload WHERE upload=? ORDER BY page",
+            a.upload,
+          )
+          .toArray()
+          .map((r) => r.value)
+          .join("");
+        const c = validateCatalog(JSON.parse(raw));
+        if (c.indexVersion !== a.indexVersion)
+          throw new Problem("INDEX_CHANGED");
+        const value = JSON.stringify(c),
+          hash = await digest(value);
+        const prior = this.ctx.storage.sql
+          .exec<{ digest: string }>(
+            "SELECT digest FROM pra_catalog WHERE version=?",
+            c.indexVersion,
+          )
+          .toArray()[0];
+        if (prior && prior.digest !== hash)
+          throw new Problem("CATALOG_VERSION_CONFLICT");
+        if (!prior)
+          this.ctx.storage.transactionSync(() => {
+            this.ctx.storage.sql.exec(
+              "INSERT INTO pra_catalog VALUES(?,?,?)",
+              c.indexVersion,
+              "",
+              hash,
+            );
+            for (let at = 0, page = 0; at < value.length; at += 200000, page++)
+              this.ctx.storage.sql.exec(
+                "INSERT INTO pra_catalog_parts VALUES(?,?,?)",
+                c.indexVersion,
+                page,
+                value.slice(at, at + 200000),
+              );
+          });
+        this.ctx.storage.sql.exec(
+          "DELETE FROM pra_catalog_upload WHERE upload=?",
+          a.upload,
+        );
+        this.catalogCache.set(c.indexVersion, c);
+        a.catalogReady = true;
+        delete a.upload;
+        ws.serializeAttachment(a);
+        this.send(ws, { type: "catalog_ack", indexVersion: c.indexVersion });
+      } else if (m.type === "result") {
+        const op = this.state.operations.find((o) => o.id === m.operationId);
+        const task = op && getTask(this.state, op.taskId);
+        const result =
+          task?.engine === "durable"
+            ? acceptResearchResult(
+                this.state,
+                text(m.operationId, 128),
+                text(m.indexVersion, 256),
+                m.result,
+                (v) => this.catalog(v),
+                m.executionMs ?? 0,
+              )
+            : acceptResult(
+                this.state,
+                text(m.operationId, 128),
+                text(m.indexVersion, 256),
+                m.result,
+                Date.now(),
+                m.executionMs ?? 0,
+              );
         this.save();
         this.send(ws, {
           type: "ack",
@@ -436,6 +576,8 @@ export class PersonalAgent extends DurableObject<Env> {
         });
       } else if (m.type === "ready") {
         if (!a.indexVersion) throw new Problem("HELLO_REQUIRED");
+        if (this.env.RESEARCH_ENGINE === "durable" && !a.catalogReady)
+          throw new Problem("CATALOG_REQUIRED");
         a.ready = true;
         ws.serializeAttachment(a);
         for (const op of this.state.operations.filter(
@@ -443,7 +585,7 @@ export class PersonalAgent extends DurableObject<Env> {
         )) {
           op.state = "pending";
           const t = getTask(this.state, op.taskId);
-          if (t.status !== "cancelled") t.status = "waiting_device";
+          if (!terminal(t)) t.status = "waiting_device";
         }
         this.save();
         for (const n of this.state.notices.filter((n) => !n.read))
@@ -465,13 +607,229 @@ export class PersonalAgent extends DurableObject<Env> {
   async webSocketError() {
     await this.maintenance.arm(Date.now() + 60000);
   }
+  catalog(version: string): ResearchCatalog {
+    let c = this.catalogCache.get(version);
+    if (!c) {
+      const row = this.ctx.storage.sql
+        .exec<{ value: string }>(
+          "SELECT value FROM pra_catalog WHERE version=?",
+          version,
+        )
+        .toArray()[0];
+      if (!row) throw new Problem("CATALOG_REQUIRED");
+      const raw =
+        row.value ||
+        this.ctx.storage.sql
+          .exec<{ value: string }>(
+            "SELECT value FROM pra_catalog_parts WHERE version=? ORDER BY page",
+            version,
+          )
+          .toArray()
+          .map((r) => r.value)
+          .join("");
+      c = JSON.parse(raw) as ResearchCatalog;
+      this.catalogCache.set(version, c);
+    }
+    return c;
+  }
+  async tickResearch() {
+    // Settle the Pi run even if a fast device result already changed the business task state.
+    for (const t of this.state.tasks.filter(
+      (t) => t.engine === "durable" && t.runOpen,
+    )) {
+      if (terminal(t)) {
+        await this.harness.abort({ session: t.sessionId });
+        t.runOpen = false;
+        t.modelPrompt = undefined;
+        continue;
+      }
+      if (
+        t.activeMs +
+          (t.modelStoppedAt ?? Date.now()) -
+          (t.modelStarted ?? Date.now()) >=
+        180000
+      ) {
+        failResearch(this.state, t, "ACTIVE_DEADLINE");
+        await this.harness.abort({ session: t.sessionId });
+        t.runOpen = false;
+        continue;
+      }
+      if (!t.modelAdmitted && t.modelPrompt) {
+        await this.harness.submit(t.modelPrompt, {
+          session: t.sessionId,
+          operationId: t.modelOperation,
+          whenBusy: "reject",
+        });
+        t.modelAdmitted = true;
+        this.save();
+      }
+      const pending = await this.harness.pending({ session: t.sessionId });
+      if (pending.some((p) => p.operationId === t.modelOperation)) continue;
+      const result = await this.harness.wait(t.modelOperation!, {
+        session: t.sessionId,
+        signal: AbortSignal.timeout(1000),
+      });
+      t.activeMs += Math.max(
+        0,
+        (t.modelStoppedAt ?? Date.now()) - (t.modelStarted ?? Date.now()),
+      );
+      t.runOpen = false;
+      t.modelPrompt = undefined;
+      if (terminal(t)) continue;
+      if (t.researchWaiting) {
+        // Pi's terminated/unanswered outcome is not business completion.
+        t.status = this.state.operations.some(
+          (o) => o.taskId === t.id && ["pending", "sent"].includes(o.state),
+        )
+          ? "waiting_device"
+          : "queued";
+      } else if (result.status === "done") {
+        try {
+          t.status = validateResearchAnswer(t, result.text ?? "");
+          t.answer = result.text;
+          t.error =
+            t.status === "waiting_user" ? "COMPLETION_UNCONFIRMED" : undefined;
+          notice(
+            this.state,
+            "task:" + t.id,
+            (t.status === "completed" ? "任务完成：" : "研究结果待确认：") +
+              t.input.slice(0, 100),
+          );
+        } catch {
+          failResearch(this.state, t, "INVALID_ANSWER_CITATION");
+        }
+      } else failResearch(this.state, t, result.reason ?? "MODEL_FAILED");
+      this.save();
+    }
+    const dev = this.device(),
+      attachment = dev?.deserializeAttachment();
+    // Results are dispatched serially, independently of model work. Existing operation IDs survive reconnection.
+    if (
+      dev &&
+      attachment.catalogReady &&
+      !this.state.operations.some((o) => o.state === "sent")
+    ) {
+      const op = this.state.operations.find(
+        (o) =>
+          o.state === "pending" &&
+          this.state.tasks.some(
+            (t) => t.id === o.taskId && t.engine === "durable" && !terminal(t),
+          ),
+      );
+      if (op) {
+        const t = getTask(this.state, op.taskId);
+        if (op.indexVersion !== attachment.indexVersion)
+          failResearch(this.state, t, "INDEX_CHANGED");
+        else if ((op.attempts ?? 0) >= 3)
+          failResearch(this.state, t, "LOCAL_RETRY_LIMIT");
+        else {
+          op.state = "sent";
+          op.deadline = Date.now() + 60000;
+          op.attempts = (op.attempts ?? 0) + 1;
+          t.operationId = op.id;
+          this.save();
+          this.send(dev, { type: "operation", operation: op });
+        }
+      }
+    }
+    if (
+      this.state.tasks.some(
+        (t) =>
+          t.runOpen ||
+          (t.engine !== "durable" &&
+            t.status === "running" &&
+            t.modelOperation),
+      )
+    )
+      return;
+    const t = this.state.tasks.find(
+      (t) =>
+        t.engine === "durable" &&
+        (t.status === "queued" ||
+          (t.status === "waiting_device" && !t.sessionId && dev)),
+    );
+    if (!t) return;
+    if (!t.researchIndex) {
+      if (!dev || !attachment.catalogReady) {
+        t.status = "waiting_device";
+        return;
+      }
+      t.researchIndex = attachment.indexVersion;
+    }
+    if (dev && attachment.indexVersion !== t.researchIndex) {
+      failResearch(this.state, t, "INDEX_CHANGED");
+      return;
+    }
+    if (
+      this.state.operations.some(
+        (o) => o.taskId === t.id && ["pending", "sent"].includes(o.state),
+      )
+    ) {
+      t.status = "waiting_device";
+      return;
+    }
+    if (t.calls >= 6 || t.activeMs >= 180000) {
+      failResearch(this.state, t, "MODEL_BUDGET");
+      return;
+    }
+    try {
+      if (!t.sessionId) {
+        t.sessionId = (await this.harness.sessions.create()).id;
+        this.save();
+      }
+      if (terminal(t)) return;
+      const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
+      const prompt = observations.ids.length
+        ? observations.prompt
+        : JSON.stringify({
+            instruction:
+              "Solve the research request with available tools, choosing and refining searches yourself. Do not invent evidence. Cite [cite:chunk_id]. Catalog metadata is only a navigation hint. Personal memory is fallible.",
+            request: t.input,
+            memory: this.state.memories,
+          });
+      if (new TextEncoder().encode(prompt).length > 19000)
+        throw new Problem("CONTEXT_LIMIT");
+      t.researchWaiting = false;
+      t.status = "running";
+      t.runOpen = true;
+      t.resumeSeq = (t.resumeSeq ?? 0) + 1;
+      t.modelOperation = t.id + ":research:" + t.resumeSeq;
+      t.modelStarted = Date.now();
+      t.modelStoppedAt = undefined;
+      t.modelPrompt = prompt;
+      t.modelAdmitted = false;
+      for (const op of this.state.operations.filter((o) =>
+        observations.ids.includes(o.id),
+      ))
+        op.delivered = true;
+      // Save both observation consumption and the exact replayable prompt atomically in the state row.
+      this.save();
+      await this.harness.submit(prompt, {
+        session: t.sessionId,
+        operationId: t.modelOperation,
+        whenBusy: "reject",
+      });
+      t.modelAdmitted = true;
+      this.save();
+    } catch (e) {
+      if (!t.runOpen)
+        failResearch(
+          this.state,
+          t,
+          e instanceof Problem ? e.code : "RESEARCH_ADMISSION_FAILED",
+        );
+      else throw e; // Saved admission intent remains replayable.
+    }
+  }
   async tick(): Promise<number | undefined> {
     if (this.busy) return Date.now() + 1000;
     this.busy = true;
     try {
       expire(this.state);
+      await this.tickResearch();
       const running = this.state.tasks.find(
-        (t) => t.status === "running" && t.modelOperation,
+        (t) =>
+          t.engine !== "durable" && t.status === "running" && t.modelOperation,
       );
       if (running) {
         if (
@@ -523,11 +881,12 @@ export class PersonalAgent extends DurableObject<Env> {
       }
       const dev = this.device();
       const t = !this.state.tasks.some(
-        (t) => t.status === "running" && t.modelOperation,
+        (t) => t.runOpen || (t.status === "running" && t.modelOperation),
       )
         ? this.state.tasks.find(
             (t) =>
-              t.status === "queued" || (t.status === "waiting_device" && dev),
+              t.engine !== "durable" &&
+              (t.status === "queued" || (t.status === "waiting_device" && dev)),
           )
         : undefined;
       if (t) {
@@ -596,6 +955,10 @@ export class PersonalAgent extends DurableObject<Env> {
           if (!t.sessionId) {
             const session = await this.harness.sessions.create();
             t.sessionId = session.id;
+            await (await this.runtime!.conversation(
+              Number(session.id) as ConversationId,
+              BACKGROUND_CONTEXT,
+            ))!.configure({ tools: [] }, BACKGROUND_CONTEXT);
             this.save();
           }
           if (getTask(this.state, t.id).status === "cancelled")
@@ -654,7 +1017,7 @@ export class PersonalAgent extends DurableObject<Env> {
       ];
       if (
         this.state.tasks.some(
-          (t) => t.status === "running" || t.status === "queued",
+          (t) => t.runOpen || t.status === "running" || t.status === "queued",
         )
       )
         times.push(Date.now() + 1000);

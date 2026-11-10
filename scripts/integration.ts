@@ -1,3 +1,5 @@
+import WebSocket from "ws";
+import { nodeCatalog, catalogPages } from "../local/catalog.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, writeFile, readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -85,6 +87,8 @@ try {
     "127.0.0.1",
     "--port",
     String(port),
+    "--var",
+    "RESEARCH_ENGINE:durable",
     "--persist-to",
     directory,
   ];
@@ -163,8 +167,16 @@ try {
       s.tasks.find((t: any) => t.id === research.id)?.status === "completed"
     );
   }, 45000);
+  const researchDone = (await api("state")).tasks.find(
+    (t: any) => t.id === research.id,
+  );
+  assert.equal(researchDone.engine, "durable");
+  assert.equal(researchDone.calls, 3);
+  assert.equal(researchDone.tools, 2);
+  assert.equal(researchDone.resumeSeq, 3);
+  assert.match(researchDone.answer, /cite:fixture-chunk/);
   checks.push(
-    "local node connected, search + retrieval executed, cloud answer resumed",
+    "real DO registered research tools; three model runs reused one session across two validated observations",
   );
   const duplicate = await api("tasks", "POST", {
     input: "offline research",
@@ -200,6 +212,198 @@ try {
   await until(async () => (await api("state")).deviceOnline, 45000);
   await stopChild(node);
   await until(async () => !(await api("state")).deviceOnline);
+  // A controlled device can withhold results while the real DO and Pi storage are restarted.
+  const catalog = await nodeCatalog(undefined, true),
+    pages = catalogPages(catalog);
+  let frames: any[] = [],
+    controlled: WebSocket;
+  async function connectControlled() {
+    frames = [];
+    controlled = new WebSocket(
+      base.replace("http", "ws") + "/api/device/connect",
+      { headers: { Authorization: "Bearer " + pair.token } },
+    );
+    controlled.on("error", () => {});
+    controlled.on("message", (data) => {
+      const m = JSON.parse(data.toString());
+      frames.push(m);
+      if (m.type === "hello_ack") {
+        controlled.send(
+          JSON.stringify({ type: "catalog_begin", pages: pages.length }),
+        );
+        pages.forEach((value, page) =>
+          controlled.send(
+            JSON.stringify({ type: "catalog_page", page, value }),
+          ),
+        );
+        controlled.send(JSON.stringify({ type: "catalog_end" }));
+      }
+      if (m.type === "catalog_ack")
+        controlled.send(JSON.stringify({ type: "ready" }));
+    });
+    await new Promise<void>((ok, no) => {
+      controlled.once("open", ok);
+      controlled.once("error", no);
+    });
+    controlled.send(
+      JSON.stringify({
+        type: "hello",
+        version: 1,
+        deviceId: "controlled",
+        indexVersion: catalog.indexVersion,
+        tools: ["search_papers", "retrieve_chunks"],
+      }),
+    );
+    await until(async () => !!(await api("state")).deviceOnline);
+  }
+  await connectControlled();
+  const inFlight = await api("tasks", "POST", {
+    input: "restart while a tool is pending",
+    kind: "research",
+    requestId: "inflight-1",
+  });
+  const first = await until(
+    async () =>
+      frames.find(
+        (m) => m.type === "operation" && m.operation.taskId === inFlight.id,
+      )?.operation ?? false,
+  );
+  await until(async () => {
+    const t = (await api("state")).tasks.find((t: any) => t.id === inFlight.id);
+    return t.status === "waiting_device" && !t.runOpen;
+  });
+  const suspended = (await api("state")).tasks.find(
+    (t: any) => t.id === inFlight.id,
+  );
+  assert.equal(suspended.calls, 1);
+  await stopChild(server);
+  controlled!.terminate();
+  server = child(serverArgs);
+  await until(async () => {
+    const r = await fetch(base);
+    return r.ok;
+  }, 60000);
+  await connectControlled();
+  const replayed = await until(
+    async () =>
+      frames.find(
+        (m) => m.type === "operation" && m.operation.taskId === inFlight.id,
+      )?.operation ?? false,
+  );
+  assert.equal(replayed.id, first.id);
+  const restoredWaiting = (await api("state")).tasks.find(
+    (t: any) => t.id === inFlight.id,
+  );
+  assert.equal(restoredWaiting.sessionId, suspended.sessionId);
+  assert.equal(restoredWaiting.calls, 1);
+  checks.push(
+    "workerd restart DURING pending tool reused operation/session without another model call",
+  );
+
+  const searchFrame = {
+    type: "result",
+    operationId: first.id,
+    indexVersion: "fixture-v1",
+    executionMs: 5,
+    result: {
+      backend: "fixture",
+      index_version: "fixture-v1",
+      papers: catalog.papers,
+    },
+  };
+  controlled!.send(JSON.stringify({ ...searchFrame, indexVersion: "wrong" }));
+  await until(async () =>
+    frames.some((m) => m.type === "error" && m.code === "INDEX_CHANGED"),
+  );
+  assert.notEqual(
+    (await api("state")).operations.find((o: any) => o.id === first.id).state,
+    "done",
+  );
+  for (let i = 0; i < 5; i++) controlled!.send(JSON.stringify(searchFrame));
+  await until(
+    async () =>
+      frames.filter((m) => m.type === "ack" && m.operationId === first.id)
+        .length >= 5,
+  );
+  assert.equal(
+    frames.filter(
+      (m) =>
+        m.type === "ack" &&
+        m.operationId === first.id &&
+        m.status === "accepted",
+    ).length,
+    1,
+  );
+  assert.equal(
+    frames.filter(
+      (m) =>
+        m.type === "ack" &&
+        m.operationId === first.id &&
+        m.status === "duplicate",
+    ).length,
+    4,
+  );
+  const readOp = await until(
+    async () =>
+      frames.find(
+        (m) =>
+          m.type === "operation" &&
+          m.operation.taskId === inFlight.id &&
+          m.operation.tool === "retrieve_chunks",
+      )?.operation ?? false,
+  );
+  checks.push(
+    "wrong index rejected; five result deliveries admitted once and continued to model-selected retrieval",
+  );
+  await until(
+    async () =>
+      !(await api("state")).tasks.find((t: any) => t.id === inFlight.id)
+        .runOpen,
+  );
+  const extraChat = await api("tasks", "POST", {
+    input: "chat while research waits",
+    kind: "chat",
+    requestId: "parallel-chat",
+  });
+  await until(
+    async () =>
+      (await api("state")).tasks.find((t: any) => t.id === extraChat.id)
+        .status === "completed",
+  );
+  checks.push(
+    "waiting research released model slot so cloud-only chat completed",
+  );
+  const callsBeforeCancel = (await api("state")).tasks.find(
+    (t: any) => t.id === inFlight.id,
+  ).calls;
+  await api("tasks/" + inFlight.id + "/cancel", "POST", {});
+  controlled!.send(
+    JSON.stringify({
+      type: "result",
+      operationId: readOp.id,
+      indexVersion: "fixture-v1",
+      executionMs: 5,
+      result: { backend: "fixture", index_version: "fixture-v1", chunks: [] },
+    }),
+  );
+  await until(async () =>
+    frames.some(
+      (m) =>
+        m.type === "ack" &&
+        m.operationId === readOp.id &&
+        m.status === "discarded",
+    ),
+  );
+  const cancelled = (await api("state")).tasks.find(
+    (t: any) => t.id === inFlight.id,
+  );
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.calls, callsBeforeCancel);
+  checks.push(
+    "cancelled in-flight retrieval discarded late result without restarting model",
+  );
+  controlled!.close();
+  await until(async () => !(await api("state")).deviceOnline);
   const waiting = await api("tasks", "POST", {
     input: "cancel while offline",
     kind: "research",
@@ -214,6 +418,8 @@ try {
   await api("device/revoke", "POST", {});
   await until(async () => !(await api("state")).deviceOnline);
   checks.push("device revocation immediately enforced");
+  // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
+  for (const p of [...children].reverse()) await stopChild(p);
   let scanned = 0;
   async function scan(dir: string) {
     for (const entry of await readdir(dir, { withFileTypes: true })) {

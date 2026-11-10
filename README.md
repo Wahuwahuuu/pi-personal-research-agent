@@ -7,8 +7,12 @@ Cloudflare Worker + SQLite Durable Object + 官方 PiHarness / Pi Durable / Pi A
 要求 Node.js 24.11.1 或更新版本。依赖已精确锁定，安装使用 `npm ci`。
 
 ```powershell
+npm ci
+npm ci --prefix packages/research
 npm run check
 npm test
+npm run research:check
+npm run research:test
 npm run build
 node scripts/integration.ts
 ```
@@ -46,7 +50,7 @@ powershell -NoProfile -File scripts/install-startup.ps1 -Remove
 powershell -NoProfile -File scripts/stop-node.ps1
 ```
 
-节点只执行 `search_papers` / `retrieve_chunks`，云端不能发任意路径或 shell。结果先写本地 SQLite outbox，得到云端确认再登记；断线重连先重发未确认结果。完整论文与索引不上传，必要证据片段会进入云端。
+节点只执行 `search_papers` / `retrieve_chunks`，云端不能发任意路径或 shell。结果先写本地 SQLite outbox，得到云端确认再登记；断线重连先重发未确认结果。完整论文和检索索引文件留在本地。论文目录、来源映射的 ID/位置/哈希及必要证据片段会进入云端；不能宣称所有科研数据均留本地。节点复用 AsterCite 的索引验证器，校验源文件和原文范围后才同步目录。目录按页传输，最多 16 MB；超限会明确拒绝，完整数据库的迁移需要另行设计。
 
 ## 模型与费用
 
@@ -56,7 +60,21 @@ powershell -NoProfile -File scripts/stop-node.ps1
 
 Qwen 请求显式发送 `enable_thinking=false`、`preserve_thinking=false`，输出上限保持 2,048 token。网页登录后展示实际运行模型；仓库默认和软件测试仍为 mock，不会因为存在本机模型部署配置而调用真实模型。切换为其他提供方前，应单独验证其思考参数、价格与兼容性。
 
-适配器仅向 Pi 转交可见文本，不转交 provider reasoning 字段；未知 usage 按预留量计费。当前是“应用先检索，再交给 Pi 回答”的验证路径，尚未实现模型自主选择工具、多项目多轮对话或生产审批流程。
+适配器向 Pi 转交可见文本和受限工具调用，不转交 provider reasoning 字段；未知 usage 按预留量计费。
+
+## DO 科研执行入口
+
+新入口通过 `RESEARCH_ENGINE=durable` 显式启用。例如在本地运行：
+
+```powershell
+npx wrangler dev --var RESEARCH_ENGINE:durable
+```
+
+在新入口中，Pi 模型自行选择 `search_papers` / `retrieve_chunks`，DO 负责操作派发、预算和恢复。复用科研模块的参数、索引和引用验证器，不在应用层固定搜索顺序。普通聊天不开放科研工具。软件集成测试显式启用此入口并使用模拟模型，默认部署配置仍保留旧路径。
+
+每个研究任务当前对应一个 Pi 会话；该任务的所有异步工具结果和后续轮次复用此会话。工具操作先持久化，再发给本机；等待期间结束当前模型轮次。结果通过校验后，以明确标记的延迟观察输入继续原会话，不把等待结果当成研究完成。同一个操作重复回传只接收一次，取消后的迟到结果不会重新启动模型。
+
+累计限制跨恢复保持：每任务最多 6 次模型请求、10 次工具调用、180 秒活跃时间；本地操作最多 3 次投递尝试。首个任务尚无已验证目录时先等待节点注册。目录版本变化会明确失败，不能混用旧证据。缺少显式完成状态、仍有缺项或没有可核验引用的科研回答进入等待用户确认，不直接判为完成。当前支持检索与文本片段续读，完整摘要、结构化表格和公式读取、NLU、多论文比较与完整完成判定仍需继续适配。
 
 ## 边界
 

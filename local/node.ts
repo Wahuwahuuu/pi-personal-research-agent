@@ -1,3 +1,6 @@
+import { nodeCatalog, catalogPages } from "./catalog.ts";
+import { checkedResult, researchContext } from "../src/research-coordinator.ts";
+import { validatePaperParams } from "../packages/research/core.ts";
 import WebSocket from "ws";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { DatabaseSync } from "node:sqlite";
@@ -62,6 +65,8 @@ db.exec(
 );
 const bridge = config.python ? new PythonBridge(config.python) : undefined;
 if (!bridge && !config.fixture) throw new Error("PYTHON_CONFIG_REQUIRED");
+const catalog = await nodeCatalog(config.python, config.fixture);
+const pages = catalogPages(catalog);
 const indexVersion = config.fixture
   ? "fixture-v1"
   : config.python!.indexVersion;
@@ -130,6 +135,7 @@ async function execute(op: Operation) {
     Math.max(1, Math.min(180000, op.deadline - Date.now())),
   );
   try {
+    validatePaperParams(op.tool, op.params, researchContext(catalog));
     const result = config.fixture
       ? op.tool === "search_papers"
         ? {
@@ -151,6 +157,8 @@ async function execute(op: Operation) {
                 paper_id: "fixture-paper",
                 chunk_id: "fixture-chunk",
                 paragraph_id: "p1",
+                citation: "[fixture-chunk]",
+                truncated: false,
                 section: "abstract",
                 start: 0,
                 end: 9,
@@ -162,6 +170,7 @@ async function execute(op: Operation) {
       : await bridge!.request(op.tool, op.params, abort.signal);
     if (abort.signal.aborted) throw new Error("CANCELLED");
     validateEvidence(op.tool, result, indexVersion);
+    checkedResult(op, result, catalog);
     frame(op.id, {
       type: "result",
       operationId: op.id,
@@ -220,11 +229,22 @@ function connect() {
       }
       const m = JSON.parse(raw);
       if (m.type === "hello_ack") {
+        send({ type: "catalog_begin", pages: pages.length });
+        pages.forEach((value, page) =>
+          send({ type: "catalog_page", page, value }),
+        );
+        send({ type: "catalog_end" });
+      } else if (m.type === "catalog_ack") {
         for (const r of db
           .prepare("SELECT frame FROM outbox WHERE acked=0")
           .all() as { frame: string }[])
           send(JSON.parse(r.frame));
-        send({ type: "ready" });
+        void (bridge?.ready() ?? Promise.resolve())
+          .then(() => {
+            if (socket === ws && ws.readyState === WebSocket.OPEN)
+              send({ type: "ready" });
+          })
+          .catch(() => ws.terminate());
       } else if (m.type === "ack")
         db.prepare("UPDATE outbox SET acked=1 WHERE id=?").run(m.operationId);
       else if (m.type === "operation") void execute(m.operation);

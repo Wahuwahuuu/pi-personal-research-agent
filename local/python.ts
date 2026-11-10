@@ -1,5 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
+import {
+  PythonWorkerClient,
+  type SearchParams,
+  type RetrieveParams,
+} from "../packages/research/transport.ts";
 import type { Tool } from "../src/domain.ts";
 export interface PythonConfig {
   executable: string;
@@ -11,15 +15,11 @@ export interface PythonConfig {
   device?: "cpu" | "cuda";
   indexVersion: string;
 }
+/** Restricted facade over AsterCite's existing JSONL transport. Model loading is readiness, not tool execution. */
 export class PythonBridge {
-  private process?: ChildProcessWithoutNullStreams;
-  private buffer = "";
-  private pending?: {
-    id: string;
-    resolve: (v: unknown) => void;
-    reject: (e: Error) => void;
-  };
   config: PythonConfig;
+  private client?: PythonWorkerClient;
+  private pending = false;
   constructor(config: PythonConfig) {
     this.config = config;
     for (const p of [
@@ -29,125 +29,83 @@ export class PythonBridge {
       config.index,
       config.models,
     ].filter(Boolean))
-      if (!isAbsolute(p!)) throw new Error("ABSOLUTE_LOCAL_PATH_REQUIRED");
+      if (!isAbsolute(p!)) throw Error("ABSOLUTE_LOCAL_PATH_REQUIRED");
   }
-  private launch() {
+  private getClient() {
     const c = this.config;
-    const args = [
-      c.worker,
-      "--corpus-dir",
-      c.corpus,
-      ...(c.index
-        ? [
-            "--index-dir",
-            c.index,
-            "--models-dir",
-            c.models!,
-            "--profile",
-            c.profile ?? "rrf_rerank",
-            "--device",
-            c.device ?? "cpu",
-          ]
-        : []),
-    ];
-    const env: NodeJS.ProcessEnv = {
-      PYTHONUTF8: "1",
-      PYTHONIOENCODING: "utf-8",
-      PYTHONDONTWRITEBYTECODE: "1",
-      OMP_NUM_THREADS: "4",
-      MKL_NUM_THREADS: "4",
-      HF_HUB_OFFLINE: "1",
-      TRANSFORMERS_OFFLINE: "1",
-    };
-    for (const key of ["PATH", "Path", "SystemRoot", "WINDIR", "TEMP", "TMP"])
-      if (process.env[key]) env[key] = process.env[key];
-    const child = spawn(c.executable, args, {
-      shell: false,
-      windowsHide: true,
-      env,
-      stdio: "pipe",
-    });
-    this.process = child;
-    this.buffer = "";
-    child.stderr.resume();
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (part: string) => {
-      if (this.process !== child) return;
-      this.buffer += part;
-      if (this.buffer.length > 1500000) {
-        this.stop();
-        return;
-      }
-      let at;
-      while ((at = this.buffer.indexOf("\n")) >= 0) {
-        const line = this.buffer.slice(0, at);
-        this.buffer = this.buffer.slice(at + 1);
-        try {
-          const r = JSON.parse(line);
-          if (r.type === "ready") {
-            if (r.index_version !== c.indexVersion) this.stop();
-            continue;
-          }
-          if (r.request_id === this.pending?.id) {
-            const p = this.pending!;
-            this.pending = undefined;
-            r.error
-              ? p.reject(new Error("RETRIEVER_ERROR"))
-              : p.resolve(r.result);
-          }
-        } catch {
-          this.stop();
-        }
-      }
-    });
-    child.on("error", () => this.stop());
-    child.on("exit", () => {
-      if (this.process === child) this.stop();
-    });
-    child.stdin.on("error", () => this.stop());
+    return (this.client ??= new PythonWorkerClient({
+      pythonPath: c.executable,
+      workerPath: c.worker,
+      corpusDir: c.corpus,
+      indexDir: c.index,
+      modelsDir: c.models,
+      profile: c.index ? (c.profile ?? "rrf_rerank") : undefined,
+      device: c.index ? (c.device ?? "cpu") : undefined,
+      expectReady: !!c.index,
+      readyTimeoutMs: 180000,
+      timeoutMs: 180000,
+      maxFrameBytes: 1500000,
+    }));
   }
-  request(tool: Tool, params: Record<string, unknown>, signal: AbortSignal) {
-    if (this.pending) throw new Error("RETRIEVER_BUSY");
+  async ready() {
+    const client = this.getClient();
+    try {
+      const event = await client.ready();
+      if (event && event.index_version !== this.config.indexVersion)
+        throw Error("INDEX_CHANGED");
+    } catch (e) {
+      if (this.client === client) this.stop();
+      throw e;
+    }
+  }
+  async request(
+    tool: Tool,
+    params: Record<string, unknown>,
+    signal: AbortSignal,
+  ) {
+    if (this.pending) throw Error("RETRIEVER_BUSY");
     if (!["search_papers", "retrieve_chunks"].includes(tool))
-      throw new Error("TOOL_DENIED");
-    if (typeof params.query !== "string" || params.query.length > 1000)
-      throw new Error("INVALID_QUERY");
+      throw Error("TOOL_DENIED");
+    if (
+      typeof params.query !== "string" ||
+      !params.query.trim() ||
+      Array.from(params.query).length > 1000
+    )
+      throw Error("INVALID_QUERY");
     const allowed =
       tool === "search_papers"
         ? ["query", "limit"]
-        : ["query", "paper_ids", "top_k"];
+        : ["query", "paper_ids", "top_k", "offset"];
     if (Object.keys(params).some((k) => !allowed.includes(k)))
-      throw new Error("PARAMETER_DENIED");
-    if (!this.process) this.launch();
-    return new Promise<unknown>((resolve, reject) => {
-      const id = crypto.randomUUID();
-      const abort = () => this.stop();
-      const finish = (fn: (v: any) => void, v: unknown) => {
-        signal.removeEventListener("abort", abort);
-        fn(v);
-      };
-      this.pending = {
-        id,
-        resolve: (v) => finish(resolve, v),
-        reject: (e) => finish(reject, e),
-      };
-      signal.addEventListener("abort", abort, { once: true });
-      if (signal.aborted) {
-        abort();
-        return;
-      }
-      this.process!.stdin.write(
-        JSON.stringify({ version: 1, request_id: id, method: tool, params }) +
-          "\n",
+      throw Error("PARAMETER_DENIED");
+    signal.throwIfAborted();
+    this.pending = true;
+    const abort = () => this.stop();
+    signal.addEventListener("abort", abort, { once: true });
+    try {
+      await this.ready();
+      signal.throwIfAborted();
+      const request =
+        tool === "retrieve_chunks"
+          ? {
+              ...params,
+              reading_mode: "workbench-v1",
+              offset: params.offset ?? 0,
+            }
+          : params;
+      return await this.client!.request(
+        tool,
+        request as unknown as SearchParams | RetrieveParams,
+        signal,
       );
-    });
+    } finally {
+      signal.removeEventListener("abort", abort);
+      this.pending = false;
+    }
   }
   stop() {
-    const p = this.pending;
-    this.pending = undefined;
-    const child = this.process;
-    this.process = undefined;
-    child?.kill();
-    p?.reject(new Error("RETRIEVER_STOPPED"));
+    const client = this.client;
+    this.client = undefined;
+    client?.close();
   }
 }

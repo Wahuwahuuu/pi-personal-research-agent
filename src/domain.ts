@@ -1,3 +1,4 @@
+import type { Chunk } from "../packages/research/core.ts";
 export type Status =
   | "queued"
   | "running"
@@ -18,6 +19,13 @@ export interface Task {
   calls: number;
   tools: number;
   activeMs: number;
+  engine?: "durable";
+  researchIndex?: string;
+  researchEvidence?: Chunk[];
+  researchWaiting?: boolean;
+  runOpen?: boolean;
+  modelStoppedAt?: number;
+  resumeSeq?: number;
   answer?: string;
   error?: string;
   evidence?: unknown;
@@ -37,6 +45,8 @@ export interface Operation {
   state: "pending" | "sent" | "done" | "cancelled";
   deadline: number;
   result?: unknown;
+  delivered?: boolean;
+  attempts?: number;
 }
 export interface Memory {
   id: string;
