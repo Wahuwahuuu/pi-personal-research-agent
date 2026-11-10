@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>Personal Research Agent · 验证工作台</title>
-    <link rel="stylesheet" href="/style.css" />
+    <link rel="stylesheet" href="/style.css" /><link rel="stylesheet" href="/vendor/katex.css" />
   </head>
   <body>
     <header>
@@ -36,6 +36,9 @@
             <h2>交代一个任务</h2>
             <span id="device" class="badge">本地节点未连接</span>
           </div>
+          <div class="row"><label>研究会话 <select id="conversation"><option value="">新会话</option></select></label><button id="rename" type="button" class="secondary">重命名</button></div>
+          <label>研究项目 <input id="project" value="default" maxlength="128" /></label>
+          <details><summary>论文范围</summary><p>选择论文后，后续研究只在所选范围内执行。清空表示整个目录。</p><select id="scope" multiple aria-label="研究论文范围"></select><button id="save-scope" type="button">保存范围</button></details>
           <form id="task-form">
             <textarea
               id="prompt"
@@ -109,6 +112,8 @@
       </div>
       <p id="error" role="alert"></p>
     </main>
-    <script src="/app.js" defer></script>
+    <dialog id="source-dialog"><button id="close-source" class="secondary">关闭</button><div id="source-content"></div></dialog>
+    <dialog id="progress-dialog"><button id="close-progress" class="secondary">关闭</button><div id="progress-content"></div></dialog>
+    <script type="module" src="/app.js"></script>
   </body>
 </html>

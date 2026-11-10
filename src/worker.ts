@@ -364,7 +364,7 @@ export class PersonalAgent extends DurableObject<Env> {
         t.kind === "research" &&
         !t.sessionId &&
         t.tools === 0 &&
-        this.env.RESEARCH_ENGINE === "durable"
+        (this.env.RESEARCH_ENGINE === "durable" || b.engine === "durable")
       )
         { t.engine = "durable"; t.workflow ??= newWorkflow(); }
       this.save();

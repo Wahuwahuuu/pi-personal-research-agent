@@ -1,3 +1,32 @@
+import {renderMarkdown} from "./markdown.js";
+import {TaskProgressPanel} from "./task-progress.js";
+let currentState,papers=[];
+async function openSource(t,source){
+ const target=$("source-content");target.replaceChildren();
+ const heading=document.createElement("h2");heading.textContent=papers.find(p=>p.paper_id===source.paper_id)?.title??source.paper_id;
+ const meta=document.createElement("p");meta.textContent=source.section+" · "+source.chunk_id+" · "+source.start+"–"+source.end;
+ const body=document.createElement("div");renderMarkdown(body,source.text);
+ target.append(heading,meta,body);
+ const paper=papers.find(p=>p.paper_id===source.paper_id);
+ for(const [label,url] of [["打开本地 PDF",paper?.localUrl],["打开公开原文",paper?.originalUrl]]){
+  if(!url)continue;const link=document.createElement("a");link.textContent=label;link.href=url;link.target="_blank";link.rel="noopener noreferrer";target.append(link,document.createTextNode(" "));
+ }
+ target.append(button("翻译这段原文",async()=>{await api("tasks/"+t.id+"/translate","POST",{sourceIds:[source.chunk_id],requestId:crypto.randomUUID()});await refresh();$("source-dialog").close();}));
+ if(!$("source-dialog").open)$("source-dialog").showModal();
+}
+function renderConversations(s){
+ const selected=$("conversation").value,select=$("conversation");select.replaceChildren(new Option("新会话",""));
+ for(const c of s.conversations??[])select.add(new Option(c.title,c.id));
+ if([...select.options].some(o=>o.value===selected))select.value=selected;
+}
+async function loadPapers(){
+ const version=currentState?.tasks.findLast(t=>t.researchIndex)?.researchIndex;
+ if(!version)return;
+ papers=await api("papers?indexVersion="+encodeURIComponent(version));
+ $("scope").replaceChildren();
+ const scope=currentState.conversations?.find(c=>c.id===$("conversation").value)?.scope??[];
+ for(const p of papers){const option=new Option(p.title,p.paper_id);option.selected=scope.includes(p.paper_id);$("scope").add(option);}
+}
 const $ = (id) => document.getElementById(id);
 let socket,
   reconnectTimer,
@@ -53,6 +82,7 @@ const labels = {
   cancelled: "已取消",
 };
 function render(s) {
+  currentState=s;renderConversations(s);
   $("model-status").textContent =
     s.mode === "mock"
       ? "当前为模拟模型验证环境，输出不代表科研结论。"
@@ -64,11 +94,20 @@ function render(s) {
   for (const name of ["tasks", "memories", "notices", "plans"])
     $(name).replaceChildren();
   for (const t of [...s.tasks].reverse()) {
-    const d = item(`${labels[t.status]} · ${t.input}`, t.answer || t.error);
+    if($("conversation").value&&t.conversationId!==$("conversation").value)continue;
+    const d = item(labels[t.status]+" · "+t.input, t.error);
+    if(t.answer){const answer=document.createElement("div");renderMarkdown(answer,t.answer,{sources:t.researchEvidence??[],onCitation:index=>openSource(t,t.researchEvidence[index])});d.append(answer);}
+    if(t.workflow?.progress){
+      const b=button("查看逐项进度",()=>{});
+      const panel=new TaskProgressPanel({dialog:$("progress-dialog"),content:$("progress-content"),button:b,papers:()=>papers,onPaper:id=>{const source=t.researchEvidence?.find(e=>e.paper_id===id);if(source)openSource(t,source);}});
+      panel.update(t.workflow.progress);d.append(b);
+    }
+    if(t.workflow?.translation?.items){const hint=document.createElement("p");hint.textContent="译文仅供辅助阅读，以原文为准。";d.append(hint);}
+    if(t.conversationId)d.append(button("继续这个会话",async()=>{$("conversation").value=t.conversationId;render(currentState);await loadPapers();$("prompt").focus();}));
     if (!["completed", "cancelled", "failed"].includes(t.status))
       d.append(button("取消", () => api(`tasks/${t.id}/cancel`, "POST", {})));
-    if (t.status === "failed")
-      d.append(button("重试", () => api(`tasks/${t.id}/continue`, "POST", {})));
+    if (["failed","waiting_user"].includes(t.status))
+      d.append(button("补充并继续",async()=>{$("conversation").value=t.conversationId??"";$("prompt").focus();await loadPapers();}));
     if (t.evidence) {
       const details = document.createElement("details"),
         summary = document.createElement("summary"),
@@ -147,7 +186,7 @@ async function enter() {
   await refresh();
   $("login").hidden = true;
   $("workspace").hidden = false;
-  connect();
+  connect();await loadPapers();
 }
 $("login-form").onsubmit = guard(async () => {
   await api("login", "POST", { token: $("token").value });
@@ -155,13 +194,16 @@ $("login-form").onsubmit = guard(async () => {
   await enter();
 });
 $("task-form").onsubmit = guard(async () => {
-  await api("tasks", "POST", {
+  const submitted=await api("tasks", "POST", {
+    ...( $("conversation").value?{conversationId:$("conversation").value}:{} ),
+    projectId:$("project").value,
     input: $("prompt").value,
     kind: $("kind").value,
     requestId: crypto.randomUUID(),
   });
   $("prompt").value = "";
   await refresh();
+  $("conversation").value=submitted.conversationId;render(currentState);await loadPapers();
 });
 $("memory-form").onsubmit = guard(async () => {
   await api("memories", "POST", { content: $("memory").value });
@@ -187,4 +229,9 @@ $("revoke").onclick = guard(async () => {
   $("device-token").value = "";
   await refresh();
 });
+$("conversation").onchange=guard(async()=>{const c=currentState.conversations?.find(c=>c.id===$("conversation").value);$("project").value=c?.projectId??"default";render(currentState);await loadPapers();});
+$("rename").onclick=guard(async()=>{const id=$("conversation").value;if(!id)return;const title=prompt("会话名称");if(title){await api("conversations/"+id,"PATCH",{title});await refresh();}});
+$("save-scope").onclick=guard(async()=>{const id=$("conversation").value;if(!id)throw Error("请先创建研究会话");await api("conversations/"+id,"PATCH",{scope:[...$("scope").selectedOptions].map(o=>o.value),projectId:$("project").value});await refresh();});
+$("close-source").onclick=()=>$("source-dialog").close();
+$("close-progress").onclick=()=>$("progress-dialog").close();
 enter().catch(() => {});
