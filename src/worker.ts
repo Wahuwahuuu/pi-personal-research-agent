@@ -143,6 +143,7 @@ export class PersonalAgent extends DurableObject<Env> {
                   baseUrl: env.MODEL_BASE_URL ?? "",
                   modelId: env.MODEL_ID ?? "",
                   maxOutput:outputLimit,
+                  onFailure:(code)=>{const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;},
                   onVisible:(text)=>{
                     const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");
                     if(!task||Date.now()-lastPreview<1000)return;
@@ -864,7 +865,7 @@ export class PersonalAgent extends DurableObject<Env> {
         } catch (error) {
           failResearch(this.state,t,error instanceof Error&&/^[A-Z_]{1,64}$/.test(error.message)?error.message:"RESEARCH_WORKFLOW_FAILED");
         }
-      } else failResearch(this.state, t, result.reason ?? "MODEL_FAILED");
+      } else failResearch(this.state, t, t.modelFailure ?? result.reason ?? "MODEL_FAILED");
       this.save();
     }
     const dev = this.device(),
@@ -966,6 +967,7 @@ export class PersonalAgent extends DurableObject<Env> {
       t.status = "running";
       t.runOpen = true;
       t.preview=undefined;
+      t.modelFailure=undefined;
       t.resumeSeq = (t.resumeSeq ?? 0) + 1;
       t.modelOperation = t.id + ":research:" + t.resumeSeq;
       t.modelStarted = Date.now();

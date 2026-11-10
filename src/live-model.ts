@@ -15,6 +15,7 @@ export interface LiveConfig {
   modelId: string;
   maxOutput?:()=>number;
   onVisible?:(text:string)=>void;
+  onFailure?:(code:string)=>void;
 }
 /** Only visible text crosses this adapter into Pi persistence. Provider-native reasoning is never forwarded. */
 export function liveModels(
@@ -158,7 +159,10 @@ export function liveModels(
         message.stopReason=data.choices?.[0]?.finish_reason==="length"?"length":calls.length?"toolUse":"stop";
         events.push({ type: "done", reason: message.stopReason, message });
         events.end(message);
-      } catch {
+      } catch (error) {
+        const known=new Set(["CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
+        const code=error instanceof Error&&known.has(error.message)?error.message:"MODEL_REQUEST_FAILED";
+        config.onFailure?.(code);
         if (admitted && !settled) after();
         message.stopReason = options?.signal?.aborted ? "aborted" : "error";
         message.errorMessage = "MODEL_REQUEST_FAILED";

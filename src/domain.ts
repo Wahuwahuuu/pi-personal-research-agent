@@ -34,6 +34,7 @@ export interface Task {
   resumeSeq?: number;
   answer?: string;
   preview?: string;
+  modelFailure?: string;
   error?: string;
   evidence?: unknown;
   operationId?: string;
