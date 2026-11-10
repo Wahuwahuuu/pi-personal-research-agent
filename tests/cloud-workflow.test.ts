@@ -70,3 +70,13 @@ test("comparison validates paper-by-dimension source coverage rather than counti
  const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"A [cite:a1]"}));
  assert.equal(out.status,"waiting_user");assert.equal(w.execution?.state,"partial");
 });
+
+test("an immediately cited original block quote retains verified metrics without spreading citations to other paragraphs",async()=>{
+ const {inspectCitationAttribution}=await import("../packages/research/internal/agent/citation-attribution.ts");
+ const chunk={paper_id:"p",chunk_id:"c",paragraph_id:"p1",section:"Abstract",text:"The accuracy reaches 80.34\\%.",start:0,end:28,index_version:"v",citation:"[cite:c]",truncated:false};
+ const evidence=new Map([["c",chunk]]);
+ assert.deepEqual(inspectCitationAttribution("> The accuracy reaches 80.34\\%.\n\n[cite:c]",evidence).issues,[]);
+ assert.ok(inspectCitationAttribution("The accuracy reaches 80.34%.\n\n[cite:c]",evidence).issues.length);
+ assert.ok(inspectCitationAttribution("> The accuracy reaches 99%.\n\n[cite:c]",evidence).issues.length);
+ assert.ok(inspectCitationAttribution("> The accuracy reaches 80.34%.\n\nUnrelated paragraph\n\n[cite:c]",evidence).issues.length);
+});

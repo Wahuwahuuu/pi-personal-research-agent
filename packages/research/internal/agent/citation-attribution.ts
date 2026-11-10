@@ -36,9 +36,14 @@ function claims(paragraph:string):string[]{
 /** Metric presence is a bounded check, not a semantic-entailment verdict. */
 export function inspectCitationAttribution(answer:string,evidence:ReadonlyMap<string,Chunk>):{answer:string;checks:ClaimAttribution[];issues:string[]}{
   const checks:ClaimAttribution[]=[],issues:string[]=[];
-  const result=answer.split(/(\r?\n[ \t]*\r?\n)/u).map(paragraph=>{
+  const paragraphs=answer.split(/(\r?\n[ \t]*\r?\n)/u);
+  const result=paragraphs.map((paragraph,index)=>{
     if(/^\r?\n[ \t]*\r?\n$/u.test(paragraph))return paragraph;
-    const inherited=citationIds(paragraph).filter(id=>evidence.has(id));
+    // A standalone citation immediately following a Markdown block quote belongs to that quote.
+    // Do not extend this to ordinary prose or across another content block.
+    const next=paragraphs[index+2]??"";
+    const quoteCitation=/^\s*>/u.test(paragraph)&&/^\s*(?:\[cite:[^\]\n]+\]\s*)+$/u.test(next)?next:"";
+    const inherited=citationIds(paragraph+" "+quoteCitation).filter(id=>evidence.has(id));
     return claims(paragraph).map(claim=>{
       const values=[...new Set(percentages(claim))];
       if(!values.length||!reportedMetric.test(claim)||qualification.test(claim))return claim;

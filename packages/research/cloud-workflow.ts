@@ -64,8 +64,8 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const m=comparison(w,c);
   if(w.phase==="comparison")return JSON.stringify({stage:"comparison",instruction:COMPARISON_CHECK_INSTRUCTION,...shared,workspace:m?.report(),evidence:m?.window(18000)});
   progress(w,c);
-  return JSON.stringify({stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,progress:w.progress,evidence:c.evidence.slice(-20),execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations,
-    ...(c.calls>=5?{final_instruction:"No allowance remains for further tools. Answer from actual visible evidence and state gaps explicitly."}:{})});
+  return JSON.stringify({stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning.",citation_feedback:w.warnings,progress:w.progress,evidence:c.evidence.slice(-20),execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations,
+    ...(c.calls>=5?{final_instruction:"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})});
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
 export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
@@ -110,7 +110,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   const m=comparison(w,c);
   if(decision.state==="complete"&&m&&(m.baselineMissing.length||w.comparison&&!m.complete)){decision.state=c.calls<6?"working":"partial";decision.remaining_needs=["比较范围仍有未确认的论文或维度"];}
   w.tracker=tracker.snapshot();w.execution=decision;
-  if(decision.state==="working"){w.phase="agent";w.warnings.push(...answer.citationIssues);return {};}
+  if(decision.state==="working"){w.phase="agent";w.warnings=[...new Set([...w.warnings,...answer.citationIssues])];if(answer.citationIssues.length)w.warnings.push("Attach each numerical claim or original block quote to its own valid citation. A cited source must contain the reported value; revise unsupported claims or state the gap.");return {};}
   w.phase="finished";progress(w,c,decision,answer.value.answer);
   const d=memory(c);
   d.rememberAnswer(c.id,c.input,answer.value.answer,targets(w),[...answer.value.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]),answer.value.status,decision.state);
