@@ -144,3 +144,12 @@ test("corrected or deleted memory provenance cannot re-enter fresh model context
  const prompt=workflowPrompt(newWorkflow(),next);
  assert.ok(!prompt.includes("OLD_SENTINEL"));assert.ok(c.conversation.history.length===1);
 });
+
+test("plain Markdown comparison still runs dimension coverage before generic completion",()=>{
+ const c=setup("Compare Paper A and Paper B"),w=newWorkflow();
+ c.catalog={...catalog,papers:[{paper_id:"a",title:"Paper A",abstract:"a"},{paper_id:"b",title:"Paper B",abstract:"b"}]};
+ advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["method"]}));
+ c.evidence=[{paper_id:"a",chunk_id:"a1",paragraph_id:"p",section:"Methods",text:"Method A",start:0,end:8,index_version:"v",citation:"[cite:a1]",truncated:false}];
+ c.calls=4;advanceWorkflow(w,c,"A method [cite:a1]. B remains unknown.");
+ assert.equal(w.phase,"comparison");
+});

@@ -138,10 +138,10 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }else{
     w.candidate=output;
     declared=executionFromOutput(output);
-    if(!declared&&c.calls<6){w.phase="completion";return {};}
-    if(!declared)declared={state:"partial",remaining_needs:["模型额度耗尽，完成状态未确认"],origin:"host"};
     const m=comparison(w,c),revision=c.evidence.map(e=>e.chunk_id).sort().join(",");
     if(m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}
+    if(!declared&&c.calls<6){w.phase="completion";return {};}
+    if(!declared)declared={state:"partial",remaining_needs:["模型额度耗尽，完成状态未确认"],origin:"host"};
   }
   const visible=c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id));
   const answer=prepareWorkbenchAnswer(output,{evidence:new Map(visible.map(e=>[e.chunk_id,e])),allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,expectedKind:nonFactual(w)?w.prepared?.frame.intent==="session_control"?"session_control":"catalog":"paper_fact",execution:declared});
@@ -161,7 +161,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   const decision=tracker.decide(declared,{progress_key:c.evidence.map(e=>e.chunk_id).sort().join(","),source_count:c.evidence.length,retrieval_attempts:retrievals.length,successful_retrievals:retrievals.filter(o=>o.state==="done").length,running_tools:0,can_continue:c.calls<6,requires_sources:!nonFactual(w),cited_source_count:answer.visibleCitationCount,citation_issues:answer.citationIssues});
   if(!nonFactual(w))decision.needs_sources=true;
   const m=comparison(w,c);
-  if(decision.state==="complete"&&m&&(m.baselineMissing.length||w.comparison&&!m.complete)){decision.state=c.calls<6?"working":"partial";decision.remaining_needs=["比较范围仍有未确认的论文或维度"];}
+  if(decision.state==="complete"&&m&&(m.baselineMissing.length||!w.comparison||!m.complete)){decision.state=c.calls<6?"working":"partial";decision.remaining_needs=["比较范围仍有未确认的论文或维度"];}
   w.tracker=tracker.snapshot();w.execution=decision;
   if(decision.state==="working"){w.phase="agent";w.citationRepair=answer.citationIssues.length?{answer:answer.original,claims:answer.attribution.filter(a=>a.unmatched_values.length).slice(0,12)}:undefined;w.warnings=[...new Set([...w.warnings,...answer.citationIssues])];if(answer.citationIssues.length)w.warnings.push("Attach each numerical claim or original block quote to its own valid citation. A cited source must contain the reported value; revise unsupported claims or state the gap.");return {};}
   w.phase="finished";progress(w,c,decision,answer.value.answer);
