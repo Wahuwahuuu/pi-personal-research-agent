@@ -14,6 +14,6 @@
     "bindings": [{ "name": "AGENTS", "class_name": "PersonalAgent" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PersonalAgent"] }],
-  "vars": { "MODEL_MODE": "mock", "OWNER_ID": "personal" },
+  "vars": { "MODEL_MODE": "mock", "OWNER_ID": "personal", "RESEARCH_ENGINE": "durable" },
   "observability": { "enabled": false },
 }
