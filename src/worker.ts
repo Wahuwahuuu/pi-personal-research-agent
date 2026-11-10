@@ -1,6 +1,6 @@
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,newCloudMemory} from "../packages/research/cloud-memory.ts";
-import {newWorkflow,workflowPrompt,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
@@ -952,7 +952,7 @@ export class PersonalAgent extends DurableObject<Env> {
       }
       if (terminal(t)) return;
       const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
-      if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:workflowTools(t.workflow,t.calls).length ? null : []},BACKGROUND_CONTEXT);
+      if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:workflowTools(t.workflow,t.calls).length ? null : [],instructions:workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
       const context=t.workflow?this.workflowContext(t):undefined;
       if(context)context.memories=(await this.memoryService().recall(t.input,context.conversation.scope)).items;
       const prompt = t.workflow ? workflowPrompt(t.workflow,context!, observations.ids.length ? JSON.parse(observations.prompt) : undefined) : observations.ids.length

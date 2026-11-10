@@ -64,3 +64,11 @@ test("device wait ends Pi work without model retries and same conversation accep
  assert.equal(requests,2);assert.equal(operations,1);
  }finally{await harness.close(ctx);}
 });
+
+test("managed Pi stages persist their own system contract without the research-answer contract overriding it",async()=>{
+ const {workflowInstruction}=await import("../packages/research/cloud-workflow.ts");let sent:any;
+ const registry=createResearchRegistry({managed:()=>true,catalog:()=>{throw Error("NO_TOOLS");},execute:async()=>{throw Error("NO_TOOLS");},waiting:async()=>false,remember:async()=>{},evidence:async()=>[]});
+ const models=liveModels({authorized:"explicitly-authorized",apiKey:"synthetic-key",baseUrl:"https://example.invalid/v1",modelId:"fixture"},()=>{},()=>{},(async(_u,i)=>{sent=JSON.parse(String(i?.body));return Response.json({choices:[{message:{content:'{"cells":[]}'}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch);
+ const harness=await Harness.open(new MemoryStorage(),{models,registry},ctx);
+ try{const c=await harness.root(ctx,{agent:{model:{provider:"pra",modelId:"fixture"},tools:[],instructions:workflowInstruction({phase:"comparison",warnings:[]})}});await (await c.submit({type:"input",content:"workspace"},ctx)).wait(ctx);const system=sent.messages.find((m:any)=>m.role==="system").content;assert.match(system,/Return bare JSON/);assert.ok(!system.includes("Put execution first"));}finally{await harness.close(ctx);}
+});

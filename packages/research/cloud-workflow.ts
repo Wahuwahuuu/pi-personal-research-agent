@@ -28,6 +28,10 @@ export interface WorkflowContext {
   conversation:ResearchConversation; memories:readonly {content:string}[];
   operations:readonly {tool:string;params:Record<string,unknown>;state:string}[];
 }
+export function workflowInstruction(w:ResearchWorkflow):string{
+ const instruction=w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION;
+ return "The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
+}
 export const newWorkflow=():ResearchWorkflow=>({phase:"prepare",warnings:[]});
 const history=(c:WorkflowContext)=>c.conversation.history.filter(h=>!c.invalidatedMemoryTurns?.includes(h.turn_id));
 const memory=(c:WorkflowContext)=>{
