@@ -101,11 +101,17 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }
   if(w.phase==="prepare"){
     const d=memory(c),allowed=new Set(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>p.paper_id));
+    const preparationContext={original:c.input,allowed,publicPapers:c.catalog.papers,frameId:c.id,history:c.conversation.history.slice(-8),activeConstraints:d.activeConstraints(),priorObjects:{targets:d.state.comparison_order.length?d.state.comparison_order:d.state.current_paper?[d.state.current_paper.paper_id]:[],comparison_dimensions:d.state.comparison_dimensions},personalMemory:true,preferResolvedPaper:true};
     try{
-      w.prepared=parseQuestionPreparation(output,{original:c.input,allowed,publicPapers:c.catalog.papers,frameId:c.id,history:c.conversation.history.slice(-8),activeConstraints:d.activeConstraints(),priorObjects:{targets:d.state.comparison_order.length?d.state.comparison_order:d.state.current_paper?[d.state.current_paper.paper_id]:[],comparison_dimensions:d.state.comparison_dimensions},personalMemory:true});
+      w.prepared=parseQuestionPreparation(output,preparationContext);
       w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);
       d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
-    }catch{w.warnings.push("QUESTION_PREPARATION_FALLBACK");}
+    }catch{
+      w.warnings.push("QUESTION_PREPARATION_FALLBACK");
+      w.prepared=parseQuestionPreparation(JSON.stringify({intent:"answer",targets:[],rewrite:c.input,queries:[],constraints:[]}),preparationContext);
+      w.prepared.retrieval_plan=planPreparedRetrieval(w.prepared,allowed,2);
+      d.applyFrame(w.prepared.frame,c.id);c.conversation.domain=d.state;
+    }
     w.phase="agent";progress(w,c);return {};
   }
   if(w.phase==="comparison"){

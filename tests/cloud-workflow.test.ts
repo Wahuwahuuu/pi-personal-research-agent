@@ -119,3 +119,18 @@ test("citation repair supplies the rejected claim and candidates without auto-at
  c.calls=4;
  assert.equal(advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"accuracy 80% [cite:c]."})).status,"completed");
 });
+
+test("NLU failure retains explicitly named papers for real comparison coverage",()=>{
+ const c=setup("Compare Paper A and Paper B methods"),w=newWorkflow();
+ c.catalog={...catalog,papers:[{paper_id:"a",title:"Paper A",abstract:"a"},{paper_id:"b",title:"Paper B",abstract:"b"}]};
+ advanceWorkflow(w,c,"invalid JSON");assert.deepEqual(w.prepared?.frame.ordered_targets,["a","b"]);
+ assert.ok(JSON.parse(workflowPrompt(w,c)).comparison);
+});
+test("double brackets normalize exact known citation identities only",async()=>{
+ const {prepareWorkbenchAnswer}=await import("../packages/research/internal/agent/workbench-answer.ts");
+ const chunk={paper_id:"p",chunk_id:"c",paragraph_id:"p",section:"Abstract",text:"accuracy 80%",start:0,end:12,index_version:"v",citation:"[cite:c]",truncated:false};
+ const r=prepareWorkbenchAnswer("accuracy 80% [[cite:c]].",{evidence:new Map([["c",chunk]]),allowAnswer:true})!;
+ assert.equal(r.visibleCitationCount,1);assert.deepEqual(r.citationIssues,[]);assert.match(r.value.answer,/\[cite:c\]/);
+ const invalid=prepareWorkbenchAnswer("Claim [[cite:invented]]",{evidence:new Map([["c",chunk]]),allowAnswer:true})!;
+ assert.equal(invalid.visibleCitationCount,0);
+});

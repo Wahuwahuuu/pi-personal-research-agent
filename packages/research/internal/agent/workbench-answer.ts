@@ -99,6 +99,7 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
   else if(execution?.state==='working'||execution?.state==='partial')status='partial';
   if(Object.keys(raw).some(key=>!['status','answer_kind','answer','final_answer','exact_quotes','paper_coverage','execution'].includes(key)))adaptations.push('auxiliary_answer_fields_ignored');
   // Exact identity only. Numeric reference labels are never guessed into source IDs.
+  body=body.replace(/\[\[cite:([^\]\n]+)\]\]/gu,(marker,id:string)=>context.evidence.has(id)?`[cite:${id}]`:marker);
   body=body.replace(/\[\s*(?:cite\s*:\s*)?([^\]\n]+?)\s*\]|【\s*cite\s*:\s*([^】\n]+?)\s*】/giu,(marker:string,ordinary:string|undefined,wide:string|undefined)=>{
     const id=(wide??ordinary??'').trim();
     if(context.evidence.has(id)){if(marker!==`[cite:${id}]`)adaptations.push('visible_citation_format_normalized');return `[cite:${id}]`;}
