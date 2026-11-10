@@ -80,7 +80,8 @@ if (previous) {
   );
 }
 // Secret is sent on stdin, never as a command argument or log line.
-const output = cli(["deploy", ...modelDeploymentArgs(settings)]);
+const build=execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8",windowsHide:true}).trim();
+const output = cli(["deploy", "--var", "BUILD_ID:"+build, ...modelDeploymentArgs(settings)]);
 const url = output.match(
   /https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev/,
 )?.[0];
@@ -95,13 +96,25 @@ await writeFile(
       modelId: settings?.mode === "live" ? settings.modelId : "deterministic-v1",
       thinking: "off",
       freePlanConfirmedByUser: true,
+      build,
       deployed: new Date().toISOString(),
     },
     null,
     2,
   ),
 );
-cli(["secret", "bulk"], JSON.stringify({ ADMIN_TOKEN: token }));
+if(!previous)cli(["secret", "bulk"], JSON.stringify({ ADMIN_TOKEN: token }));
+// Verify the actual personal DO serving traffic, not just the uploaded script.
+let ready=false;
+for(const end=Date.now()+120000;Date.now()<end;){
+ try{
+  const login=await fetch(url+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token}),signal:AbortSignal.timeout(10000)});
+  const cookie=login.headers.get("set-cookie")?.split(";")[0];
+  if(cookie){const r=await fetch(url+"/api/state",{headers:{Cookie:cookie},signal:AbortSignal.timeout(10000)});const state=await r.json() as any;if(r.ok&&state.build===build){ready=true;break;}}
+ }catch{/* Deployment propagation or transient transport; bounded retry without model calls. */}
+ await new Promise(r=>setTimeout(r,1500));
+}
+if(!ready)throw Error("DEPLOYED_BUILD_NOT_SERVING");
 console.log(
   JSON.stringify({
     url,
@@ -110,5 +123,7 @@ console.log(
     thinking: "off",
     adminCredential: "DPAPI protected .local/admin.secret",
     planChanged: false,
+    build,
+    servingBuildVerified:true,
   }),
 );

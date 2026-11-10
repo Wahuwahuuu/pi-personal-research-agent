@@ -52,6 +52,7 @@ interface Env {
   OWNER_ID: string;
   MODEL_MODE: string;
   RESEARCH_ENGINE?: string;
+  BUILD_ID?: string;
   ALLOW_PAID_CALLS?: string;
   MODEL_API_KEY?: string;
   MODEL_BASE_URL?: string;
@@ -212,6 +213,7 @@ export class PersonalAgent extends DurableObject<Env> {
   snapshot() {
     return {
       ...this.state,
+      build:this.env.BUILD_ID??"development",
       tasks: this.state.tasks.map(({ modelPrompt, ...t }) => t),
       deviceOnline: !!this.device(),
       mode: this.env.MODEL_MODE,
