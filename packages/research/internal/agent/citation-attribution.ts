@@ -42,7 +42,8 @@ export function inspectCitationAttribution(answer:string,evidence:ReadonlyMap<st
     // A standalone citation immediately following a Markdown block quote belongs to that quote.
     // Do not extend this to ordinary prose or across another content block.
     const next=paragraphs[index+2]??"";
-    const quoteCitation=/^\s*>/u.test(paragraph)&&/^\s*(?:\[cite:[^\]\n]+\]\s*)+$/u.test(next)?next:"";
+    const quoteBody=paragraph.replace(/^(?:[ \t]*#{1,6}[ \t]+[^\n]*\r?\n)+/u, "");
+    const quoteCitation=/^\s*>/u.test(quoteBody)&&/^\s*(?:\[cite:[^\]\n]+\]\s*)+$/u.test(next)?next:"";
     const inherited=citationIds(paragraph+" "+quoteCitation).filter(id=>evidence.has(id));
     return claims(paragraph).map(claim=>{
       const values=[...new Set(percentages(claim))];

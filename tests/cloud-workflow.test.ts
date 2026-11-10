@@ -102,3 +102,20 @@ test("empty working answers continue into real tools instead of failing as inval
  const restored=JSON.parse(JSON.stringify(w));c.calls=3;
  assert.equal(advanceWorkflow(restored,c,output).status,"waiting_user");assert.equal(restored.execution.stop_reason,"no_execution_progress");
 });
+
+
+test("headings before an original quote do not detach its following citation",async()=>{
+ const {inspectCitationAttribution}=await import("../packages/research/internal/agent/citation-attribution.ts");
+ const e=new Map([["c",{paper_id:"p",chunk_id:"c",paragraph_id:"p",section:"Abstract",text:"accuracy 80%",start:0,end:12,index_version:"v",citation:"[cite:c]",truncated:false}]]);
+ assert.deepEqual(inspectCitationAttribution("## Original\n> accuracy 80%.\n\n[cite:c]",e).issues,[]);
+ assert.ok(inspectCitationAttribution("Uncited accuracy 80%.\n> quote\n\n[cite:c]",e).issues.length);
+});
+test("citation repair supplies the rejected claim and candidates without auto-attaching evidence",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ c.evidence=[{paper_id:"p",chunk_id:"c",paragraph_id:"p",section:"Abstract",text:"accuracy 80%",start:0,end:12,index_version:"v",citation:"[cite:c]",truncated:false}];
+ c.calls=3;
+ advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"accuracy 80%.\n\nSource [cite:c]"}));
+ const p=JSON.parse(workflowPrompt(w,c));assert.equal(p.citation_repair.claims[0].assessment,"missing_citation");assert.deepEqual(p.citation_repair.claims[0].candidate_sources["80%"],["c"]);
+ c.calls=4;
+ assert.equal(advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"accuracy 80% [cite:c]."})).status,"completed");
+});

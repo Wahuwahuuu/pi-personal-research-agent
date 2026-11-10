@@ -18,6 +18,7 @@ export interface ResearchWorkflow {
   tracker?:ReturnType<TurnExecutionTracker["snapshot"]>;
   comparison?:ComparisonReport; comparisonRevision?:string; progress?:TaskProgress;
   visibleSourceIds?:string[];
+  citationRepair?:{answer:string;claims:unknown[]};
   warnings:string[];
 }
 export interface WorkflowContext {
@@ -81,7 +82,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Results remain complete in durable storage. The model sees each whole source at most once.
   const delivered=(observations as any)?.observations??[];
   const projected=delivered.map((o:any)=>({...o,result:{...o.result,...(o.result?.chunks?{chunks:undefined,chunk_ids:o.result.chunks.map((e:any)=>e.chunk_id)}:{})}}));
-  const payload:any={stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning.",citation_feedback:w.warnings,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
+  const payload:any={stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
     ...(c.calls>=5?{final_instruction:"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
@@ -147,7 +148,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   const m=comparison(w,c);
   if(decision.state==="complete"&&m&&(m.baselineMissing.length||w.comparison&&!m.complete)){decision.state=c.calls<6?"working":"partial";decision.remaining_needs=["比较范围仍有未确认的论文或维度"];}
   w.tracker=tracker.snapshot();w.execution=decision;
-  if(decision.state==="working"){w.phase="agent";w.warnings=[...new Set([...w.warnings,...answer.citationIssues])];if(answer.citationIssues.length)w.warnings.push("Attach each numerical claim or original block quote to its own valid citation. A cited source must contain the reported value; revise unsupported claims or state the gap.");return {};}
+  if(decision.state==="working"){w.phase="agent";w.citationRepair=answer.citationIssues.length?{answer:answer.original,claims:answer.attribution.filter(a=>a.unmatched_values.length).slice(0,12)}:undefined;w.warnings=[...new Set([...w.warnings,...answer.citationIssues])];if(answer.citationIssues.length)w.warnings.push("Attach each numerical claim or original block quote to its own valid citation. A cited source must contain the reported value; revise unsupported claims or state the gap.");return {};}
   w.phase="finished";progress(w,c,decision,answer.value.answer);
   const d=memory(c);
   d.rememberAnswer(c.id,c.input,answer.value.answer,targets(w),[...answer.value.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]),answer.value.status,decision.state);
