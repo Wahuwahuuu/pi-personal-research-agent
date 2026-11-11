@@ -64,6 +64,8 @@ const messages: Record<string, string> = {
   LAST_PASSKEY: "请先添加另一枚通行密钥，再删除这一枚。",
   ACCOUNT_DATA_DIRECTORY_MISMATCH:
     "本机资料目录属于另一个账户，请选择独立目录。",
+  CONTEXT_CHANGED:
+    "研究依赖的记忆已修改。已暂停旧上下文，请补充当前要求后继续。",
   CONTEXT_LIMIT: "本次上下文过长，请缩小研究范围后继续。",
 };
 export function errorText(e: unknown) {

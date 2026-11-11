@@ -1,3 +1,5 @@
+import {MemoryIndex} from "./memory-index.ts";
+import {digestEntries} from "../packages/research/memory.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
 import {Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
 import { IdentityRegistry } from "./identity.ts";
@@ -6,8 +8,8 @@ import { DeletionStore, deletePiConversation, deleteConversationState } from "./
 import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
 import { StateRepository, type StateStorage } from "./state-store.ts";
 import {answerPreview} from "./model-response.ts";
-import {cloudMemory,newCloudMemory} from "../packages/research/cloud-memory.ts";
-import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/research/cloud-memory.ts";
+import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
@@ -93,6 +95,7 @@ export class PersonalAgent extends DurableObject<Env> {
   deletions: DeletionStore;
   workspace:Workspace;
   artifacts:Artifacts;
+  memoryIndex:MemoryIndex;
   database: StateStorage;
   private busy = false;
   private ownerId: string;
@@ -145,6 +148,9 @@ export class PersonalAgent extends DurableObject<Env> {
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_reading_sources (version TEXT, id TEXT, value TEXT NOT NULL, PRIMARY KEY(version,id))",
     );
+    for(const e of this.state.cloudMemory.entries)if(e.kind!=="preference"&&!e.projectId&&e.source_session)e.projectId=this.state.conversations?.find(c=>c.id===e.source_session)?.projectId;
+    this.memoryIndex=new MemoryIndex(this.database);
+    this.memoryIndex.sync(this.state.cloudMemory.entries);
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
@@ -166,6 +172,7 @@ export class PersonalAgent extends DurableObject<Env> {
           const previousUsage={...this.state.usage},previousCalls=budget.calls,previousChildCalls=t.calls;
           try {
             if(t.status!=="running")throw new Error("TASK_CLOSED");
+            if(this.state.cloudMemory?.invalidatedTurns?.includes(t.id))throw new Error("CONTEXT_CHANGED");
             this.database.transactionSync(()=>{
               reserve(this.state,budget,52000,reservedOutput);
               if(budget!==t)t.calls++;
@@ -254,14 +261,18 @@ export class PersonalAgent extends DurableObject<Env> {
       new WebSocketRequestResponsePair("ping", "pong"),
     );
   }
-  memoryService(){
+  memoryService(projectId?:string){
     const version=this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex&&t.researchIndex!=="cloud-only")?.researchIndex;
-    const papers=version?this.catalog(version).papers:[];
-    return cloudMemory(this.state.cloudMemory!,papers,this.ownerId,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""]);
+    const papers=[...(version?this.catalog(version).papers:[])];
+    for(const e of this.state.cloudMemory!.entries)for(const id of e.paper_ids)if(!papers.some(p=>p.paper_id===id))papers.push({paper_id:id,title:id,abstract:""});
+    return cloudMemory(this.state.cloudMemory!,papers,this.ownerId,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""],{
+      projectId,...(projectId?{recall:(query:string,ids:readonly string[],preferences:boolean,recent:boolean)=>this.memoryIndex.recall(query,ids,projectId,preferences,recent)}:{})
+    });
   }
   save() {
     this.state.memories=this.state.cloudMemory!.entries.map(m=>({id:m.id,content:m.content,source:m.source_session||"user",updated:Date.parse(m.updated_at)}));
     this.repository.save(this.state);
+    this.memoryIndex.sync(this.state.cloudMemory!.entries);
   }
   snapshot() {
     return {
@@ -556,7 +567,10 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (path === "/api/memories" && r.method === "POST") {
       const b = await this.body(r);
-      const m = await this.memoryService().save({id:typeof b.id==="string"?b.id:undefined,kind:this.state.cloudMemory!.entries.find(e=>e.id===b.id)?.kind??"note",content:text(b.content,1200),edited:true});
+      const prior=this.state.cloudMemory!.entries.find(e=>e.id===b.id),projectId=prior?.projectId??(typeof b.projectId==="string"?this.workspace.getProject(b.projectId).id:undefined);
+      if(b.category!==undefined&&!["preference","constraint","conclusion","question"].includes(b.category as string))throw new Problem("INVALID_MEMORY_CATEGORY");
+      if(b.category==="conclusion"&&!prior?.sources?.length)throw new Problem("EVIDENCE_REQUIRED");
+      const m = await this.memoryService(projectId).save({id:typeof b.id==="string"?b.id:undefined,kind:prior?.kind??(b.category==="preference"?"preference":"note"),category:b.category??prior?.category??"constraint",paper_ids:prior?.paper_ids??[],content:text(b.content,1200),edited:true} as any);
       this.save();
       this.publish();
       return json(m);
@@ -565,7 +579,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const id=path.split("/").at(-1)!;
       if(!this.state.cloudMemory!.entries.some(m=>m.id===id))throw new Problem("NOT_FOUND",404);
       await this.memoryService().remove(id);
-      this.save();
+      this.workspace.forgetEntity(id);this.save();
       this.publish();
       return json({ ok: true });
     }
@@ -605,6 +619,9 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   async workspaceRoute(r:Request,path:string):Promise<Response|undefined>{
     const p=new URL(r.url).searchParams;
+    if(path==="/api/memories"&&r.method==="GET")return json(this.memoryIndex.page({query:p.get("q")??"",projectId:p.get("project")??undefined,category:p.get("category")??undefined,includeInactive:p.get("inactive")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit")??30)}));
+    const memoryRevision=path.match(/^\/api\/memories\/([^/]+)\/revisions$/);
+    if(memoryRevision&&r.method==="GET")return json(this.memoryIndex.revisions(memoryRevision[1]));
     if(path==="/api/overview"&&r.method==="GET")return json({
       build:this.env.BUILD_ID??"development",settings:this.workspace.settings(),
       projects:this.workspace.projects({limit:50}),conversations:conversationPage(this.state,{limit:30}),
@@ -999,6 +1016,12 @@ export class PersonalAgent extends DurableObject<Env> {
     return {id:t.id,input:t.input,calls:t.calls,invalidatedMemoryTurns:this.state.cloudMemory?.invalidatedTurns,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
   }
   async tickResearch() {
+    for(const changed of this.state.tasks.filter(t=>!terminal(t)&&this.state.cloudMemory?.invalidatedTurns?.includes(t.id)&&t.error!=="CONTEXT_CHANGED")){
+      changed.status="waiting_user";changed.error="CONTEXT_CHANGED";changed.updated=Date.now();
+      for(const op of this.state.operations.filter(o=>o.taskId===changed.id&&o.state!=="done"))op.state="cancelled";
+      if(changed.runOpen){await this.harness.abort({session:changed.sessionId});changed.runOpen=false;}
+      changed.modelPrompt=undefined;this.save();
+    }
     // Settle the Pi run even if a fast device result already changed the business task state.
     for (const t of this.state.tasks.filter(
       (t) => t.engine === "durable" && t.runOpen,
@@ -1015,7 +1038,8 @@ export class PersonalAgent extends DurableObject<Env> {
           (t.modelStarted ?? Date.now()) >=
         180000
       ) {
-        failResearch(this.state, t, "ACTIVE_DEADLINE");
+        const retained=t.workflow&&skipMemory(t.workflow,"budget_exhausted");
+        if(retained){Object.assign(t,retained);notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮时间上限。");}else failResearch(this.state, t, "ACTIVE_DEADLINE");
         await this.harness.abort({ session: t.sessionId });
         t.runOpen = false;
         continue;
@@ -1042,6 +1066,7 @@ export class PersonalAgent extends DurableObject<Env> {
       t.preview=undefined;
       t.modelPrompt = undefined;
       if (terminal(t)) continue;
+      if(this.state.cloudMemory?.invalidatedTurns?.includes(t.id)){t.status="waiting_user";t.error="CONTEXT_CHANGED";this.save();continue;}
       if (t.researchWaiting) {
         // Pi's terminated/unanswered outcome is not business completion.
         t.status = this.state.operations.some(
@@ -1057,9 +1082,21 @@ export class PersonalAgent extends DurableObject<Env> {
               if(t.workflow.automatic&&!t.workflow.cloudOnly&&t.researchIndex==="cloud-only")t.researchIndex=undefined;
               t.status="queued";this.save();continue;
             }
-            t.status=outcome.status; t.answer=outcome.answer;
+            t.answer=outcome.answer;
+            if(beginMemory(t.workflow,outcome,t.calls,t.researchEvidence??[])){t.status="queued";this.save();continue;}
+            t.status=outcome.status;
             const conversation=this.state.conversations!.find(c=>c.id===t.conversationId)!;
-            if(!t.workflow.translation)await this.memoryService().remember(conversation.id,t.id,t.input,conversation.domain!,t.status);
+            if(!t.workflow.translation){
+              const service=this.memoryService(conversation.projectId);
+              await service.remember(conversation.id,t.id,t.input,conversation.domain!,t.status,t.workflow.memory?.digest);
+              if(t.workflow.memory?.digest){
+                try{
+                  const entries=digestEntries(t.workflow.memory.digest,t.researchEvidence??[],this.catalog(t.researchIndex!).papers,conversation.id,t.id,conversation.projectId);
+                  for(const entry of entries)await service.save(entry);
+                  t.workflow.memory.state="saved";
+                }catch{t.workflow.memory.state="failed";t.workflow.warnings.push("MEMORY_PERSIST_FAILED");}
+              }
+            }
 
           } else {
             t.status = validateResearchAnswer(t, result.text ?? "");
@@ -1076,6 +1113,9 @@ export class PersonalAgent extends DurableObject<Env> {
         } catch (error) {
           failResearch(this.state,t,error instanceof Error&&/^[A-Z_]{1,64}$/.test(error.message)?error.message:"RESEARCH_WORKFLOW_FAILED");
         }
+      } else if(t.workflow?.phase==="memory"&&t.workflow.memory){
+        t.answer=t.workflow.memory.answer;t.status=t.workflow.memory.status;t.workflow.memory.state="failed";t.workflow.phase="finished";t.workflow.warnings.push("MEMORY_SYNTHESIS_FAILED");
+        notice(this.state,"task:"+t.id,"研究回答已保留，本轮记忆整理未完成。");
       } else if(t.modelFailure&&BUDGET_STOPS.has(t.modelFailure)) {
         t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();
         notice(this.state,"budget:"+t.id,"任务已因预算或费率检查暂停，已完成的研究仍保留。");
@@ -1155,7 +1195,8 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
     if (budget.calls >= 6 || budget.activeMs >= 180000) {
-      failResearch(this.state, t, "MODEL_BUDGET");
+      const retained=t.workflow&&skipMemory(t.workflow,"budget_exhausted");
+      if(retained){Object.assign(t,retained);notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮预算上限。");this.save();}else failResearch(this.state, t, "MODEL_BUDGET");
       return;
     }
     try {
@@ -1169,7 +1210,15 @@ export class PersonalAgent extends DurableObject<Env> {
       const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
       if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:workflowTools(t.workflow,t.calls).length ? null : [],instructions:workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
       const context=t.workflow?this.workflowContext(t):undefined;
-      if(context)context.memories=(await this.memoryService().recall(t.input,context.conversation.scope)).items;
+      if(context){
+        const recalled=(await this.memoryService(context.conversation.projectId).recall(t.input,context.conversation.scope)).items;context.memories=recalled;
+        const domain=context.conversation.domain;
+        recordMemoryInputs(this.state.cloudMemory!,t.id,recalled.map(m=>m.id),[
+          ...context.conversation.history.slice(-8).map(h=>h.turn_id),
+          ...(domain?[...domain.user_constraints,...domain.conclusions,...(domain.reading_notes??[]),...domain.unresolved_questions,...domain.pending_inferences].map(e=>e.source_turn):[])
+        ].filter(id=>!this.state.cloudMemory!.invalidatedTurns?.includes(id)));
+        context.project=this.workspace.getProject(context.conversation.projectId);context.researchDirection=this.workspace.settings().researchDirection;
+      }
       const prompt = t.workflow ? workflowPrompt(t.workflow,context!, observations.ids.length ? JSON.parse(observations.prompt) : undefined) : observations.ids.length
         ? observations.prompt
         : JSON.stringify({

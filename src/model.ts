@@ -1,3 +1,4 @@
+import {projectProviderMessages} from "./provider-context.ts";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import {
   createAssistantMessageEventStream,
@@ -33,7 +34,7 @@ export function mockModels(
     queueMicrotask(async () => {
       try {
         await before();
-        const source = JSON.stringify(context.messages);
+        const source = JSON.stringify(projectProviderMessages(context.messages));
         const input = Math.ceil(new TextEncoder().encode(source).length / 3);
         const names = getCurrentTools(context.messages).map((t) => t.name);
         const research = names.includes("search_papers");
@@ -93,6 +94,7 @@ export function mockModels(
             },
             answer: content,
           });
+        if(frame?.stage==="memory")content=JSON.stringify({readings:[...new Set((frame.sources??[]).map((s:any)=>s.paper_id))].map(paper_id=>{const sources=frame.sources.filter((s:any)=>s.paper_id===paper_id);return{paper_id,topic:"模拟原文校验",progress:"已读取模拟片段",key_points:sources.slice(0,1).map((s:any)=>({text:"模拟证据可定位",chunk_id:s.chunk_id,quote:Array.from(s.text).slice(0,80).join("")})),open_questions:[]};})});
         if(frame?.stage==="translation")content=JSON.stringify({translations:frame.excerpts.map((s:any)=>({chunk_id:s.chunk_id,text:"[模拟翻译] "+s.text}))});
         if(frame?.stage==="prepare")content=JSON.stringify({intent:frame.automatic&&!/paper|research|论文|检索|比较|阅读/iu.test(frame.request)?"session_control":"answer",targets:[],rewrite:frame.request,queries:[],constraints:[]});
         if(frame?.stage==="completion")content=JSON.stringify({state:"complete",remaining_needs:[],needs_sources:true});

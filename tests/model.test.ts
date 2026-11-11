@@ -224,3 +224,11 @@ test("asynchronous admission is awaited and cancellation before dispatch settles
  await new Promise<void>(r=>setImmediate(r));assert.equal(requests,0);
  abort.abort();release();assert.equal((await result).stopReason,"aborted");assert.equal(requests,0);assert.deepEqual(usage,{input:0,output:0});
 });
+
+test("actual provider payload excludes superseded archived memory in a managed continuous conversation",async()=>{
+ let sent:any;
+ const models=liveModels(config,()=>{},()=>{},(async(_url,init)=>{sent=JSON.parse(String(init?.body));return Response.json({choices:[{message:{content:"OK"}}],usage:{prompt_tokens:10,completion_tokens:1}});})as typeof fetch);
+ const messages:any[]=[{role:"user",content:"DELETED_MEMORY_SENTINEL",timestamp:0},...Array.from({length:200},(_,i)=>({role:"user",content:"Archived discussion ".repeat(50)+i,timestamp:i+1})),{role:"user",content:JSON.stringify({projection:"pra-context-v1",request:"continue",memory:["corrected preference"],context_manifest:{archived_turns:201,visible_recent_turns:[]}}),timestamp:300}];
+ const result=await models.stream(models.getModel("pra","test")!,{messages}).result();
+ assert.equal(result.stopReason,"stop");assert.equal(sent.messages.length,1);assert.ok(!JSON.stringify(sent).includes("DELETED_MEMORY_SENTINEL"));assert.ok(JSON.stringify(sent).includes("corrected preference"));
+});

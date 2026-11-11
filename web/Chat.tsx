@@ -238,6 +238,25 @@ export function Chat({
                       {errorText(new Error(t.error))}
                     </p>
                   )}
+                  <div role="status" aria-live="polite" aria-atomic="true">
+                    {t.workflow?.memory && (
+                      <p className="help">
+                        {t.workflow.memory.state === "saved"
+                          ? "本次研究记忆已整理。"
+                          : t.workflow.memory.state === "pending"
+                            ? "正在整理有原文依据的研究记忆…"
+                            : t.workflow.memory.state === "budget_exhausted"
+                              ? "本轮预算已用尽，阅读结果已保留，记忆尚未整理。"
+                              : "阅读结果已保留，本轮记忆整理未完成。"}{" "}
+                        <button
+                          className="text-button"
+                          onClick={() => navigate("memory")}
+                        >
+                          查看记忆
+                        </button>
+                      </p>
+                    )}
+                  </div>
                   <TaskProgress task={t} />
                   <div className="message-actions">
                     {t.researchEvidence?.length ? (

@@ -1,3 +1,4 @@
+import { MemoryView } from "./Memory.tsx";
 import {
   StrictMode,
   useCallback,
@@ -15,7 +16,6 @@ import {
   Projects,
   Library,
   Activity,
-  MemoryView,
   Inbox,
   ArtifactView,
 } from "./WorkspaceViews.tsx";
@@ -443,7 +443,7 @@ function Workspace({
   ) : route.page === "inbox" ? (
     <Inbox {...props!} />
   ) : route.page === "memory" ? (
-    <MemoryView {...props!} />
+    <MemoryView key={route.id ?? "all"} projectId={route.id} {...props!} />
   ) : route.page === "settings" ? (
     <SettingsView
       {...props!}

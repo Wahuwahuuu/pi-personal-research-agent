@@ -39,3 +39,18 @@ test("memory rejects credentials, source findings do not become truth, paused me
  await paused.remember("c","t2","以后详细回答",d.state,"completed");
  assert.equal(state.entries.length,1);
 });
+
+test("correction invalidates transitive cross-conversation derivations and replay cannot resurrect them",async()=>{
+ const {recordMemoryInputs}=await import("../packages/research/cloud-memory.ts");
+ const state=newCloudMemory(),m=cloudMemory(state,papers,"owner");
+ const first=await m.save({kind:"note",content:"Original constraint",source_session:"one",source_turn:"t0"});
+ recordMemoryInputs(state,"t1",[first.id],[]);
+ const second=await m.save({kind:"reading",content:"Derived record",paper_ids:["a"],source_session:"two",source_turn:"t1"});
+ recordMemoryInputs(state,"t2",[second.id],["t1"]);
+ await m.save({kind:"note",content:"Further derivation",source_session:"three",source_turn:"t2"});
+ await m.save({id:first.id,kind:"note",content:"Corrected constraint",edited:true});
+ assert.deepEqual(state.entries.map(e=>e.content),["Corrected constraint"]);assert.ok(state.invalidatedTurns?.includes("t2"));
+ await m.save({kind:"note",content:"Replay under a new slot",source_turn:"t2"}).catch(()=>{});
+ assert.equal(state.entries.length,1);
+ const restored=cloudMemory(JSON.parse(JSON.stringify(state)),papers,"owner");await restored.remove(first.id);assert.equal((await restored.recall("constraint",[])).items.length,0);
+});

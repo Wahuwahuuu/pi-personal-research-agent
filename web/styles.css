@@ -1924,3 +1924,30 @@ textarea {
 .markdown table {
   scrollbar-color: var(--muted) var(--bg);
 }
+
+.memory-evidence {
+  font-size: 12px;
+  margin-top: 14px;
+}
+.memory-evidence figure {
+  margin: 16px 0;
+}
+.memory-evidence blockquote {
+  margin: 0 0 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  white-space: pre-wrap;
+}
+.memory-evidence figcaption {
+  color: var(--muted);
+  font-size: 11px;
+}
+.memory-evidence .diagnostics {
+  margin-top: 6px;
+}
+
+@media (max-width: 600px) {
+ .memory-filters {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+ .memory-filters input {grid-column:1/-1;width:100%;min-width:0}
+ .memory-filters select {width:100%;min-width:0}
+}

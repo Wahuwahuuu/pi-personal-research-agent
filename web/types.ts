@@ -66,16 +66,7 @@ export interface Overview {
   build: string;
   model: { id: string; mode: string; thinking: string };
 }
-export interface Memory {
-  id: string;
-  kind: string;
-  content: string;
-  source_session: string;
-  source_turn: string;
-  paper_ids: string[];
-  updated_at: string;
-  edited: boolean;
-}
+export type { CloudMemoryEntry as Memory } from "../packages/research/cloud-memory.ts";
 export interface SavedArtifact extends Artifact {
   content: string;
   sources: Chunk[];

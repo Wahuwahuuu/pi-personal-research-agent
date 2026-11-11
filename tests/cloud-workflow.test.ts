@@ -188,3 +188,14 @@ test("valid prose survives an empty answer envelope used as trailing execution m
  const out=advanceWorkflow(w,c,'你好，我可以帮助你研究论文。\n\n{"execution":{"state":"complete","remaining_needs":[],"needs_sources":false},"answer":""}');
  assert.equal(out.status,"completed");assert.equal(out.answer,"你好，我可以帮助你研究论文。");
 });
+
+test("optional memory respects its actual source window and budget exhaustion preserves completed answers",async()=>{
+ const {beginMemory,skipMemory}=await import("../packages/research/cloud-workflow.ts");
+ const c=setup(),w=newWorkflow();c.evidence=[{paper_id:"fixture-paper",paragraph_id:"p",chunk_id:"hidden",index_version:"v",section:"body",start:0,end:7,text:"omitted"}];
+ const done={answer:"Known result [cite:hidden]",status:"completed" as const};
+ assert.equal(beginMemory(w,done,5,c.evidence),true);assert.deepEqual(skipMemory(w,"budget_exhausted"),done);assert.equal(w.phase,"finished");
+ const limited=newWorkflow();assert.equal(beginMemory(limited,done,6,c.evidence),false);assert.equal(limited.memory?.state,"budget_exhausted");
+ const pending=newWorkflow();beginMemory(pending,done,4,c.evidence);pending.memory!.visibleSourceIds=[];
+ const out=advanceWorkflow(pending,c,JSON.stringify({readings:[{paper_id:"fixture-paper",topic:"a",progress:"b",key_points:[{text:"c",chunk_id:"hidden",quote:"omitted"}],open_questions:[]}]}));
+ assert.equal(out.answer,done.answer);assert.equal(pending.memory?.state,"failed");
+});

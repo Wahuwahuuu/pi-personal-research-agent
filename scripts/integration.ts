@@ -178,10 +178,14 @@ try {
     (t: any) => t.id === research.id,
   );
   assert.equal(researchDone.engine, "durable");
-  assert.equal(researchDone.calls, 4);
+  assert.equal(researchDone.calls, 5);
   assert.equal(researchDone.tools, 2);
-  assert.equal(researchDone.resumeSeq, 4);
+  assert.equal(researchDone.resumeSeq, 5);
   assert.match(researchDone.answer, /cite:fixture-chunk/);
+  const findings=await api("memories?category=conclusion&q="+encodeURIComponent("证据"));
+  assert.equal(findings.items.length,1);assert.equal(findings.items[0].sources[0].quote,"Evidence.");assert.equal(findings.items[0].semanticStatus,"unreviewed");assert.equal(findings.items[0].projectId,"default");
+  assert.equal(researchDone.workflow.memory.state,"saved");
+  checks.push("real workerd FTS5 finds source-bound reading conclusions; consolidation is charged to the original task");
   const savedArtifact=await api("artifacts","POST",{requestId:"artifact-save",taskId:research.id,kind:"reading",title:"Research record"});
   assert.equal(savedArtifact.sources[0].chunk_id,"fixture-chunk");
   const editedArtifact=await api("artifacts/"+savedArtifact.id,"PATCH",{requestId:"artifact-edit",version:1,content:"User-edited result [cite:fixture-chunk]"});
@@ -189,13 +193,13 @@ try {
   const exported=await fetch(base+"/api/artifacts/"+savedArtifact.id+"/export?format=md",{headers:{Cookie:cookie}});assert.ok((await exported.text()).includes("Evidence."));
   checks.push("research artifacts preserve versioned original evidence, reject destructive edits and export source-bearing content");
   checks.push(
-    "real DO registered research tools; preparation and three model runs reused one session across two validated observations",
+    "real DO registered research tools; preparation, research and memory synthesis reused one session across two validated observations",
   );
   const translation = await api("tasks/"+research.id+"/translate","POST",{sourceIds:["fixture-chunk"],requestId:"translation-1"});
   await until(async()=>{const t=(await api("state")).tasks.find((t:any)=>t.id===translation.id);assert.notEqual(t.status,"failed",t.error);return t.status==="completed";},45000);
   const translatedState=await api("state");
   assert.equal(translatedState.tasks.find((t:any)=>t.id===translation.id).calls,1);
-  assert.equal(translatedState.tasks.find((t:any)=>t.id===research.id).calls,5);
+  assert.equal(translatedState.tasks.find((t:any)=>t.id===research.id).calls,6);
   assert.equal((await api("tasks/"+research.id+"/translate","POST",{sourceIds:["fixture-chunk"],requestId:"translation-cached"})).id,translation.id);
   checks.push("Pi source translation reuses source identity and cache, charging the original task budget");
   const duplicate = await api("tasks", "POST", {
@@ -215,7 +219,7 @@ try {
   const m = await api("memories", "POST", { content: "中文回答" });
   await api("memories", "POST", { id: m.id, content: "提供原文引用" });
   await api("memories/" + m.id, "DELETE");
-  assert.equal((await api("state")).memories.length, 0);
+  assert.ok(!(await api("state")).memories.some((entry:any)=>entry.id===m.id));
   checks.push("memory create/correct/delete persisted");
   await stopChild(server);
   server = child(serverArgs);
@@ -228,7 +232,7 @@ try {
     restored.tasks.find((t: any) => t.id === research.id)?.status,
     "completed",
   );
-  assert.equal(restored.memories.length, 0);
+  assert.ok(!restored.memories.some((entry:any)=>entry.id===m.id));
   assert.equal(
     restored.operations.filter((o: any) => o.taskId === research.id).length,
     2,

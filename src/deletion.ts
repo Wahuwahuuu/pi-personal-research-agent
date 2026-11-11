@@ -1,3 +1,4 @@
+import {invalidateMemoryInputs} from "../packages/research/cloud-memory.ts";
 import { Problem, cancel, type State } from "./domain.ts";
 import type { StateStorage } from "./state-store.ts";
 
@@ -91,7 +92,7 @@ export function deleteConversationState(state:State,id:string) {
   const c=state.conversations?.find(c=>c.id===id),turns=new Set([...(c?.history.map(h=>h.turn_id)??[]),...ids]);
   const removed=state.cloudMemory?.entries.filter(m=>m.source_session===id||turns.has(m.source_turn))??[];
   if(state.cloudMemory) {
-    state.cloudMemory.entries=state.cloudMemory.entries.filter(m=>!removed.includes(m));
+    invalidateMemoryInputs(state.cloudMemory,removed.map(m=>m.id),[...turns]);
     state.cloudMemory.deletedSlots=[...new Set([...state.cloudMemory.deletedSlots,...removed.map(m=>m.slot)])];
     state.cloudMemory.invalidatedTurns=[...new Set([...(state.cloudMemory.invalidatedTurns??[]),...turns])];
   }

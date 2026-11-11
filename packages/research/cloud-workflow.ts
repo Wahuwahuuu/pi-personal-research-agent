@@ -1,3 +1,4 @@
+import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest} from "./memory.ts";
 import {stageObject} from "./internal/agent/p2-stages.ts";
 import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "./translation.ts";
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
@@ -13,7 +14,8 @@ export interface ResearchConversation {
   sessionId?:string; domain?:DomainState; history:DialogueRecord[];
 }
 export interface ResearchWorkflow {
-  phase:"prepare"|"agent"|"completion"|"comparison"|"translation"|"finished";
+  phase:"prepare"|"agent"|"completion"|"comparison"|"translation"|"memory"|"finished";
+  memory?:{answer:string;status:"completed"|"waiting_user";digest?:MemoryDigest;state:"pending"|"saved"|"failed"|"budget_exhausted";visibleSourceIds?:string[]};
   cloudOnly?:boolean; automatic?:boolean; preparedIndex?:string;
   translation?:{sources:TranslationSource[];items?:TranslationSource[]};
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
@@ -27,10 +29,11 @@ export interface WorkflowContext {
   id:string; input:string; calls:number; evidence:readonly Chunk[]; invalidatedMemoryTurns?:readonly string[];
   catalog:{papers:readonly Paper[];indexVersion:string;evidence:readonly EvidenceIdentity[]};
   conversation:ResearchConversation; memories:readonly {content:string}[];
+  project?:{id:string;title:string;goal:string};researchDirection?:string;
   operations:readonly {tool:string;params:Record<string,unknown>;state:string}[];
 }
 export function workflowInstruction(w:ResearchWorkflow):string{
- const instruction=w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION;
+ const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION;
  return (w.automatic&&w.phase==="prepare"?"Classify the current request using the conversation. Use intent=session_control for ordinary conversation, preferences and capabilities. Use the research intent appropriate to requests needing paper originals. Do not require a manual chat/research mode.\n":"")+(w.cloudOnly&&!(w.automatic&&w.phase==="prepare")?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals. For greetings and capabilities, answer briefly without citation markers or made-up source examples.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
 }
 export const newWorkflow=():ResearchWorkflow=>({phase:"prepare",warnings:[]});
@@ -73,7 +76,12 @@ function progress(w:ResearchWorkflow,c:WorkflowContext,execution?:TurnExecution,
 const byteSize=(v:unknown)=>new TextEncoder().encode(JSON.stringify(v)).length;
 function boundedItems<T>(items:readonly T[],maximum:number):T[]{const result:T[]=[];let used=2;for(const item of items){const n=byteSize(item)+1;if(used+n<=maximum){result.push(item);used+=n;}}return result;}
 export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations?:unknown):string{
-  if(w.phase==="translation")return JSON.stringify({stage:"translation",instruction:TRANSLATION_INSTRUCTION,excerpts:w.translation!.sources});
+  if(w.phase==="memory"){
+    const used=new Set([...w.memory!.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]));
+    const sources=boundedItems(c.evidence.filter(e=>used.has(e.chunk_id)),22000);w.memory!.visibleSourceIds=sources.map(s=>s.chunk_id);
+    return JSON.stringify({stage:"memory",projection:"pra-context-v1",instruction:MEMORY_SYNTHESIS_INSTRUCTION,completed_answer:w.memory!.answer,question:c.input,prior_memory:boundedItems(c.memories,4000),sources});
+  }
+  if(w.phase==="translation")return JSON.stringify({stage:"translation",projection:"pra-context-v1",instruction:TRANSLATION_INSTRUCTION,excerpts:w.translation!.sources});
   const d=memory(c);
   d.revalidate(c.catalog.indexVersion,new Map(c.catalog.evidence.map(e=>[e.chunk_id,e])),new Map(c.evidence.map(e=>[e.chunk_id,e])));
   c.conversation.domain=d.state;
@@ -85,7 +93,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   domain.unresolved_questions=boundedItems(domain.unresolved_questions.slice(-6),1500);
   domain.pending_inferences=[];
   summary.conversation_only=boundedItems(summary.conversation_only.slice(-4),2500);
-  const shared={automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
+  const shared={projection:"pra-context-v1",project:c.project,research_direction:c.researchDirection,context_manifest:{archived_turns:c.conversation.history.length,visible_recent_turns:history(c).slice(-4).map(h=>h.turn_id),invalidated_turns_excluded:c.invalidatedMemoryTurns?.length??0},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);
@@ -110,6 +118,11 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return !w.cloudOnly&&w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
 export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
+  if(w.phase==="memory"){
+    try{w.memory!.digest=validateMemoryDigest(output,c.catalog.indexVersion,c.catalog.evidence,c.evidence.filter(e=>w.memory!.visibleSourceIds?.includes(e.chunk_id)));w.memory!.state="saved";}
+    catch{w.memory!.state="failed";w.warnings.push("MEMORY_SYNTHESIS_FAILED");}
+    w.phase="finished";return {answer:w.memory!.answer,status:w.memory!.status};
+  }
   if(w.phase==="translation"){
     w.translation!.items=parseTranslations(output,w.translation!.sources);
     w.phase="finished";return {status:"completed",answer:w.translation!.items.map(i=>i.text).join("\n\n")};
@@ -189,3 +202,16 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   c.conversation.history=c.conversation.history.filter(h=>h.turn_id!==c.id).concat({turn_id:c.id,user_text:c.input,final_answer:answer.value.answer});
   return {answer:answer.value.answer,status:decision.state==="complete"?"completed":"waiting_user"};
 }
+
+
+/** Reserve no extra budget; consolidation uses only the current task's remaining allowance. */
+export function beginMemory(w:ResearchWorkflow,outcome:{answer?:string;status?:"completed"|"waiting_user"},calls:number,evidence:readonly Chunk[]):boolean{
+ if(w.memory||w.translation||w.cloudOnly||outcome.status!=="completed"||!outcome.answer||!evidence.length)return false;
+ const cited=new Set([...outcome.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]));
+ if(!evidence.some(s=>cited.has(s.chunk_id)))return false;
+ w.memory={answer:outcome.answer,status:outcome.status,state:calls<6?"pending":"budget_exhausted"};
+ if(calls>=6)return false;w.phase="memory";return true;
+}
+
+/** Optional consolidation may fail without undoing a previously completed research answer. */
+export function skipMemory(w:ResearchWorkflow,state:"failed"|"budget_exhausted"){if(w.phase!=="memory"||!w.memory)return;w.memory.state=state;w.phase="finished";return {answer:w.memory.answer,status:w.memory.status};}

@@ -281,6 +281,25 @@ try {
   await expect(
     page.getByLabel("纠正这条记忆", { exact: true }),
   ).toBeInViewport();
+  const draft = "切换筛选后保留的纠正草稿";
+  await page.getByLabel("纠正这条记忆", { exact: true }).fill(draft);
+  const scopeSelect = page.getByLabel("记忆项目范围", { exact: true });
+  const scopeValue = await scopeSelect
+    .locator("option")
+    .nth(1)
+    .getAttribute("value");
+  await scopeSelect.selectOption(scopeValue!);
+  await expect(page.getByLabel("纠正这条记忆", { exact: true })).toHaveValue(
+    draft,
+  );
+  await scopeSelect.selectOption("");
+  const searchBox = await page
+    .getByLabel("搜索记忆", { exact: true })
+    .boundingBox();
+  assert.ok(
+    searchBox && searchBox.width >= 300,
+    "mobile memory search must remain usable",
+  );
   await screenshot("memory-correction-mobile");
   await page.setViewportSize({ width: 1440, height: 900 });
   let budgetFailed = false;
@@ -330,9 +349,13 @@ try {
     .getByLabel("消息", { exact: true })
     .fill("请深入阅读论文中的研究方法，并提供原文证据。");
   await page.getByRole("button", { name: "发送消息" }).click();
-  await until(
-    async () => (await api("tasks?limit=1")).items[0]?.status === "completed",
-  );
+  await until(async () => {
+    const latest = (await api("tasks?limit=1")).items[0];
+    return (
+      latest?.input === "请深入阅读论文中的研究方法，并提供原文证据。" &&
+      latest.status === "completed"
+    );
+  });
   await expect(page.locator(".citation").first()).toBeVisible();
   await page.locator(".citation").first().click();
   await expect(
@@ -348,6 +371,49 @@ try {
   checks.push(
     "real Pi tool execution renders citation evidence and reused task progress without inactive controls",
   );
+  const researchConversation = (await api("tasks?limit=1")).items[0]
+    .conversationId;
+  await route("memory");
+  await page.getByLabel("记忆类型", { exact: true }).selectOption("conclusion");
+  await expect(
+    page.getByText("原文依据 · 1 处", { exact: true }),
+  ).toBeVisible();
+  await page.getByText("原文依据 · 1 处", { exact: true }).click();
+  await expect(page.locator(".memory-evidence blockquote")).toHaveText(
+    "Evidence.",
+  );
+  await screenshot("memory-evidence-desktop");
+  const memoryRow = page
+    .locator(".memory-row")
+    .filter({ hasText: "模拟证据可定位" });
+  await memoryRow.getByRole("button", { name: "纠正", exact: true }).click();
+  await page
+    .getByLabel("纠正这条记忆", { exact: true })
+    .fill("人工纠正的结论，需要再次核对原文。");
+  await page.getByRole("button", { name: "保存纠正", exact: true }).click();
+  const corrected = page
+    .locator(".memory-row")
+    .filter({ hasText: "人工纠正的结论，需要再次核对原文。" });
+  await expect(corrected).toBeVisible();
+  await expect(corrected).toContainText("人工修改后待重新核对原文");
+  await corrected
+    .getByRole("button", { name: "修订记录", exact: true })
+    .click();
+  await expect(
+    page.getByRole("dialog", { name: "记忆修订记录" }),
+  ).toContainText("模拟证据可定位");
+  await page
+    .getByRole("dialog", { name: "记忆修订记录" })
+    .getByRole("button", { name: "关闭", exact: true })
+    .click();
+  await corrected.getByRole("button", { name: "删除", exact: true }).click();
+  await expect(corrected).not.toBeVisible();
+  assert.equal((await api("memories?category=conclusion")).items.length, 0);
+  checks.push(
+    "source-bound memory shows original quote, revisions, correction warning and real deletion",
+  );
+  await route("chat/" + researchConversation);
+  await expect(page.locator(".citation").first()).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await screenshot("chat-mobile");
   await page.locator(".citation").first().click();

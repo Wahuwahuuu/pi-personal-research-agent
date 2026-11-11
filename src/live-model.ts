@@ -1,3 +1,4 @@
+import {projectProviderMessages} from "./provider-context.ts";
 import { BUDGET_STOPS } from "./budget.ts";
 import {modelResponse} from "./model-response.ts";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
@@ -61,7 +62,7 @@ export function liveModels(
       try {
         const tools = getCurrentTools(context.messages);
         const system=getCurrentSystemPrompt(context.messages);
-        const messages = context.messages.filter(m=>m.role!=="system").map((m) => {
+        const messages = projectProviderMessages(context.messages).filter(m=>m.role!=="system").map((m) => {
           const content = typeof m.content === "string" ? m.content :
             m.content.filter(c => c.type === "text").map(c => c.text).join("\n");
           if (m.role === "toolResult") return {role:"tool",tool_call_id:m.toolCallId,content};
