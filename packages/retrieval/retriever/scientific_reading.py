@@ -257,31 +257,46 @@ def make_chunk(block, paper_id, index, digest, number, url):
             "source_url": url + ("#" + block["locator"] if block.get("locator") else "")}
 
 
+def source_version(paper_id):
+    if not isinstance(paper_id, str) or not re.fullmatch(r"\d{4}\.\d{4,5}(?:v[1-9]\d{0,3})?", paper_id):
+        return None
+    return paper_id if re.search(r"v[1-9]\d*$", paper_id) else paper_id + "v1"
+
+def source_url_matches(raw, paper_id):
+    version = source_version(paper_id)
+    try:
+        parsed = urlparse(raw)
+        return (version is not None and parsed.scheme == "https" and parsed.hostname in ALLOWED_HOSTS
+                and parsed.port in {None, 443} and not parsed.username and not parsed.password
+                and not parsed.query and parsed.path == "/html/" + version)
+    except (ValueError, TypeError):
+        return False
+
+
 class ScientificReader:
     def __init__(self, directory: Path, index: str, fetcher=fetch_html):
         self.directory = directory / hashlib.sha256(index.encode()).hexdigest()[:16]
         self.index, self.fetcher, self.failures = index, fetcher, {}
 
     def document(self, paper_id):
-        if not re.fullmatch(r"\d{4}\.\d{4,5}", paper_id):
+        if not source_version(paper_id):
             return None
         manifest, original = self.directory / (paper_id + ".json"), self.directory / (paper_id + ".html")
         try:
             if original.stat().st_size > MAX_HTML or manifest.stat().st_size > MAX_HTML: raise ValueError("Oversized source cache")
             data = json.loads(manifest.read_text(encoding="utf-8"))
             raw = original.read_bytes()
-            if data["version"] == VERSION and data["index_version"] == self.index and data["paper_id"] == paper_id and hashlib.sha256(raw).hexdigest() == data["original_sha256"]:
+            if data["version"] == VERSION and data["index_version"] == self.index and data["paper_id"] == paper_id and source_url_matches(data["source_url"], paper_id) and hashlib.sha256(raw).hexdigest() == data["original_sha256"]:
                 parsed = extract_blocks(raw.decode("utf-8"))
                 if data["blocks"] == parsed[:512] and data["blocks_sha256"] == hashlib.sha256(json.dumps(data["blocks"], ensure_ascii=False, separators=(",", ":")).encode()).hexdigest(): return data
         except (OSError, ValueError, KeyError):
             pass
         if self.failures.get(paper_id, 0) > time.monotonic():
             return None
-        for url in (f"https://arxiv.org/html/{paper_id}v1", f"https://ar5iv.labs.arxiv.org/html/{paper_id}v1"):
+        for url in (f"https://arxiv.org/html/{source_version(paper_id)}", f"https://ar5iv.labs.arxiv.org/html/{source_version(paper_id)}"):
             try:
                 source, final_url = self.fetcher(url)
-                parsed = urlparse(final_url)
-                if parsed.scheme != "https" or parsed.hostname not in ALLOWED_HOSTS or parsed.port not in {None, 443} or parsed.username or parsed.password or f"{paper_id}v1" not in parsed.path or len(source.encode()) > MAX_HTML:
+                if not source_url_matches(final_url, paper_id) or len(source.encode()) > MAX_HTML:
                     continue
                 blocks = extract_blocks(source)
                 if not blocks: continue

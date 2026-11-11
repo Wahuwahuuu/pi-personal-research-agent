@@ -1,3 +1,4 @@
+import {arxivVersion,isScientificUrl} from "../../source-links.ts";
 import {readFile} from 'node:fs/promises';
 import {containedPath,sha} from './paths.ts';
 import {RuntimeFailure,codepoints,type Chunk,type EvidenceIdentity,type ScientificReadingPort,type ScientificParams,type RetrieveResult,type WorkerTransport,type P2HarnessConfig} from './contracts.ts';
@@ -15,7 +16,7 @@ export class ScientificReading implements ScientificReadingPort {
   private constructor(root:string,index:string,papers:ReadonlySet<string>,worker:WorkerTransport){this.root=root;this.index=index;this.papers=papers;this.worker=worker;}
   static async open(root:string,index:string,papers:ReadonlySet<string>,worker:WorkerTransport):Promise<ScientificReading>{
     const reader=new ScientificReading(root,index,papers,worker);
-    await Promise.all([...papers].filter(id=>/^\d{4}\.\d{4,5}$/u.test(id)).map(id=>reader.cached(id).catch(error=>{if(!(error instanceof RuntimeFailure&&error.code==='INVALID_INDEX')&&!(error instanceof SyntaxError))throw error;})));return reader;
+    await Promise.all([...papers].filter(id=>arxivVersion(id)!==null).map(id=>reader.cached(id).catch(error=>{if(!(error instanceof RuntimeFailure&&error.code==='INVALID_INDEX')&&!(error instanceof SyntaxError))throw error;})));return reader;
   }
   private async cached(paper:string):Promise<void>{
     const directory=`.cache/scientific-reading/${sha(this.index).slice(0,16)}`;
@@ -26,7 +27,7 @@ export class ScientificReading implements ScientificReadingPort {
       if(!['scientific-html-v1','scientific-html-v2'].includes(data.version)||data.index_version!==this.index||data.paper_id!==paper||!Array.isArray(data.blocks)||data.blocks.length>512||original.length>8*1024*1024||sha(original)!==data.original_sha256)throw new RuntimeFailure('INVALID_INDEX','Scientific source cache is inconsistent');
       if(sha(JSON.stringify(data.blocks))!==data.blocks_sha256)throw new RuntimeFailure('INVALID_INDEX','Scientific source blocks changed');
       let url:URL;try{url=new URL(data.source_url);}catch{throw new RuntimeFailure('INVALID_INDEX','Scientific source URL is invalid');}
-      if(url.protocol!=='https:'||url.username||url.password||url.port||!['arxiv.org','ar5iv.labs.arxiv.org'].includes(url.hostname)||!url.pathname.includes(paper+'v1'))throw new RuntimeFailure('INVALID_INDEX','Scientific source URL differs');
+      if(!isScientificUrl(url.href,paper))throw new RuntimeFailure('INVALID_INDEX','Scientific source URL differs');
       const parsed:Chunk[]=[];
       for(const [position,block] of data.blocks.entries()){
         if(typeof block.text!=='string'||!block.text.trim()||codepoints(block.text)>16000||!['table','equation'].includes(block.kind)||typeof block.section!=='string'||typeof block.locator!=='string'||block.locator.length>300)throw new RuntimeFailure('INVALID_INDEX','Invalid structured source block');

@@ -93,7 +93,7 @@ const lock = createServer(async (req, res) => {
       res.end(JSON.stringify({ ready: !!reading }));
       return;
     }
-    const match = req.url?.match(/^\/papers\/(\d{4}\.\d{4,5})$/);
+    const match = req.url?.match(/^\/papers\/(\d{4}\.\d{4,5}(?:v[1-9]\d{0,3})?)$/);
     if (!match || !reading) {
       res.writeHead(404).end();
       return;

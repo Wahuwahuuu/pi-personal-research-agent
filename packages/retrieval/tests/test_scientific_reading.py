@@ -94,6 +94,27 @@ class ScientificReadingTests(unittest.TestCase):
             self.assertNotIn("forged", manifest.read_text(encoding="utf-8"))
             self.assertEqual(reader.retrieve({**params, "offset": 500}, {PAPER: {}})["selection"]["next_offset"], 500)
 
+    def test_versioned_sources_cannot_reuse_another_version_or_redirect_identity(self):
+        calls = []
+        def fetch(url):
+            calls.append(url)
+            return HTML, url
+        with tempfile.TemporaryDirectory() as directory:
+            reader = ScientificReader(Path(directory), "idx", fetch)
+            for paper in (PAPER, PAPER+"v2"):
+                result = reader.retrieve({"paper_ids":[paper], "query":"score"}, {paper:{}})
+                self.assertTrue(result["chunks"])
+                self.assertEqual(result["chunks"][0]["paper_id"], paper)
+            self.assertEqual(calls, ["https://arxiv.org/html/"+PAPER+"v1", "https://arxiv.org/html/"+PAPER+"v2"])
+            manifest = reader.directory / (PAPER+"v2.json")
+            data = json.loads(manifest.read_text(encoding="utf8"))
+            data["source_url"] = "https://arxiv.org/html/"+PAPER+"v1"
+            manifest.write_text(json.dumps(data),encoding="utf8")
+            reader.document(PAPER+"v2")
+            self.assertEqual(len(calls),3)
+            forged = ScientificReader(Path(directory), "other", lambda url: (HTML, "https://arxiv.org/html/"+PAPER+"v20"))
+            self.assertIsNone(forged.document(PAPER+"v2"))
+
     def test_unavailable_sources_and_oversized_objects_are_explicit(self):
         huge = '<table><tr><th>Cell</th><th>Value</th></tr><tr><td>a</td><td>'+('x' * 18000)+'</td></tr></table>'
         self.assertTrue(extract_blocks(huge).incomplete)

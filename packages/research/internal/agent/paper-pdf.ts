@@ -1,3 +1,5 @@
+import {arxivVersion,originalPdfUrl} from "../../source-links.ts";
+export {originalPdfUrl} from "../../source-links.ts";
 import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -5,8 +7,7 @@ import { containedPath } from "./paths.ts";
 import { RuntimeFailure } from "./contracts.ts";
 
 const MAX_PDF = 30 * 1024 * 1024;
-export const isArxivId = (id:string) => /^\d{4}\.\d{4,5}$/u.test(id);
-export const originalPdfUrl = (id:string) => isArxivId(id) ? `https://arxiv.org/pdf/${id}v1` : null;
+export const isArxivId = (id:string) => arxivVersion(id)!==null;
 const valid = (bytes:Buffer) => bytes.length > 5 && bytes.length <= MAX_PDF && bytes.subarray(0,5).toString() === "%PDF-";
 
 /** Only catalog IDs can reach this fixed-origin cache; callers cannot supply URLs. */
@@ -23,7 +24,7 @@ export class PaperPdfCache {
   }
   private async load(id:string):Promise<Buffer>{
     const directory=await containedPath(this.root,".cache/papers");await mkdir(directory,{recursive:true});
-    const target=await containedPath(this.root,`.cache/papers/${id}v1.pdf`);
+    const target=await containedPath(this.root,`.cache/papers/${arxivVersion(id)}.pdf`);
     try{const saved=await readFile(target);if(valid(saved))return saved;}catch(e){if((e as NodeJS.ErrnoException).code!=="ENOENT")throw e;}
     const signal=AbortSignal.timeout(45000);let url=originalPdfUrl(id)!;
     let response:Response|undefined;
@@ -32,7 +33,7 @@ export class PaperPdfCache {
       if(![301,302,303,307,308].includes(response.status))break;
       const next=new URL(response.headers.get("location")??"",url);
       await response.body?.cancel();
-      if(next.protocol!=="https:"||!["arxiv.org","export.arxiv.org"].includes(next.hostname)||next.username||next.password||next.port)throw new RuntimeFailure("PDF_UNAVAILABLE","Unexpected PDF source");
+      if(next.protocol!=="https:"||!["arxiv.org","export.arxiv.org"].includes(next.hostname)||next.username||next.password||next.port||next.search||!["/pdf/"+arxivVersion(id),"/pdf/"+arxivVersion(id)+".pdf"].includes(next.pathname))throw new RuntimeFailure("PDF_UNAVAILABLE","Unexpected PDF source");
       url=next.href;
     }
     if(!response?.ok||Number(response.headers.get("content-length")??0)>MAX_PDF)throw new RuntimeFailure("PDF_UNAVAILABLE","PDF download failed");

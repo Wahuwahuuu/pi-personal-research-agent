@@ -1,3 +1,4 @@
+import {isScientificUrl} from "../packages/research/source-links.ts";
 import { createHash } from "node:crypto";
 import { Problem, type Operation } from "./domain.ts";
 import type { ResearchCatalog } from "./research-catalog.ts";
@@ -34,14 +35,7 @@ export function readingSources(
     )
       throw new Problem("INVALID_READING_SOURCES");
     const url = new URL(v.source_url ?? "");
-    if (
-      url.protocol !== "https:" ||
-      url.username ||
-      url.password ||
-      url.port ||
-      !["arxiv.org", "ar5iv.labs.arxiv.org"].includes(url.hostname) ||
-      !url.pathname.endsWith("/" + v.paper_id + "v1")
-    )
+    if (!isScientificUrl(url.href,v.paper_id))
       throw new Problem("INVALID_SOURCE_URL");
     const source: Chunk = {
       paper_id: v.paper_id,

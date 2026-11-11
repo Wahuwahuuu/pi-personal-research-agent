@@ -9,9 +9,10 @@ import { checkedResult } from "../src/research-coordinator.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
 import type { Operation } from "../src/domain.ts";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
-for (const parserVersion of [1,2]) test("complete reading and source validation with parser version "+parserVersion, async () => {
+for (const suffix of ["","v2"]) for (const parserVersion of [1,2]) test("complete reading and source validation with parser version "+parserVersion+" and arXiv "+(suffix||"legacy"), async () => {
   const root = await mkdtemp(join(tmpdir(), "pra-reading-")),
-    paper = "2401.00001",
+    paper = "2401.00001"+suffix,
+    version = suffix ? paper : paper+"v1",
     index = "reading-v1";
   const abstract = "Complete original abstract. ".repeat(100),
     table = "| Model | Value |\n| --- | --- |\n" + "| A | 1 |\n".repeat(300),
@@ -34,7 +35,7 @@ for (const parserVersion of [1,2]) test("complete reading and source validation 
       index_version: index,
       paper_id: paper,
       original_sha256: hash,
-      source_url: "https://arxiv.org/html/" + paper + "v1",
+      source_url: "https://arxiv.org/html/" + version + "",
       blocks,
       blocks_sha256: sha(JSON.stringify(blocks)),
     }),
@@ -60,7 +61,7 @@ for (const parserVersion of [1,2]) test("complete reading and source validation 
     truncated: false,
     content_type: "table",
     format: "markdown",
-    source_url: "https://arxiv.org/html/" + paper + "v1#T1",
+    source_url: "https://arxiv.org/html/" + version + "#T1",
   };
   const c = {
     indexVersion: index,
@@ -96,7 +97,7 @@ for (const parserVersion of [1,2]) test("complete reading and source validation 
       },
     },
     fetcher: (async (url) => {
-      assert.equal(url, "https://arxiv.org/pdf/" + paper + "v1");
+      assert.equal(url, "https://arxiv.org/pdf/" + version + "");
       downloads++;
       return new Response("%PDF-fixture");
     }) as typeof fetch,
@@ -156,7 +157,7 @@ for (const parserVersion of [1,2]) test("complete reading and source validation 
       readingSources(c, op(params), [
         {
           ...first.sources[0],
-          source_url: "https://evil.example/html/" + paper + "v1",
+          source_url: "https://evil.example/html/" + version + "",
         },
       ]),
     );

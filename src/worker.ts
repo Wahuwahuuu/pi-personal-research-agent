@@ -1,3 +1,4 @@
+import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts";
 import {DeviceIndexes} from "./device-indexes.ts";
 import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks} from "./task-control.ts";
 import {taskAllowance} from "./domain.ts";
@@ -412,11 +413,9 @@ export class PersonalAgent extends DurableObject<Env> {
         c.papers.map((p) => ({
           ...p,
           indexVersion: version,
-          originalUrl: /^\d{4}\.\d{4,5}$/.test(p.paper_id)
-            ? "https://arxiv.org/pdf/" + p.paper_id + "v1"
-            : null,
+          originalUrl: originalPdfUrl(p.paper_id),
           localUrl:
-            port && /^\d{4}\.\d{4,5}$/.test(p.paper_id)
+            port && arxivVersion(p.paper_id)
               ? "http://127.0.0.1:" + port + "/papers/" + p.paper_id
               : null,
         })),

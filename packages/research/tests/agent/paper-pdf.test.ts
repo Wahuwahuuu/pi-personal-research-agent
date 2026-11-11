@@ -29,3 +29,18 @@ test("PDF cache rejects non-PDF, oversized responses and redirects outside arXiv
     const repaired=new PaperPdfCache(root,new Set(["1705.02394"]),download);assert.ok((await repaired.get("1705.02394")).length>5);
   }finally{await rm(root,{recursive:true,force:true});}
 });
+
+test("versioned PDFs keep separate cache identities and reject redirects to another version",async()=>{
+ const root=await mkdtemp(join(tmpdir(),"pra-pdf-version-"));const calls:string[]=[];
+ try {
+  const cache=new PaperPdfCache(root,new Set(["2401.00001","2401.00001v2"]),(async(url:unknown)=>{
+   calls.push(String(url));return new Response("%PDF-"+String(url));
+  }) as typeof fetch);
+  const first=await cache.get("2401.00001"),second=await cache.get("2401.00001v2");
+  assert.notDeepEqual(first,second);
+  assert.deepEqual(calls,["https://arxiv.org/pdf/2401.00001v1","https://arxiv.org/pdf/2401.00001v2"]);
+  assert.equal(originalPdfUrl("2401.00001v0"),null);
+  const wrong=new PaperPdfCache(root,new Set(["2401.00001v3"]),(async()=>new Response(null,{status:302,headers:{location:"https://arxiv.org/pdf/2401.00001v4"}})) as typeof fetch);
+  await assert.rejects(wrong.get("2401.00001v3"),/Unexpected PDF source/);
+ }finally{await rm(root,{recursive:true,force:true});}
+});
