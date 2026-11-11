@@ -357,7 +357,7 @@ class Library:
                 self.stage(identifier, "indexing")
                 # Each interrupted build has a separate workspace; published indexes are never overwritten.
                 build_root = self.path("builds/" + identifier + "/" + uuid4().hex)
-                index = builder(corpus, models, build_root, device=device, full=True)
+                index = builder(corpus, models, build_root, device=device, full=True, multilingual=True)
                 index = Path(index).resolve(strict=True)
                 if not index.is_relative_to(build_root):
                     raise LibraryError("INDEX_ESCAPED_BUILD")

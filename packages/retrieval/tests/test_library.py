@@ -5,7 +5,7 @@ import unittest
 from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 from retriever.library import Library, LibraryError, extract_pdf, canonical, sha
-from retriever.p2 import load_source
+from retriever.p2 import load_source, tokenize_library, tokenize_bm25, library_recipe, full_recipe, P2Corpus
 
 def pdf(path, texts):
     writer = PdfWriter()
@@ -57,6 +57,18 @@ class LibraryTests(unittest.TestCase):
 
     def run_job(self, **kwargs):
         return self.library.run_one(self.root, "cpu", builder=build, verifier=verify, **kwargs)
+
+    def test_dynamic_library_search_supports_chinese_without_changing_legacy_tokens(self):
+        self.assertEqual(tokenize_bm25("中文检索"), [])
+        self.assertIn("检索", tokenize_library("中文检索"))
+        self.assertIn("ai", tokenize_library("ＡＩ 中文检索"))
+        settings = library_recipe("cpu")
+        self.assertEqual(settings["window_policy"], full_recipe("cpu")["window_policy"])
+        self.assertNotEqual(settings["recipe_version"], full_recipe("cpu")["recipe_version"])
+        corpus = P2Corpus([{"paper_id":"p1","title":"中文科研检索","abstract":"实验结论"},
+                           {"paper_id":"p2","title":"不相关资料","abstract":""}],
+                          [], None, None, {"index_version":"library-fixture","identity":{"recipe":settings}}, None, "bm25")
+        self.assertEqual(corpus.search_papers({"query":"科研检索"})["papers"][0]["paper_id"], "p1")
 
     def test_real_text_pdf_preserves_pages_and_explicit_blank_coverage(self):
         mixed = self.root / "mixed.pdf"

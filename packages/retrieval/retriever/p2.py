@@ -15,6 +15,7 @@ import math
 from pathlib import Path
 import re
 import sys
+import unicodedata
 from typing import Any
 
 from retriever.worker import CorpusError, ParameterError, _bounded_integer, _query, _utf8_string
@@ -72,6 +73,19 @@ def tokenize_bm25(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
 
 
+def tokenize_library(text: str) -> list[str]:
+    normalized = unicodedata.normalize("NFKC", text).casefold()
+    tokens = _WORD.findall(normalized)
+    for run in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", normalized):
+        tokens.extend(run)
+        tokens.extend(run[i:i+2] for i in range(len(run)-1))
+    return tokens
+
+
+def tokenizer_for(settings: dict):
+    return tokenize_library if settings.get("recipe_version") == "library-full-chunks-v1" else tokenize_bm25
+
+
 def recipe(device: str) -> dict:
     if device not in ("cuda", "cpu"):
         raise ValueError("P2 device must be cuda or cpu")
@@ -92,6 +106,13 @@ def full_recipe(device: str) -> dict:
     return {**recipe(device), "recipe_version": "pipaper-full-chunks-v1",
             "window_max_codepoints": MAX_CHUNK_CODEPOINTS,
             "window_policy": "joint token and raw codepoint bounds; shrink at original token offsets; continuous coverage"}
+
+
+def library_recipe(device: str) -> dict:
+    original = full_recipe(device)
+    return {**original, "recipe_version": "library-full-chunks-v1",
+            "bm25": {**original["bm25"], "token_pattern": "latin-and-han-unigram-bigram-v1",
+                     "normalization": "NFKC-casefold"}}
 
 
 def normalize_retrieval_query(query: str, papers: dict[str, dict], scope: set[str]) -> str:
@@ -339,13 +360,16 @@ def dependency_versions() -> dict:
             ("torch", "transformers", "tokenizers", "numpy", "faiss-cpu", "rank-bm25", "huggingface-hub")}
 
 
-def build_index(corpus_dir: Path, models_dir: Path, artifacts_dir: Path, device: str = "cuda", full: bool = False) -> Path:
+def build_index(corpus_dir: Path, models_dir: Path, artifacts_dir: Path, device: str = "cuda", full: bool = False, multilingual: bool = False) -> Path:
     import faiss
     import numpy as np
     papers, paragraphs, parent = load_source(corpus_dir)
     models = model_inventory(models_dir)
-    identity = {"parent": parent, "recipe": full_recipe(device) if full else recipe(device), "models": models, "dependencies": dependency_versions()}
-    build_id = ("pipaper-full-index-v1-" if full else "pipaper-p2-index-v1-") + sha256(canonical(identity))[:16]
+    if multilingual and not full:
+        raise ValueError("Dynamic library requires full coverage")
+    settings = library_recipe(device) if multilingual else full_recipe(device) if full else recipe(device)
+    identity = {"parent": parent, "recipe": settings, "models": models, "dependencies": dependency_versions()}
+    build_id = ("library-full-index-v1-" if multilingual else "pipaper-full-index-v1-" if full else "pipaper-p2-index-v1-") + sha256(canonical(identity))[:16]
     target = artifacts_dir.resolve() / build_id
     if target.exists():
         existing = verify_artifacts(target, corpus_dir)
@@ -363,9 +387,9 @@ def build_index(corpus_dir: Path, models_dir: Path, artifacts_dir: Path, device:
         raise CorpusError("Dense vector shape or values are invalid")
     if not np.allclose(np.linalg.norm(vectors, axis=1), 1, atol=1e-5):
         raise CorpusError("Dense vectors are not normalized")
-    tokens = [tokenize_bm25(c["text"]) for c in chunks]
+    tokens = [tokenizer_for(settings)(c["text"]) for c in chunks]
     if not any(tokens):
-        raise CorpusError("BM25 corpus has no English words")
+        raise CorpusError("BM25 corpus has no supported lexical tokens")
     index = faiss.IndexFlatIP(vectors.shape[1])
     index.add(vectors)
     # Nothing is written until tokenization and all local computation pass.
@@ -396,13 +420,14 @@ def verify_artifacts(index_dir: Path, corpus_dir: Path) -> dict:
         raise CorpusError("P2 index parent source identity differs")
     version = manifest.get("index_version")
     settings = manifest.get("identity", {}).get("recipe", {})
-    full = settings.get("recipe_version") == "pipaper-full-chunks-v1"
-    if settings.get("device") not in ("cpu", "cuda") or settings != (full_recipe(settings["device"]) if full else recipe(settings["device"])):
+    multilingual = settings.get("recipe_version") == "library-full-chunks-v1"
+    full = settings.get("recipe_version") in {"pipaper-full-chunks-v1", "library-full-chunks-v1"}
+    if settings.get("device") not in ("cpu", "cuda") or settings != (library_recipe(settings["device"]) if multilingual else full_recipe(settings["device"]) if full else recipe(settings["device"])):
         raise CorpusError("P2 index recipe differs from the implemented contract")
     if (manifest.get("supported_profiles") != list(PROFILES) or manifest.get("gold_loaded") is not False
             or manifest.get("model_api_calls") != 0 or manifest.get("paper_count") != parent["paper_count"]):
         raise CorpusError("P2 index metadata differs from the runtime contract")
-    if version != ("pipaper-full-index-v1-" if full else "pipaper-p2-index-v1-") + sha256(canonical(manifest["identity"]))[:16]:
+    if version != ("library-full-index-v1-" if multilingual else "pipaper-full-index-v1-" if full else "pipaper-p2-index-v1-") + sha256(canonical(manifest["identity"]))[:16]:
         raise CorpusError("P2 index build identity differs")
     required = {"chunks.jsonl", "source-map.jsonl", "bm25.json", "dense-vectors.npy", "dense.index"}
     if set(manifest.get("files", {})) != required:
@@ -473,7 +498,8 @@ class P2Corpus:
         self.manifest, self.pool, self.profile = manifest, pool, profile
         self.index_version = manifest["index_version"]
         self.backend = profile
-        self._paper_terms = {pid: set(tokenize_bm25(p["title"] + " " + p["abstract"])) for pid, p in self.papers.items()}
+        self.tokenize = tokenizer_for(manifest["identity"]["recipe"])
+        self._paper_terms = {pid: set(self.tokenize(p["title"] + " " + p["abstract"])) for pid, p in self.papers.items()}
 
     @classmethod
     def load(cls, index_dir: Path, models_dir: Path, corpus_dir: Path, profile: str = "rrf", device: str | None = None) -> "P2Corpus":
@@ -502,7 +528,7 @@ class P2Corpus:
         if index.ntotal != len(chunks) or index.d != vectors.shape[1] or not np.array_equal(index.reconstruct_n(0, len(chunks)), vectors):
             raise CorpusError("Persisted FAISS index differs from dense vectors")
         artifact = json.loads((index_dir / "bm25.json").read_text(encoding="utf-8"))
-        if artifact.get("tokens") != [tokenize_bm25(chunk["text"]) for chunk in chunks] or artifact.get("config") != manifest["identity"]["recipe"]["bm25"]:
+        if artifact.get("tokens") != [tokenizer_for(manifest["identity"]["recipe"])(chunk["text"]) for chunk in chunks] or artifact.get("config") != manifest["identity"]["recipe"]["bm25"]:
             raise CorpusError("BM25 artifact differs from the common source text")
         bm25 = BM25Okapi(artifact["tokens"], k1=1.5, b=0.75, epsilon=0.25)
         pool = ModelPool(models_dir, pinned_device) if profile != "bm25" else None
@@ -531,7 +557,7 @@ class P2Corpus:
         query = _query(params.get("query"))
         limit = _bounded_integer(params.get("limit", 5), 1, 10)
         scope = self._scope(params)
-        terms = set(tokenize_bm25(query))
+        terms = set(self.tokenize(query))
         hits = [(len(terms & self._paper_terms[pid]), pid) for pid in scope if terms & self._paper_terms[pid]]
         hits.sort(key=lambda row: (-row[0], row[1]))
         return {"papers": [{"paper_id": pid, "title": self.papers[pid]["title"],
@@ -553,7 +579,7 @@ class P2Corpus:
         return sorted(ranking, key=lambda row: (-row[0], row[1]["chunk_id"]))[:CANDIDATES]
 
     def _lexical(self, query: str, eligible: list[int]) -> list[tuple[float, dict]]:
-        scores = self.bm25.get_scores(tokenize_bm25(query))
+        scores = self.bm25.get_scores(self.tokenize(query))
         # Scores rank candidates only: zero/negative BM25 scores cannot be
         # turned into evidence-insufficiency decisions or implicit filtering.
         ranking = [(float(scores[i]), self.chunks[i]) for i in eligible]
