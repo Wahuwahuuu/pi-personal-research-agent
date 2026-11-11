@@ -27,6 +27,7 @@ import {
 } from "../packages/research/core.ts";
 
 export interface ResearchPorts {
+  operationScope?(conversationId:string):string;
   managed?(conversationId: string): boolean;
   catalog(conversationId: string): {
     papers: readonly Paper[];
@@ -101,7 +102,7 @@ export function createResearchRegistry(ports: ResearchPorts) {
         "research.operation",
         "research:" +
           (await digest(
-            String(api.conversationId) + ":" + api.taskId + ":" + api.callId,
+            JSON.stringify([ports.operationScope?.(String(api.conversationId))??"",String(api.conversationId),api.taskId,api.callId]),
           )),
         context,
       );

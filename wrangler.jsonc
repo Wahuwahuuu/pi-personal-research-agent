@@ -11,9 +11,9 @@
     "run_worker_first": ["/api/*"],
   },
   "durable_objects": {
-    "bindings": [{ "name": "AGENTS", "class_name": "PersonalAgent" }],
+    "bindings": [{ "name": "AGENTS", "class_name": "PersonalAgent" }, { "name": "IDENTITIES", "class_name": "IdentityRegistry" }],
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PersonalAgent"] }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PersonalAgent"] }, { "tag": "v2", "new_sqlite_classes": ["IdentityRegistry"] }],
   "vars": { "MODEL_MODE": "mock", "OWNER_ID": "personal", "RESEARCH_ENGINE": "durable" },
   "observability": { "enabled": false },
 }

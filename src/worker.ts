@@ -1,3 +1,5 @@
+import { IdentityRegistry } from "./identity.ts";
+export { IdentityRegistry };
 import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
 import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
 import { StateRepository, type StateStorage } from "./state-store.ts";
@@ -48,7 +50,8 @@ import { digest, bearer, cookie, equal, sameOrigin } from "./auth.ts";
 import { mockModels, MODEL } from "./model.ts";
 import { liveModels } from "./live-model.ts";
 import { discover } from "./discovery.ts";
-interface Env {
+export interface Env {
+  IDENTITIES: DurableObjectNamespace<IdentityRegistry>;
   AGENTS: DurableObjectNamespace<PersonalAgent>;
   ASSETS: Fetcher;
   ADMIN_TOKEN: string;
@@ -88,6 +91,7 @@ export class PersonalAgent extends DurableObject<Env> {
   deletions: DeletionStore;
   database: StateStorage;
   private busy = false;
+  private ownerId: string;
   private runtime?: Harness;
   private catalogCache = new Map<string, ResearchCatalog>();
   harness: PiHarness;
@@ -111,6 +115,11 @@ export class PersonalAgent extends DurableObject<Env> {
       this.repository.save(this.state);
     }
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_auth (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, expires INTEGER NOT NULL)");
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_identity(singleton INTEGER PRIMARY KEY CHECK(singleton=1),user_id TEXT NOT NULL)");
+    this.ownerId=ctx.storage.sql.exec<{user_id:string}>("SELECT user_id FROM pra_identity WHERE singleton=1").toArray()[0]?.user_id??env.OWNER_ID;
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_devices(id TEXT PRIMARY KEY,hash TEXT UNIQUE NOT NULL,label TEXT NOT NULL,created INTEGER NOT NULL,expires INTEGER NOT NULL,revoked INTEGER NOT NULL DEFAULT 0)");
+    ctx.storage.sql.exec("INSERT OR IGNORE INTO pra_devices(id,hash,label,created,expires) SELECT hash,hash,'Existing device',0,expires FROM pra_auth WHERE kind='device'");
+
     if(!this.state.cloudMemory){
       this.state.cloudMemory=newCloudMemory();
       this.state.cloudMemory.entries=this.state.memories.map(m=>({id:m.id,kind:"note",content:m.content,paper_ids:[],source_session:"",source_turn:"",created_at:new Date(m.updated).toISOString(),updated_at:new Date(m.updated).toISOString(),slot:"manual:"+m.id,edited:true}));
@@ -225,7 +234,7 @@ export class PersonalAgent extends DurableObject<Env> {
   memoryService(){
     const version=this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex&&t.researchIndex!=="cloud-only")?.researchIndex;
     const papers=version?this.catalog(version).papers:[];
-    return cloudMemory(this.state.cloudMemory!,papers,this.env.OWNER_ID,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""]);
+    return cloudMemory(this.state.cloudMemory!,papers,this.ownerId,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""]);
   }
   save() {
     this.state.memories=this.state.cloudMemory!.entries.map(m=>({id:m.id,content:m.content,source:m.source_session||"user",updated:Date.parse(m.updated_at)}));
@@ -252,8 +261,10 @@ export class PersonalAgent extends DurableObject<Env> {
     } catch {}
   }
   publish() {
-    for (const ws of this.ctx.getWebSockets("ui"))
+    for (const ws of this.ctx.getWebSockets("ui")) {
+      if(!this.validHash(ws.deserializeAttachment()?.hash??"","user")){ws.close(1008,"expired");continue;}
       this.send(ws, { type: "state", state: this.snapshot() });
+    }
   }
   device() {
     return this.ctx.getWebSockets("device").find((ws) => {
@@ -275,6 +286,18 @@ export class PersonalAgent extends DurableObject<Env> {
     const token = kind === "device" ? bearer(r) : cookie(r);
     return !!token && this.validHash(await digest(token), kind);
   }
+  async acceptIdentity(userId:string,hash:string,expires:number) {
+    const binding=this.ctx.storage.sql.exec<{user_id:string}>("SELECT user_id FROM pra_identity WHERE singleton=1").toArray()[0];
+    if(binding&&binding.user_id!==userId)throw new Error("IDENTITY_MISMATCH");
+    this.ctx.storage.sql.exec("INSERT OR IGNORE INTO pra_identity VALUES(1,?)",userId);
+    this.ownerId=userId;
+    this.ctx.storage.sql.exec("INSERT INTO pra_auth VALUES(?,'user',?) ON CONFLICT(hash) DO UPDATE SET expires=excluded.expires",hash,expires);
+  }
+  async revokeIdentity(hash?:string) {
+    if(hash)this.ctx.storage.sql.exec("DELETE FROM pra_auth WHERE kind='user' AND hash=?",hash);
+    else this.ctx.storage.sql.exec("DELETE FROM pra_auth WHERE kind='user'");
+    for(const ws of this.ctx.getWebSockets("ui"))if(!hash||ws.deserializeAttachment()?.hash===hash)ws.close(1008,"revoked");
+  }
   async fetch(r: Request): Promise<Response> {
     try {
       return await this.route(r);
@@ -288,28 +311,6 @@ export class PersonalAgent extends DurableObject<Env> {
   async route(r: Request) {
     const path = new URL(r.url).pathname;
     if (!sameOrigin(r)) throw new Problem("ORIGIN_DENIED", 403);
-    if (path === "/api/login" && r.method === "POST") {
-      if (!this.env.ADMIN_TOKEN || this.env.ADMIN_TOKEN.length < 32)
-        throw new Problem("LOGIN_NOT_CONFIGURED", 503);
-      const b = await this.body(r);
-      if (!(await equal(String(b.token ?? ""), this.env.ADMIN_TOKEN)))
-        throw new Problem("UNAUTHORIZED", 401);
-      const token = crypto.randomUUID() + crypto.randomUUID();
-      const hash = await digest(token);
-      this.ctx.storage.sql.exec(
-        "INSERT INTO pra_auth VALUES(?,?,?)",
-        hash,
-        "user",
-        Date.now() + 86400000,
-      );
-      return new Response("{}", {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "no-store",
-          "Set-Cookie": `pra_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${new URL(r.url).protocol === "https:" ? "; Secure" : ""}`,
-        },
-      });
-    }
     if (path === "/api/device/connect") {
       if (!(await this.authorized(r, "device")))
         throw new Problem("UNAUTHORIZED", 401);
@@ -361,21 +362,26 @@ export class PersonalAgent extends DurableObject<Env> {
         })),
       );
     }
+    if(path==="/api/devices"&&r.method==="GET")return json(this.ctx.storage.sql.exec("SELECT id,label,created,expires,revoked FROM pra_devices ORDER BY created DESC").toArray());
     if (path === "/api/device/pair" && r.method === "POST") {
-      const token = crypto.randomUUID() + crypto.randomUUID();
-      this.ctx.storage.sql.exec(
-        "INSERT INTO pra_auth VALUES(?,?,?)",
-        await digest(token),
-        "device",
-        Date.now() + 90 * 86400000,
-      );
-      return json({ token, expiresInDays: 90 });
+      const b=await this.body(r),token=crypto.randomUUID()+crypto.randomUUID(),hash=await digest(token),id=crypto.randomUUID(),now=Date.now(),expires=now+90*86400000;
+      this.database.transactionSync(()=>{
+        this.ctx.storage.sql.exec("INSERT INTO pra_auth VALUES(?,'device',?)",hash,expires);
+        this.ctx.storage.sql.exec("INSERT INTO pra_devices(id,hash,label,created,expires) VALUES(?,?,?,?,?)",id,hash,text(b.label??"Windows",80),now,expires);
+      });
+      await this.env.IDENTITIES.getByName("accounts:"+this.env.OWNER_ID).bindDevice(hash,this.ownerId);
+      return json({token,id,expiresInDays:90});
     }
     if (path === "/api/device/revoke" && r.method === "POST") {
-      this.ctx.storage.sql.exec("DELETE FROM pra_auth WHERE kind='device'");
-      for (const ws of this.ctx.getWebSockets("device"))
-        ws.close(1008, "revoked");
-      return json({ ok: true });
+      const b=await this.body(r),id=b.id?text(b.id,128):undefined;
+      const rows=this.ctx.storage.sql.exec<{hash:string}>(id?"SELECT hash FROM pra_devices WHERE id=?":"SELECT hash FROM pra_auth WHERE kind='device'",...(id?[id]:[])).toArray();
+      if(id&&!rows.length)throw new Problem("NOT_FOUND",404);
+      this.database.transactionSync(()=>{for(const row of rows){
+        this.ctx.storage.sql.exec("DELETE FROM pra_auth WHERE kind='device' AND hash=?",row.hash);
+        this.ctx.storage.sql.exec("UPDATE pra_devices SET revoked=1 WHERE hash=?",row.hash);
+      }});
+      for(const ws of this.ctx.getWebSockets("device"))if(rows.some(row=>row.hash===ws.deserializeAttachment()?.hash))ws.close(1008,"revoked");
+      return json({ok:true});
     }
     if (path === "/api/conversations" && r.method === "GET") return json(this.state.conversations ?? []);
     const conversationMatch=path.match(/^\/api\/conversations\/([^/]+)$/);
@@ -505,7 +511,9 @@ export class PersonalAgent extends DurableObject<Env> {
       return json(m);
     }
     if (path.startsWith("/api/memories/") && r.method === "DELETE") {
-      await this.memoryService().remove(path.split("/").at(-1)!);
+      const id=path.split("/").at(-1)!;
+      if(!this.state.cloudMemory!.entries.some(m=>m.id===id))throw new Problem("NOT_FOUND",404);
+      await this.memoryService().remove(id);
       this.save();
       this.publish();
       return json({ ok: true });
@@ -615,7 +623,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.ready = false;
         a.catalogReady = false;
         ws.serializeAttachment(a);
-        this.send(ws, { type: "hello_ack" });
+        this.send(ws, { type: "hello_ack", accountScope:await digest(this.ownerId) });
       } else if (m.type === "catalog_begin") {
         if (!a.indexVersion) throw new Problem("HELLO_REQUIRED");
         if (!Number.isSafeInteger(m.pages) || m.pages < 1 || m.pages > 128)
@@ -1300,12 +1308,24 @@ export class PersonalAgent extends DurableObject<Env> {
   }
 }
 export default {
-  async fetch(r: Request, env: Env) {
-    const url = new URL(r.url);
-    if (url.pathname.startsWith("/api/")) {
-      if (!env.OWNER_ID) return json({ error: "OWNER_NOT_CONFIGURED" }, 503);
-      return env.AGENTS.getByName(env.OWNER_ID).fetch(r);
-    }
-    return env.ASSETS.fetch(r);
+  async fetch(r:Request,env:Env):Promise<Response> {
+    try {
+      const url=new URL(r.url);
+      if(!url.pathname.startsWith("/api/"))return env.ASSETS.fetch(r);
+      if(!sameOrigin(r))return json({error:"ORIGIN_DENIED"},403);
+      if(!env.OWNER_ID)return json({error:"OWNER_NOT_CONFIGURED"},503);
+      const identities=env.IDENTITIES.getByName("accounts:"+env.OWNER_ID);
+      if(url.pathname==="/api/login"||url.pathname.startsWith("/api/auth/"))return identities.fetch(r);
+      if(url.pathname==="/api/device/connect"){
+        const value=bearer(r);if(!value)return json({error:"UNAUTHORIZED"},401);
+        const userId=await identities.deviceOwner(await digest(value));
+        // Existing deployment credentials remain valid only in the original owner's DO.
+        return env.AGENTS.getByName(userId??env.OWNER_ID).fetch(r);
+      }
+      const value=cookie(r);if(!value)return json({error:"UNAUTHORIZED"},401);
+      const identity=await identities.authenticate(await digest(value));
+      if(!identity)return json({error:"UNAUTHORIZED"},401);
+      return env.AGENTS.getByName(identity.id).fetch(r);
+    } catch {return json({error:"SERVICE_UNAVAILABLE"},503);}
   },
-} satisfies ExportedHandler<Env>;
+};

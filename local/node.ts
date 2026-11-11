@@ -1,3 +1,4 @@
+import { bindNodeAccount } from "./account-binding.ts";
 import { createLocalReading } from "../packages/research/local-reading.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
 import { nodeCatalog, catalogPages } from "./catalog.ts";
@@ -316,6 +317,7 @@ function connect() {
       }
       const m = JSON.parse(raw);
       if (m.type === "hello_ack") {
+        try {bindNodeAccount(db,m.accountScope);}catch {stopping=true;ws.close(1008,"account mismatch");console.error("ACCOUNT_DATA_DIRECTORY_MISMATCH");return;}
         send({ type: "catalog_begin", pages: pages.length });
         pages.forEach((value, page) =>
           send({ type: "catalog_page", page, value }),

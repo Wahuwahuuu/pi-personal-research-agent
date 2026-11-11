@@ -1,3 +1,4 @@
+import { verifyIdentity } from "./auth-integration.ts";
 import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
 import { nodeCatalog, catalogPages } from "../local/catalog.ts";
@@ -8,7 +9,7 @@ import assert from "node:assert/strict";
 const root = process.cwd(),
   port = 8797,
   base = `http://127.0.0.1:${port}`,
-  directory = resolve(".local/integration");
+  directory = resolve(".local/integration", "run-"+crypto.randomUUID());
 await mkdir(directory, { recursive: true });
 await mkdir("docs/validation", { recursive: true });
 const admin = crypto.randomUUID() + crypto.randomUUID();
@@ -456,6 +457,7 @@ try {
   const afterDelete=await api("tasks","POST",{input:"new chat after deletion",kind:"chat",requestId:"after-delete"});
   await until(async()=> (await api("state")).tasks.find((t:any)=>t.id===afterDelete.id)?.status==="completed");
   checks.push("conversation deletion removed application and Pi session while subsequent chat reopened the same host runtime");
+  const authReport=await verifyIdentity(base,cookie,admin);checks.push(...authReport.checks);
   // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
   for (const p of [...children].reverse()) await stopChild(p);
   let scanned = 0;
@@ -473,6 +475,7 @@ try {
           !bytes.includes(Buffer.from(pair.token)),
           "device secret persisted",
         );
+        for(const secret of authReport.secrets)assert.ok(!bytes.includes(Buffer.from(secret)),"authentication secret persisted");
         scanned++;
       }
     }

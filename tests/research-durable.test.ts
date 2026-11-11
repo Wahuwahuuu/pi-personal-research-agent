@@ -72,3 +72,15 @@ test("managed Pi stages persist their own system contract without the research-a
  const harness=await Harness.open(new MemoryStorage(),{models,registry},ctx);
  try{const c=await harness.root(ctx,{agent:{model:{provider:"pra",modelId:"fixture"},tools:[],instructions:workflowInstruction({phase:"comparison",warnings:[]})}});await (await c.submit({type:"input",content:"workspace"},ctx)).wait(ctx);const system=sent.messages.find((m:any)=>m.role==="system").content;assert.match(system,/Return bare JSON/);assert.ok(!system.includes("Put execution first"));}finally{await harness.close(ctx);}
 });
+
+test("identical Pi IDs in separate stores produce different device operation IDs",async()=>{
+ const run=async(scope:string)=>{
+  let waiting=false,id="";
+  const registry=createResearchRegistry({operationScope:()=>scope,catalog:()=>({papers:[],indexVersion:"v",scope:[],evidence:new Map()}),
+   async execute(r){id=r.operationId;waiting=true;return{};},async waiting(){return waiting;},async remember(){},async evidence(){return[];}});
+  const models=liveModels({authorized:"explicitly-authorized",apiKey:"synthetic-key",baseUrl:"https://example.invalid/v1",modelId:"fixture"},()=>{},()=>{},(async()=>Response.json({choices:[{message:{content:null,tool_calls:[{id:"same_call",type:"function",function:{name:"search_papers",arguments:'{"query":"research"}'}}]}}],usage:{prompt_tokens:1,completion_tokens:1}})) as typeof fetch);
+  const h=await Harness.open(new MemoryStorage(),{models,registry,settings:{retry:{maxRetries:0}}},ctx);
+  try{const c=await h.root(ctx,{agent:{model:{provider:"pra",modelId:"fixture"}}});await(await c.submit({type:"input",content:"same"},ctx)).wait(ctx);assert.ok(id);return id;}finally{await h.close(ctx);}
+ };
+ assert.notEqual(await run("business-task-a"),await run("business-task-b"));
+});

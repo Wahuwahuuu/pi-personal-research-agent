@@ -122,6 +122,7 @@ export function createResearchPorts(
     return t;
   };
   return {
+    operationScope(id){return task(id).id;},
     managed(id) { return getState().tasks.some(t=>t.sessionId===id&&t.runOpen&&!!t.workflow); },
     catalog(id) {
       const c = catalog(task(id).researchIndex!);
