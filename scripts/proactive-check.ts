@@ -1,6 +1,7 @@
+import { verifyProactiveBrowser } from "./proactive-browser.ts";
 import { Miniflare, convertV4MiniflareOptions, Log, LogLevel } from "miniflare";
 import { freezeWorker } from "./freeze-worker.ts";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
 import WebSocket from "ws";
@@ -11,7 +12,8 @@ const config = JSON.parse(
   (await readFile("wrangler.jsonc", "utf8")).replace(/,\s*([}\]])/g, "$1"),
 );
 config.main = resolve("src/worker.ts");
-config.assets.directory = resolve("dist/web");
+config.assets.directory = resolve(directory, "assets");
+await cp(resolve("dist/web"), config.assets.directory, { recursive: true });
 const configFile = resolve(directory, "wrangler.json");
 await writeFile(configFile, JSON.stringify(config));
 await freezeWorker(configFile, resolve(directory, "bundle"));
@@ -46,7 +48,34 @@ const options = convertV4MiniflareOptions({
     AGENTS: { className: "PersonalAgent", useSQLite: true },
     IDENTITIES: { className: "IdentityRegistry", useSQLite: true },
   },
-  serviceBindings: { ASSETS: () => new Response("isolated software test") },
+  serviceBindings: {
+    ASSETS: async (request) => {
+      const path = new URL(request.url).pathname;
+      const file =
+        path === "/"
+          ? "index.html"
+          : /^\/assets\/[a-zA-Z0-9._-]+$/.test(path)
+            ? path.slice(1)
+            : undefined;
+      if (!file) return new Response("Not found", { status: 404 });
+      try {
+        return new Response(
+          await readFile(resolve(config.assets.directory, file)),
+          {
+            headers: {
+              "Content-Type": file.endsWith(".js")
+                ? "text/javascript"
+                : file.endsWith(".css")
+                  ? "text/css"
+                  : "text/html",
+            },
+          },
+        );
+      } catch {
+        return new Response("Not found", { status: 404 });
+      }
+    },
+  },
   outboundService: async (request) => {
     const url = new URL(request.url);
     if (url.hostname !== "export.arxiv.org" || url.pathname !== "/api/query")
@@ -100,7 +129,20 @@ async function api(path: string, method = "GET", body?: any) {
   });
   if (path === "login")
     cookie = r.headers.get("set-cookie")?.split(";")[0] ?? "";
-  const v: any = await r.json();
+  const raw = await r.text();
+  let v: any;
+  try {
+    v = JSON.parse(raw);
+  } catch {
+    throw Error(
+      "NON_JSON_RESPONSE " +
+        path +
+        ":" +
+        r.status +
+        ":" +
+        raw.replaceAll(token, "[REDACTED]").slice(0, 600),
+    );
+  }
   if (!r.ok) throw Error(path + ":" + r.status + ":" + v.error);
   return v;
 }
@@ -316,6 +358,25 @@ try {
   report.checks.push(
     "source failure retains the discovery checkpoint and exposes the coverage gap",
   );
+  if (process.env.PRA_PROACTIVE_BROWSER === "1") {
+    await api("settings", "PATCH", {
+      requestId: crypto.randomUUID(),
+      onboarded: true,
+      theme: "light",
+    });
+    report.checks.push(
+      ...(await verifyProactiveBrowser(
+        base,
+        cookie,
+        api,
+        directory,
+        plan.id,
+        failed.id,
+      )),
+    );
+    report.browser =
+      "installed Microsoft Edge; deterministic source and device";
+  }
   report.success = true;
   report.sourceCalls = sourceCalls;
   report.modelRequests = (await api("state")).usage.requests;
@@ -335,7 +396,9 @@ try {
   );
   if (report.success)
     await writeFile(
-      "docs/validation/proactive-local-chain.json",
+      process.env.PRA_PROACTIVE_BROWSER === "1"
+        ? "docs/validation/proactive-browser.json"
+        : "docs/validation/proactive-local-chain.json",
       JSON.stringify(report, null, 2),
     );
   console.log(JSON.stringify(report, null, 2));

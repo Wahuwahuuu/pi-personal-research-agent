@@ -1,3 +1,4 @@
+import {draftPlan} from "./plan-draft.ts";
 import {ProactiveResearch} from "./proactive-research.ts";
 import {ResearchBatches} from "./research-batches.ts";
 import {LibraryJobs} from "./library-jobs.ts";
@@ -631,6 +632,7 @@ export class PersonalAgent extends DurableObject<Env> {
       this.publish();
       return json({ ok: true });
     }
+    if (path === "/api/plans/draft" && r.method === "POST") return json(draftPlan((await this.body(r)).input));
     if (path === "/api/plans" && r.method === "POST") {
       const b=await this.body(r),projectId=this.workspace.getProject(typeof b.projectId==="string"?b.projectId:"default").id;
       const before=this.state.plans.slice();
@@ -678,7 +680,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const batchPath=path.match(/^\/api\/research-batches\/([^/]+)(\/candidates)?$/);
     if(batchPath&&r.method==="GET"){
       const batch=this.researchBatches.get(decodeURIComponent(batchPath[1]));
-      return json(batchPath[2]?this.researchBatches.candidates(batch.id,Number(p.get("after")??0),Number(p.get("limit")??100)):{...batch,counts:this.researchBatches.counts(batch.id)});
+      return json(batchPath[2]?this.researchBatches.candidates(batch.id,Number(p.get("after")??0),Number(p.get("limit")??100)):{...batch,counts:this.researchBatches.counts(batch.id),selected:(batch.selectedIds??[]).map(id=>this.researchBatches.candidate(id))});
     }
     if(path==="/api/imports"){
       if(r.method==="GET")return json(this.libraryJobs.page(p.get("project")??undefined,Number(p.get("after")??0),Number(p.get("limit")??30)));

@@ -42,6 +42,13 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  SOURCE_UNAVAILABLE:"论文来源暂时无法查询，成功检查位置保持不变。",
+  PLAN_CHECK_IN_PROGRESS:"本轮来源检查尚未结束，请在来源恢复并完成检查后再修改关键词或目标。",
+  PROACTIVE_IMPORT_FAILED:"所选论文尚未成功入库，请在论文库检查失败原因，重试入库后继续研究任务。",
+  PROACTIVE_RESULT_INVALID:"本轮筛选或简报的结构未通过校验，已保留记录，请在研究会话中检查并决定是否继续。",
+  RESEARCH_DELETED:"关联研究会话已经删除，旧研究结果不会恢复。",
+  BACKGROUND_DAILY_BUDGET:"今天的自动科研额度已用尽，待办保留，可以在后续额度可用时继续。",
+
   VERSIONED_ARXIV_ID_REQUIRED:"请填写包含版本号的 arXiv 编号，例如 2401.00001v2。",
   IMPORT_QUEUE_FULL:"入库待办已达到 100 项，请完成或取消部分待办后再添加。",
   LOCAL_CANCEL_PENDING:"取消已保存，等待本机确认后才能重新入库。",

@@ -1981,3 +1981,29 @@ textarea {
   .import-heading {gap:10px;flex-wrap:wrap;}
  }
 }
+
+@layer components {
+ .watch-editor {scroll-margin-top:24px;border-block:1px solid var(--line);padding-block:24px;margin-block:24px;}
+ .watch-fields {display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr);gap:20px;}
+ .watch-draft {margin-bottom:24px;}
+ .watch-settings .watch-row {align-items:flex-start;flex-wrap:wrap;}
+ .watch-plan-copy {flex:1 1 300px;min-width:0;}
+ .watch-plan-copy h3,.watch-plan-copy p,.watch-candidate a,.watch-gaps li {overflow-wrap:anywhere;}
+ .watch-plan-copy p {margin:6px 0;max-width:70ch;}
+ .watch-history {margin-top:28px;}
+ .watch-batch {border-top:1px solid var(--line);}
+ .watch-batch-toggle {width:100%;display:flex;align-items:center;justify-content:space-between;gap:20px;text-align:left;border:0;background:transparent;padding:16px 0;}
+ .watch-batch-toggle small {display:block;color:var(--muted);}
+ .watch-batch-detail {padding-bottom:24px;}
+ .watch-batch-detail h4 {margin:24px 0 8px;}
+ .watch-candidates {list-style:none;margin:0;padding:0;}
+ .watch-candidate {padding:14px 0;border-bottom:1px solid var(--line);}
+ .watch-candidate small {display:block;color:var(--muted);margin-top:4px;}
+ .watch-candidate p {margin:6px 0 0;max-width:70ch;overflow-wrap:anywhere;}
+ .watch-gaps {margin-block:20px;}
+ @media(max-width:700px){
+  .watch-fields {grid-template-columns:1fr;gap:0;}
+  .watch-batch-toggle {align-items:flex-start;flex-direction:column;gap:4px;}
+  .watch-settings>.row-between {align-items:flex-start;flex-wrap:wrap;}
+ }
+}

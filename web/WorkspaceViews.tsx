@@ -1,3 +1,4 @@
+import {WatchPlans} from "./WatchPlans.tsx";
 import {deviceView} from "./device-state.ts";
 import {LibraryImports} from "./LibraryImports.tsx";
 import { TaskControls } from "./TaskControls.tsx";
@@ -636,9 +637,8 @@ export function Activity({ data, revision, run, refresh }: Props) {
     </section>
   );
 }
-export function Inbox({ data, run, refresh }: Props) {
+export function Inbox({ data, revision, run, refresh }: Props) {
   const [onlyUnread, setOnlyUnread] = useState(false),
-    [query, setQuery] = useState(""),
     [showPlan, setShowPlan] = useState(false);
   const rows = data.notices.filter((n) => !onlyUnread || !n.read);
   return (
@@ -650,57 +650,7 @@ export function Inbox({ data, run, refresh }: Props) {
         </div>
         <button onClick={() => setShowPlan((v) => !v)}>管理关注主题</button>
       </div>
-      {showPlan && (
-        <section className="watch-settings">
-          <h2>关注主题</h2>
-          <form
-            className="inline-row"
-            onSubmit={(e) => {
-              e.preventDefault();
-              void run(async () => {
-                await mutate("plans", "POST", { query });
-                setQuery("");
-                refresh();
-              });
-            }}
-          >
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              required
-              maxLength={300}
-              aria-label="arXiv 关注关键词"
-              placeholder="输入 arXiv 查询关键词"
-            />
-            <button className="primary">添加关注</button>
-          </form>
-          <p className="help">
-            每天按上海时间检查。当前发现与深入处理的进度会分别记录。
-          </p>
-          {data.plans.map((p) => (
-            <div className="watch-row" key={p.id}>
-              <span>
-                <strong>{p.query}</strong>
-                <small>
-                  {p.enabled ? "下次检查：" + date(p.next) : "已暂停"}
-                </small>
-              </span>
-              <button
-                onClick={() =>
-                  void run(async () => {
-                    await mutate("plans/" + p.id, "PATCH", {
-                      enabled: !p.enabled,
-                    });
-                    refresh();
-                  })
-                }
-              >
-                {p.enabled ? "暂停" : "恢复"}
-              </button>
-            </div>
-          ))}
-        </section>
-      )}
+      {showPlan && <WatchPlans data={data} revision={revision} run={run} refresh={refresh}/>}
       <label className="check-label">
         <input
           type="checkbox"
@@ -732,6 +682,7 @@ export function Inbox({ data, run, refresh }: Props) {
               </div>
               <p>{n.text}</p>
               <div className="button-row">
+                {n.artifactId&&<button className="text-button" onClick={()=>navigate("artifacts",n.artifactId)}>阅读阶段简报</button>}
                 {n.id.startsWith("task:") && (
                   <button
                     className="text-button"
