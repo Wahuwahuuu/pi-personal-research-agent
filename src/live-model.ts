@@ -21,8 +21,8 @@ export interface LiveConfig {
 /** Only visible text crosses this adapter into Pi persistence. Provider-native reasoning is never forwarded. */
 export function liveModels(
   config: LiveConfig,
-  before: () => void,
-  after: (usage?: { input: number; output: number }) => void,
+  before: () => void | Promise<void>,
+  after: (usage?: { input: number; output: number }) => void | Promise<void>,
   fetcher: typeof fetch = fetch,
 ) {
   if (
@@ -57,7 +57,7 @@ export function liveModels(
     };
     void (async () => {
       let admitted = false,
-        settled = false;
+        settled = false, dispatched=false;
       try {
         const tools = getCurrentTools(context.messages);
         const system=getCurrentSystemPrompt(context.messages);
@@ -77,8 +77,10 @@ export function liveModels(
         const declarations=tools.map(t=>({type:"function",function:{name:t.name,description:t.description,parameters:t.parameters}}));
         if (new TextEncoder().encode(JSON.stringify({messages,tools:declarations})).length > 48000)
           throw new Error("CONTEXT_LIMIT");
-        before();
+        await before();
         admitted = true;
+        options?.signal?.throwIfAborted();
+        dispatched=true;
         const response = await fetcher(endpoint, {
           method: "POST",
           headers: {
@@ -131,7 +133,7 @@ export function liveModels(
           output >= 0
             ? { input, output }
             : undefined;
-        after(usage);
+        await after(usage);
         settled = true;
         if (
           typeof content !== "string" ||
@@ -164,7 +166,7 @@ export function liveModels(
         const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
         const code=error instanceof Error&&known.has(error.message)?error.message:"MODEL_REQUEST_FAILED";
         config.onFailure?.(code);
-        if (admitted && !settled) after();
+        if (admitted && !settled) {try{await after(dispatched?undefined:{input:0,output:0});}catch{config.onFailure?.("BILLING_UNAVAILABLE");}}
         message.stopReason = options?.signal?.aborted ? "aborted" : "error";
         message.errorMessage = "MODEL_REQUEST_FAILED";
         events.push({

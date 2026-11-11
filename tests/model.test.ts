@@ -101,7 +101,7 @@ test("provider drops hidden reasoning before Pi can persist it", async () => {
     () => {
       calls++;
     },
-    (u) => (usage = u),
+    (u) => {usage = u;},
     (async (_url, init) => {
       assert.match(
         String(new Headers(init?.headers).get("Authorization")),
@@ -214,4 +214,13 @@ test("budget rejection happens before network dispatch and is retained as an act
  const models=liveModels({...config,onFailure:code=>{failure=code;}},()=>{throw Error("MONTHLY_BUDGET");},()=>{settlements++;},(async()=>{requests++;throw Error("MUST_NOT_CALL");}) as typeof fetch);
  for await(const _event of models.stream(models.getModel("pra","test")!,{messages:[{role:"user",content:"synthetic",timestamp:0}]})){}
  assert.equal(requests,0);assert.equal(settlements,0);assert.equal(failure,"MONTHLY_BUDGET");
+});
+
+test("asynchronous admission is awaited and cancellation before dispatch settles zero without HTTP",async()=>{
+ let release!:()=>void,requests=0,usage:unknown;
+ const gate=new Promise<void>(r=>{release=r;}),abort=new AbortController();
+ const models=liveModels(config,()=>gate,async u=>{usage=u;},(async()=>{requests++;return Response.json({choices:[{message:{content:"never"}}]});}) as typeof fetch);
+ const result=models.stream(models.getModel("pra","test")!,{messages:[]},{signal:abort.signal}).result();
+ await new Promise<void>(r=>setImmediate(r));assert.equal(requests,0);
+ abort.abort();release();assert.equal((await result).stopReason,"aborted");assert.equal(requests,0);assert.deepEqual(usage,{input:0,output:0});
 });

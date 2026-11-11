@@ -8,8 +8,8 @@ import {
 } from "@earendil-works/pi-ai";
 export const MODEL = { provider: "pra", id: "deterministic-v1" };
 export function mockModels(
-  before: () => void,
-  after: (input: number, output: number) => void,
+  before: () => void | Promise<void>,
+  after: (input: number, output: number) => void | Promise<void>,
 ) {
   const stream: ProviderStreams["stream"] = (model, context) => {
     const events = createAssistantMessageEventStream();
@@ -30,9 +30,9 @@ export function mockModels(
       stopReason: "stop",
       timestamp: Date.now(),
     };
-    queueMicrotask(() => {
+    queueMicrotask(async () => {
       try {
-        before();
+        await before();
         const source = JSON.stringify(context.messages);
         const input = Math.ceil(new TextEncoder().encode(source).length / 3);
         const names = getCurrentTools(context.messages).map((t) => t.name);
@@ -73,7 +73,7 @@ export function mockModels(
             toolCall: call,
             partial: message,
           });
-          after(input, 40);
+          await after(input, 40);
           events.push({ type: "done", reason: "toolUse", message });
           events.end(message);
           return;
@@ -116,7 +116,7 @@ export function mockModels(
           content,
           partial: message,
         });
-        after(input, 40);
+        await after(input, 40);
         events.push({ type: "done", reason: "stop", message });
         events.end(message);
       } catch {

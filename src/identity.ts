@@ -1,3 +1,5 @@
+import {SharedBudget} from "./shared-budget.ts";
+import type {ModelUsage,BudgetLedger} from "./budget.ts";
 import { DurableObject } from "cloudflare:workers";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { IdentityStore, type Account } from "./identity-store.ts";
@@ -10,11 +12,18 @@ const publicAccount=(a:Account)=>({id:a.id,name:a.name,role:a.role});
 const token=()=>crypto.randomUUID().replaceAll("-","")+crypto.randomUUID().replaceAll("-","");
 export class IdentityRegistry extends DurableObject<Env> {
  store:IdentityStore;
+ budget:SharedBudget;
  constructor(ctx:DurableObjectState,env:Env){
   super(ctx,env);
-  const db:StateStorage={sql:{exec(query,...bindings){const rows=ctx.storage.sql.exec(query,...bindings);return{toArray:()=>rows.toArray() as any};}},transactionSync:fn=>ctx.storage.transactionSync(fn)};
-  this.store=new IdentityStore(db);
+  let depth=0;
+  const db:StateStorage={sql:{exec(query,...bindings){const rows=ctx.storage.sql.exec(query,...bindings);return{toArray:()=>rows.toArray() as any};}},transactionSync:fn=>{if(depth)return fn();return ctx.storage.transactionSync(()=>{depth++;try{return fn();}finally{depth--;}});}};
+  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);
  }
+ async importBudget(owner:string,rows:any[]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.budget.import(owner,rows);}
+ async reserveBudget(owner:string,request:Parameters<BudgetLedger["reserve"]>[0]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");return this.budget.reserve(owner,request);}
+ async settleBudget(owner:string,id:string,usage?:ModelUsage){return this.budget.settle(owner,id,usage);}
+ async budgetSnapshot(){return {...this.budget.ledger.snapshot(),scope:"application"};}
+ async budgetCalls(owner:string,after:string,limit:number){return this.budget.calls(owner,after,limit);}
  async authenticate(hash:string){return this.store.session(hash)??null;}
  async deviceOwner(hash:string){return this.store.deviceOwner(hash)??null;}
  async bindDevice(hash:string,userId:string){if(!this.store.account(userId))throw new Error("UNKNOWN_ACCOUNT");this.store.bindDevice(hash,userId);}

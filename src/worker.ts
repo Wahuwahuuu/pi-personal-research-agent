@@ -92,6 +92,8 @@ export class PersonalAgent extends DurableObject<Env> {
   database: StateStorage;
   private busy = false;
   private ownerId: string;
+  private budgetImported=false;
+  private sharedBudgetSnapshot?:ReturnType<BudgetLedger["snapshot"]>;
   private runtime?: Harness;
   private catalogCache = new Map<string, ResearchCatalog>();
   harness: PiHarness;
@@ -108,6 +110,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.state = this.repository.load();
     this.budgetLedger = new BudgetLedger(this.database);
     this.deletions = new DeletionStore(this.database);
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_billing_outbox(id TEXT PRIMARY KEY,usage TEXT NOT NULL)");
     if(env.MODEL_MODE!=="mock")this.budgetLedger.importLegacy(this.state.usage);
     this.budgetLedger.recoverInterrupted();
     if(this.state.usage.reservedInput||this.state.usage.reservedOutput){
@@ -140,32 +143,46 @@ export class PersonalAgent extends DurableObject<Env> {
       harness: async ({ storage, context, onWake }) => {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
         const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
-        const before = () => {
+        const before = async () => {
+          if(env.MODEL_MODE!=="mock")await this.syncBudget();
           const t=this.state.tasks.find(t=>t.status==="running"&&t.modelOperation);
           if(!t)throw new Error("NO_ACTIVE_TASK");
           const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
           reservedOutput=outputLimit();
+          reservationId=env.MODEL_MODE!=="mock"?crypto.randomUUID():undefined;
+          const request={id:reservationId!,taskId:budget.id,input:52000,output:reservedOutput,background:t.origin==="schedule",model:env.MODEL_ID??"",baseUrl:env.MODEL_BASE_URL??""};
+          if(reservationId){
+            let admission:Awaited<ReturnType<IdentityRegistry["reserveBudget"]>>;
+            try{admission=await this.identityRegistry().reserveBudget(this.ownerId,request);}catch{reservationId=undefined;throw new Error("BILLING_UNAVAILABLE");}
+            if(!admission.ok){reservationId=undefined;throw new Problem(admission.error,429);}
+            this.sharedBudgetSnapshot=admission.budget;
+          }
           const previousUsage={...this.state.usage},previousCalls=budget.calls,previousChildCalls=t.calls;
           try {
+            if(t.status!=="running")throw new Error("TASK_CLOSED");
             this.database.transactionSync(()=>{
               reserve(this.state,budget,52000,reservedOutput);
               if(budget!==t)t.calls++;
-              if(env.MODEL_MODE!=="mock")reservationId=this.budgetLedger.reserve({id:crypto.randomUUID(),taskId:budget.id,input:52000,output:reservedOutput,
-                background:t.origin==="schedule",model:env.MODEL_ID??"",baseUrl:env.MODEL_BASE_URL??""});
+              if(reservationId)this.budgetLedger.reserve(request);
               this.save();
             });
-          } catch(error) {Object.assign(this.state.usage,previousUsage);budget.calls=previousCalls;if(budget!==t)t.calls=previousChildCalls;this.repository.load();reservationId=undefined;throw error;}
+          } catch(error) {
+            Object.assign(this.state.usage,previousUsage);budget.calls=previousCalls;if(budget!==t)t.calls=previousChildCalls;this.repository.load();
+            if(reservationId){this.queueBill(reservationId,{input:0,output:0});await this.flushBills();}
+            reservationId=undefined;throw error;
+          }
         };
-        const after = (usage?: { input: number; output: number }) => {
+        const after = async (usage?: { input: number; output: number }) => {
           const previousUsage={...this.state.usage};
           try {
             this.database.transactionSync(()=>{
               settle(this.state,52000,reservedOutput,usage);
-              if(reservationId)this.budgetLedger.settle(reservationId,usage);
+              if(reservationId){this.budgetLedger.settle(reservationId,usage);this.queueBill(reservationId,usage);}
               this.save();
             });
-            reservationId=undefined;
           } catch(error) {Object.assign(this.state.usage,previousUsage);this.repository.load();throw error;}
+          reservationId=undefined;
+          if(env.MODEL_MODE!=="mock")await this.flushBills();
         };
         const models =
           env.MODEL_MODE === "mock"
@@ -244,7 +261,7 @@ export class PersonalAgent extends DurableObject<Env> {
     return {
       ...this.state,
       cursor:this.repository.cursor(),
-      budget:this.budgetLedger.snapshot(),
+      budget:this.sharedBudgetSnapshot?{...this.sharedBudgetSnapshot,scope:"application"}:{...this.budgetLedger.snapshot(),scope:"user",needsRefresh:true},
       build:this.env.BUILD_ID??"development",
       tasks: this.state.tasks.map(({ modelPrompt, ...t }) => t),
       deviceOnline: !!this.device(),
@@ -286,6 +303,26 @@ export class PersonalAgent extends DurableObject<Env> {
     const token = kind === "device" ? bearer(r) : cookie(r);
     return !!token && this.validHash(await digest(token), kind);
   }
+  identityRegistry(){return this.env.IDENTITIES.getByName("accounts:"+this.env.OWNER_ID);}
+  queueBill(id:string,usage?:{input:number;output:number}){this.ctx.storage.sql.exec("INSERT INTO pra_billing_outbox VALUES(?,?) ON CONFLICT(id) DO UPDATE SET usage=excluded.usage",id,JSON.stringify(usage??null));}
+  async flushBills(){
+    const rows=this.ctx.storage.sql.exec<{id:string;usage:string}>("SELECT id,usage FROM pra_billing_outbox LIMIT 100").toArray();
+    for(const row of rows){
+      try {
+        const result=await this.identityRegistry().settleBudget(this.ownerId,row.id,JSON.parse(row.usage)??undefined);
+        this.sharedBudgetSnapshot=result.budget;
+        this.ctx.storage.sql.exec("DELETE FROM pra_billing_outbox WHERE id=?",row.id);
+      } catch {return false;}
+    }
+    return true;
+  }
+  async syncBudget(){
+    if(!this.budgetImported){
+      try{await this.identityRegistry().importBudget(this.ownerId,this.ctx.storage.sql.exec("SELECT * FROM pra_model_calls").toArray());this.budgetImported=true;}
+      catch{throw new Error("BILLING_UNAVAILABLE");}
+    }
+    if(!await this.flushBills())throw new Error("BILLING_UNAVAILABLE");
+  }
   async acceptIdentity(userId:string,hash:string,expires:number) {
     const binding=this.ctx.storage.sql.exec<{user_id:string}>("SELECT user_id FROM pra_identity WHERE singleton=1").toArray()[0];
     if(binding&&binding.user_id!==userId)throw new Error("IDENTITY_MISMATCH");
@@ -320,9 +357,9 @@ export class PersonalAgent extends DurableObject<Env> {
       throw new Problem("UNAUTHORIZED", 401);
     if (path === "/api/events")
       return this.upgrade(r, "ui", await digest(cookie(r)!));
-    if (path === "/api/budget" && r.method === "GET")return json(this.budgetLedger.snapshot());
+    if (path === "/api/budget" && r.method === "GET"){if(this.env.MODEL_MODE!=="mock")await this.syncBudget();return json(await this.identityRegistry().budgetSnapshot());}
     if (path === "/api/budget/calls" && r.method === "GET") {
-      const p=new URL(r.url).searchParams;return json(this.budgetLedger.calls(p.get("after")??"",Number(p.get("limit")??50)));
+      const p=new URL(r.url).searchParams;return json(await this.identityRegistry().budgetCalls(this.ownerId,p.get("after")??"",Number(p.get("limit")??50)));
     }
     if (path === "/api/changes" && r.method === "GET") {
       const params=new URL(r.url).searchParams;
