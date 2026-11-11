@@ -180,7 +180,7 @@ class Library:
             raise LibraryError("INVALID_PAGE_LIMIT")
         # No selected local filename or arbitrary path is persisted or returned.
         return [dict(r) for r in self.db.execute(
-            "SELECT id,source,status,error,created,updated,paper_id,version FROM jobs ORDER BY status IN ('published','failed','cancelled'),created ASC LIMIT ?", (limit,))]
+            "SELECT id,source,status,error,created,updated,paper_id,version,json_extract(payload,'$.metadata.title') AS title FROM jobs ORDER BY status IN ('published','failed','cancelled'),created ASC LIMIT ?", (limit,))]
 
     def _register(self, request_id, source, payload):
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:

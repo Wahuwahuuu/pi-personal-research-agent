@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<title>本机科研节点 · Aster</title>
+<style>
+:root{color-scheme:light;--bg:#f7f9f8;--surface:#fff;--text:#213732;--muted:#62726e;--line:#d9e2de;--accent:#226d5b;--hover:#e8eeeb;--soft:#e3f0ea;--danger:#a22e36;--danger-bg:#fff0f0;font:14px/1.65 "Segoe UI","Microsoft YaHei",sans-serif}
+@media(prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#151c1a;--surface:#1b2421;--text:#e3ece7;--muted:#a6b7af;--line:#35453d;--accent:#8bceb5;--hover:#2a3730;--soft:#243d31;--danger:#ffb0b5;--danger-bg:#3c2528}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}button,input{font:inherit;color:inherit}button{cursor:pointer;border:1px solid var(--line);border-radius:7px;padding:8px 14px;background:var(--surface);min-height:38px}button:hover{background:var(--hover)}button:disabled{opacity:.5;cursor:default}button.primary{background:var(--accent);color:var(--surface);border-color:var(--accent)}button.primary:hover{filter:brightness(.92)}@media(prefers-color-scheme:dark){button.primary{color:#112b20}}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px}::selection{background:var(--soft);color:var(--text)}input{caret-color:var(--accent);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-width:0;width:100%}input::placeholder{color:var(--muted)}html{scrollbar-color:var(--muted) var(--bg)}
+header{background:var(--surface);padding:24px 28px 20px;border-bottom:1px solid var(--line);display:flex;gap:24px;align-items:center;justify-content:space-between}h1{font-size:24px;line-height:1.35;letter-spacing:-.5px;margin:0 0 6px}h2{font-size:18px;line-height:1.5;margin:0 0 8px}p{margin:0;overflow-wrap:anywhere}small,.muted{color:var(--muted)}main{max-width:880px;margin:auto;padding:0 28px 24px}nav{display:flex;gap:24px;border-bottom:1px solid var(--line);margin-bottom:24px}nav button{border:0;border-radius:0;background:none;padding:14px 2px 11px;border-bottom:2px solid transparent;color:var(--muted)}nav button[aria-pressed="true"]{border-bottom-color:var(--accent);color:var(--text);font-weight:600}
+section{margin-bottom:26px}.status{display:flex;justify-content:space-between;align-items:start;gap:20px}.status h2{font-size:20px}.actions{display:flex;gap:8px;flex-wrap:wrap}.section-head{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:12px}.section-head h2{margin:0}.import-form{display:flex;gap:8px;align-items:end;margin-top:16px}.import-form label{flex:1}.import-form input{display:block;margin-top:5px}.row{border-top:1px solid var(--line);padding:12px 0;display:flex;gap:16px;align-items:center;justify-content:space-between}.row:last-child{border-bottom:1px solid var(--line)}.row-content{min-width:0;flex:1}.row-title{font-weight:600;overflow-wrap:anywhere}.row-detail{font-size:12px;color:var(--muted);overflow-wrap:anywhere}.empty{padding:20px 0;color:var(--muted)}#alert{display:flex;justify-content:space-between;align-items:center;gap:12px;background:var(--danger-bg);color:var(--danger);padding:10px 12px;border-radius:7px;margin-bottom:18px}#alert button{background:none;border:0;color:inherit;padding:2px 6px}#feedback{min-height:24px;color:var(--accent);margin-bottom:10px}footer{border-top:1px solid var(--line);padding:14px 0 0;color:var(--muted);font-size:12px}footer .actions{margin-top:12px}footer button{font-size:12px}code{font:12px Consolas,monospace;overflow-wrap:anywhere}.search{display:flex;gap:8px;margin:12px 0}.search input{flex:1;width:0}.search button{flex-shrink:0;white-space:nowrap}.page{width:65px}.paper-open{display:flex;gap:8px;align-items:center}.paper-open label{font-size:12px}.paper-open input{width:60px}.pagination{margin-top:16px;display:flex;gap:12px;align-items:center}.badge{font-size:12px;color:var(--accent);background:var(--soft);border-radius:3px;padding:2px 6px;white-space:nowrap}[hidden]{display:none!important}
+@media(max-width:650px){header{padding:20px;display:block}header button{margin-top:12px}main{padding:0 20px 20px}.status{display:block}.status .actions{margin-top:12px}.row{align-items:start}.paper-open{flex-wrap:wrap;max-width:150px}.import-form{align-items:stretch;flex-direction:column}.import-form button{align-self:start}}
+</style></head>
+<body>
+<header><div><h1>本机科研节点</h1><p class="muted">论文在这里处理，研究在云端继续。</p></div><button id="open-web">打开研究工作区</button></header>
+<main>
+<nav aria-label="本机管理"><button id="node-tab" aria-pressed="true" aria-controls="node-panel">连接与导入</button><button id="papers-tab" aria-pressed="false" aria-controls="papers-panel">本机论文</button></nav>
+<div id="alert" role="alert" hidden><p id="error-text"></p><button aria-label="关闭错误提示" id="dismiss">关闭</button></div>
+<p id="feedback" role="status" aria-live="polite"></p>
+<div id="node-panel">
+<section class="status" aria-label="节点状态"><div><h2 id="phase">正在检查本机服务</h2><p id="connection" class="muted">等待节点报告连接与模型状态。</p></div><div class="actions"><button id="start" hidden>启动服务</button><button id="pause" disabled>暂停处理</button><button id="reconnect" disabled>重新连接</button></div></section>
+<section><div class="section-head"><h2>添加论文</h2><button id="import-pdf" class="primary" disabled>选择本机 PDF</button></div><p class="muted">支持带文本层的 PDF。扫描页会标明未读；完整文件保留在本机。</p>
+<form id="arxiv-form" class="import-form"><label for="arxiv-id">arXiv 论文与版本<input id="arxiv-id" placeholder="例如 2401.00001v2" autocomplete="off" maxlength="30" required></label><button id="import-arxiv" type="submit" disabled>从 arXiv 导入</button></form></section>
+<section><div class="section-head"><h2>导入进度</h2><span class="muted" id="jobs-count"></span></div><div id="jobs"><p class="empty">尚未取得入库记录。</p></div></section>
+</div>
+<div id="papers-panel" hidden>
+<div class="section-head"><h2>本机论文</h2><span id="paper-count" class="muted"></span></div>
+<form id="search-form" class="search"><input id="query" aria-label="搜索本机论文" placeholder="搜索标题或论文编号" maxlength="200"><button>搜索</button></form>
+<p class="muted">全文在独立本机窗口打开。页码以 PDF 实际页面为准。</p>
+<div id="papers"><p class="empty">正在读取论文目录。</p></div>
+<div class="pagination"><button id="previous" disabled>上一页</button><span id="page-label" class="muted"></span><button id="next" disabled>下一页</button></div>
+</div>
+<footer><p>关闭窗口后节点继续运行。需要停止服务时，请从系统托盘菜单退出。</p><div class="actions"><button id="diagnostics">导出脱敏诊断</button><span class="muted">不含凭证、论文原文或本机路径</span></div></footer>
+</main>
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+let state={},busy=false,connectedBridge=false,jobSignature="",paperOffset=0,paperNext=null,paperVersion="",pageVisible="node",polling=false;
+const phases={ready:"本机已就绪",loading:"正在加载检索模型",reading:"正在阅读论文",indexing:"正在建立论文索引",paused:"本机处理已暂停",stopped:"本机服务尚未就绪"};
+const jobs={queued:"等待处理",acquiring:"正在获取文件",parsing:"正在解析文本",indexing:"正在建立索引",validating:"正在校验索引",published:"已入库",failed:"导入失败",cancelled:"已取消"};
+const errors={INVALID_PDF_PAGE:"请输入 1–1000 的整数页码。",LOCAL_CREDENTIAL_UNAVAILABLE:"本机控制凭证尚未就绪。请启动服务后重试；旧节点需要升级。",LOCAL_SERVICE_UNAVAILABLE:"无法连接本机服务。请尝试启动服务，仍失败时导出诊断。",MODEL_LOADING_FAILED:"检索模型加载失败。请检查已安装的模型和运行环境，然后重新连接。",VERSIONED_ARXIV_ID_REQUIRED:"请输入完整 arXiv 编号和版本，例如 2401.00001v2。",TEXT_LAYER_REQUIRED:"文件没有可读取的文本层。请选择文本 PDF；当前不支持扫描件。",PDF_ENCRYPTED:"文件已加密，无法读取。请导入你有权限使用的未加密版本。",PDF_SIZE_LIMIT:"PDF 超过 64 MB 的当前限制。",LOCAL_BUSY:"本机正在处理任务。请在当前步骤结束后重试。",LIBRARY_NOT_CONFIGURED:"尚未配置论文资料目录。请先完成本机安装。",IMPORT_FAILED:"论文处理失败。请检查文本格式或来源后重试。",LOCAL_ACTION_FAILED:"操作未完成。请重试，或导出诊断查看节点状态。"};
+function message(error){return errors[error]||"操作未完成（"+String(error||"UNKNOWN").slice(0,80)+"）。请重试或导出诊断。";}
+function error(value){$("error-text").textContent=message(value);$("alert").hidden=false;}
+function clearError(){$("alert").hidden=true;}
+function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
+function controls(){const ok=!!state.ok;
+ $("start").hidden=ok;$("start").disabled=busy||!connectedBridge;
+ for(const id of ["pause","reconnect"])$(id).disabled=!ok||busy;
+ for(const id of ["import-pdf","import-arxiv"])$(id).disabled=!ok||!state.libraryEnabled||busy;
+ $("pause").textContent=state.paused?"恢复处理":"暂停处理";
+ $("open-web").disabled=busy||!connectedBridge;$("diagnostics").disabled=busy||!connectedBridge;
+}
+async function call(method,...args){if(!connectedBridge)throw Error("LOCAL_SERVICE_UNAVAILABLE");return window.pywebview.api[method](...args);}
+async function action(method,args=[],success="操作已提交。"){if(busy)return;busy=true;controls();clearError();$("feedback").textContent="正在处理…";
+ try{const reply=await call(method,...args);if(!reply.ok){error(reply.error);$("feedback").textContent="";return;}
+ $("feedback").textContent=success;return reply.value;
+ }catch{error("LOCAL_ACTION_FAILED");$("feedback").textContent="";}
+ finally{busy=false;await refresh();controls();}
+}
+function renderJobs(){
+ const rows=state.imports||[],signature=JSON.stringify(rows);if(signature===jobSignature)return;jobSignature=signature;
+ $("jobs").replaceChildren();$("jobs-count").textContent=rows.length?rows.length+" 项记录":"";
+ if(!rows.length){$("jobs").append(node("p","导入论文后，可在这里查看处理阶段与结果。","empty"));return;}
+ for(const job of [...rows].reverse()){
+  const row=node("div",undefined,"row"),body=node("div",undefined,"row-content");
+  body.append(node("p",job.title||(/arxiv:/.test(job.source)?job.source.replace("arxiv:","arXiv "):"本机 PDF · "+job.id.slice(0,6)),"row-title"));
+  body.append(node("p",jobs[job.status]||job.status,"row-detail"));if(job.error)body.append(node("p",message(job.error),"row-detail"));row.append(body);
+  if(["failed","cancelled"].includes(job.status)){const b=node("button","重试");b.onclick=()=>action("job",["retry",job.id],"已重新加入处理队列。");row.append(b);}
+  else if(job.status!=="published"){const b=node("button","取消");b.onclick=()=>action("job",["cancel",job.id],"已取消导入。");row.append(b);}
+  else row.append(node("span","已入库","badge"));
+  $("jobs").append(row);
+ }
+}
+async function refresh(){
+ if(!connectedBridge||polling)return;polling=true;
+ try{state=await call("status");$("phase").textContent=phases[state.phase]||"正在检查节点";
+ $("connection").textContent=state.connected?(state.ready?"云端已连接，可以接收科研任务。":"云端已连接；待本机就绪后继续科研任务。"):"云端暂未连接，节点会自动重连；本机已有资料仍可查看。";
+ if(!state.ok)$("connection").textContent=message(state.error);
+ else if(state.error)$("connection").textContent=message(state.error);
+ renderJobs();controls();
+ if(pageVisible==="papers"&&paperVersion&&state.indexVersion!==paperVersion)await loadPapers();
+ }catch{state={ok:false};$("phase").textContent="本机服务尚未就绪";$("connection").textContent=message("LOCAL_SERVICE_UNAVAILABLE");controls();}
+ finally{polling=false;}
+}
+async function loadPapers(){
+ try{const reply=await call("library",$("query").value,paperOffset);if(!reply.ok){error(reply.error);return;}
+ const data=reply.value;paperVersion=data.indexVersion;paperNext=data.next;
+ $("papers").replaceChildren();$("paper-count").textContent=data.total+" 篇";
+ $("previous").disabled=paperOffset===0;$("next").disabled=paperNext===null;$("page-label").textContent=data.total?Math.floor(paperOffset/50)+1+" / "+Math.ceil(data.total/50):"";
+ if(!data.papers.length){$("papers").append(node("p",$("query").value?"没有匹配的论文。":"还没有已入库论文，请先选择 PDF 或从 arXiv 导入。","empty"));return;}
+ for(const paper of data.papers){
+ const row=node("div",undefined,"row"),body=node("div",undefined,"row-content");body.append(node("p",paper.title,"row-title"));
+ body.append(node("p",paper.paperId.startsWith("local-")?"本机导入":paper.paperId,"row-detail"));
+ const tools=node("div",undefined,"paper-open"),label=node("label","页码 "),input=node("input");input.type="number";input.min="1";input.max="1000";input.value="1";label.append(input);
+ const button=node("button","打开全文");button.onclick=()=>{
+ input.setCustomValidity("");const page=Number(input.value);
+ if(!input.value.trim()||!Number.isInteger(page)||page<1||page>1000){input.setCustomValidity("请输入 1–1000 的整数页码。");input.reportValidity();input.focus();return;}
+ action("open_paper",[paper.paperId,data.indexVersion,page],"已打开本机全文阅读窗口。");
+};input.oninput=()=>input.setCustomValidity("");tools.append(label,button);row.append(body,tools);$("papers").append(row);
+ }
+ }catch{error("LOCAL_SERVICE_UNAVAILABLE");}
+}
+function tab(name){pageVisible=name;$("node-panel").hidden=name!=="node";$("papers-panel").hidden=name!=="papers";$("node-tab").setAttribute("aria-pressed",String(name==="node"));$("papers-tab").setAttribute("aria-pressed",String(name==="papers"));if(name==="papers")loadPapers();}
+$("node-tab").onclick=()=>tab("node");$("papers-tab").onclick=()=>tab("papers");$("dismiss").onclick=clearError;
+$("open-web").onclick=()=>action("open_web",[],"已在浏览器打开研究工作区。");$("start").onclick=()=>action("start",[],"正在启动节点，请等待状态更新。");
+$("pause").onclick=()=>action("control",[state.paused?"resume":"pause"],state.paused?"已恢复处理。":"已请求暂停；当前步骤结束后不再启动新步骤。");
+$("reconnect").onclick=()=>action("control",["reconnect"],"正在重新连接云端。");
+$("import-pdf").onclick=async()=>{const value=await action("import_pdf",[],"");if(Array.isArray(value))$("feedback").textContent=value.length?"已登记 "+value.length+" 份 PDF。解析和索引将在本机执行。":"已取消文件选择。";};
+$("arxiv-form").onsubmit=async e=>{e.preventDefault();const value=await action("import_arxiv",[$("arxiv-id").value],"已登记论文，等待本机下载和处理。");if(value)$("arxiv-id").value="";};
+$("search-form").onsubmit=e=>{e.preventDefault();paperOffset=0;loadPapers();};
+$("previous").onclick=()=>{paperOffset=Math.max(0,paperOffset-50);loadPapers();};$("next").onclick=()=>{if(paperNext!==null){paperOffset=paperNext;loadPapers();}};
+$("diagnostics").onclick=async()=>{const value=await action("diagnostics",[],"");if(value)$("feedback").textContent=value.saved?"诊断已保存。":"已取消导出。";};
+function ready(){if(connectedBridge)return;connectedBridge=true;refresh();setInterval(refresh,5000);}
+window.addEventListener("pywebviewready",ready);if(window.pywebview?.api)ready();
+controls();
+</script></body></html>

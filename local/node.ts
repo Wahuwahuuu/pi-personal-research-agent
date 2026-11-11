@@ -400,15 +400,32 @@ localHandler=async(req,res)=>{
  try{
   if(req.method==="GET"&&path==="/local/status"){
    if(library&&building)importJobs=await library.jobs();
-   reply({connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:building?"indexing":active?"reading":announcedReady?"ready":"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
+   reply({connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?"ready":"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
+  }
+  if(req.method==="GET"&&path==="/local/library"){
+   const params=new URL(req.url!,"http://127.0.0.1").searchParams;
+   const version=params.get("indexVersion")??indexVersion;
+   const selected=snapshots?(await snapshots.runtime(version)).catalog:catalog;
+   const query=(params.get("q")??"").slice(0,200).toLocaleLowerCase();
+   const offset=Math.max(0,Math.min(100000,Number(params.get("offset"))||0));
+   const all=selected.papers.filter(p=>(p.title+" "+p.paper_id).toLocaleLowerCase().includes(query));
+   reply({indexVersion:version,papers:all.slice(offset,offset+50).map(p=>({paperId:p.paper_id,title:p.title})),next:offset+50<all.length?offset+50:null,total:all.length});return true;
+  }
+  if(req.method==="GET"&&path==="/local/pdf"){
+   const params=new URL(req.url!,"http://127.0.0.1").searchParams;
+   const version=params.get("indexVersion")??indexVersion,paper=params.get("paperId")??"";
+   if(paper.length>256||!snapshots)throw Error("UNKNOWN_PAPER");
+   const bytes=await snapshots.pdf(version,paper);
+   res.writeHead(200,{"Content-Type":"application/pdf","Content-Length":bytes.length,"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"});res.end(bytes);return true;
   }
   if(req.method!=="POST"){reply({error:"METHOD_DENIED"},405);return true;}
-  let bytes=0,body="";for await(const part of req){bytes+=part.length;if(bytes>24000)throw Error("BODY_LIMIT");body+=part.toString("utf8");}
-  const value=JSON.parse(body);
+  let bytes=0;const body:Buffer[]=[];for await(const part of req){bytes+=part.length;if(bytes>24000)throw Error("BODY_LIMIT");body.push(Buffer.from(part));}
+  const value=JSON.parse(Buffer.concat(body).toString("utf8"));
   if(path==="/local/control"){
    if(value.action==="pause"){paused=true;unavailable("paused");}
    else if(value.action==="resume"){paused=false;void announceReady();}
    else if(value.action==="reconnect"){socket?.terminate();}
+   else if(value.action==="shutdown"){reply({accepted:true});setTimeout(stop,25);return true;}
    else throw Error("ACTION_DENIED");
    reply({accepted:true});return true;
   }
