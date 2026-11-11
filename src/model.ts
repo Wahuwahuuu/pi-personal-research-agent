@@ -1,3 +1,4 @@
+import { BUDGET_STOPS } from "./budget.ts";
 import {projectProviderMessages} from "./provider-context.ts";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import {
@@ -11,6 +12,7 @@ export const MODEL = { provider: "pra", id: "deterministic-v1" };
 export function mockModels(
   before: () => void | Promise<void>,
   after: (input: number, output: number) => void | Promise<void>,
+  onFailure?: (code: string) => void,
 ) {
   const stream: ProviderStreams["stream"] = (model, context) => {
     const events = createAssistantMessageEventStream();
@@ -47,14 +49,19 @@ export function mockModels(
           current.includes('"papers"') || current.includes('\\\"papers\\\"');
         const hasChunks =
           Boolean(frame?.evidence?.length) || current.includes('"chunks"') || current.includes('\\\"chunks\\\"');
-        if (research && !hasChunks) {
+        const observedIds = (Array.isArray(frame?.observations) ? frame.observations : [])
+          .flatMap((o: any) => o.result?.papers ?? []).map((p: any) => p.paper_id);
+        const candidates: unknown[] = observedIds.length ? observedIds : frame?.frame?.ordered_targets ?? [];
+        const targetIds = [...new Set(candidates.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0,3);
+        const emptySearch = research && hasSearch && !hasChunks && !targetIds.length;
+        if (research && !hasChunks && !emptySearch) {
           const name = hasSearch ? "retrieve_chunks" : "search_papers";
           const call: ToolCall = {
             type: "toolCall",
             id: "deterministic-" + (hasSearch ? "retrieve" : "search"),
             name,
             arguments: hasSearch
-              ? { query: "evidence", paper_ids: frame?.observations?.flatMap((o:any)=>o.result?.papers??[]).slice(0,3).map((p:any)=>p.paper_id)??["fixture-paper"], top_k: 3 }
+              ? { query: "methods results limitations", paper_ids: targetIds, top_k: 3 }
               : { query: "research", limit: 3 },
           };
           message.content = [call];
@@ -89,11 +96,11 @@ export function mockModels(
         if (research || frame?.stage==="agent")
           content = JSON.stringify({
             execution: {
-              state: "complete",
-              remaining_needs: [],
+              state: emptySearch ? "partial" : "complete",
+              remaining_needs: emptySearch ? ["No paper found in the authorized catalog"] : [],
               needs_sources: true,
             },
-            answer: content,
+            answer: emptySearch ? "[模拟验证] 当前授权范围没有检索结果，尚无原文证据。" : content,
           });
         if(frame?.stage==="proactive_select")content=JSON.stringify({decisions:frame.candidates.map((c:any)=>({source:c.source,relevant:true,priority:1,reason:"[模拟筛选] 验证元数据候选的处理流程"}))});
         if(frame?.stage==="proactive_assess")content=JSON.stringify({findings:frame.papers.map((p:any)=>({source:p.source,important:!frame.objective.includes("[mock:no-change]"),change:"[模拟发现] 原文证据可定位。",impact:"[模拟评估] 用于验证研究记录和引用流程，不是科研结论。",citations:frame.evidence.filter((e:any)=>e.paper_id===p.paperId).slice(0,1).map((e:any)=>e.chunk_id),openQuestions:["真实研究意义尚待人工评审。"]}))});
@@ -124,7 +131,10 @@ export function mockModels(
         await after(input, 40);
         events.push({ type: "done", reason: "stop", message });
         events.end(message);
-      } catch {
+      } catch (error) {
+        const safe = new Set([...BUDGET_STOPS, "MODEL_BUDGET", "CONTEXT_CHANGED", "PLAN_PAUSED", "TASK_CLOSED"]);
+        const code = error instanceof Error && safe.has(error.message) ? error.message : "MODEL_REQUEST_FAILED";
+        onFailure?.(code);
         message.stopReason = "error";
         message.errorMessage = "MODEL_ADMISSION_DENIED";
         events.push({ type: "error", reason: "error", error: message });

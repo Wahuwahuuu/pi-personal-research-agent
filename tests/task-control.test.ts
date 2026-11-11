@@ -11,6 +11,7 @@ import {
   acceptResult,
 } from "../src/domain.ts";
 import {
+  handleModelBudget,
   configureTask,
   nextSegment,
   segmentUsage,
@@ -229,4 +230,18 @@ test("amending a paused goal cancels unstarted old tool requests while keeping s
   resumeTask(s, t);
   assert.equal(t.status, "queued");
   assert.equal(t.tools, 1);
+});
+
+test("budget exhaustion inside Pi checkpoints the same goal and never resets total or validation counters",()=>{
+ const {s,t}=fixture();
+ t.calls=6;t.tools=2;t.status="running";t.modelFailure="MODEL_BUDGET";
+ handleModelBudget(s,t);
+ assert.equal(t.status,"queued");assert.equal(t.calls,6);assert.equal(t.tools,2);
+ assert.equal(t.goal!.segments.length,2);assert.equal(t.modelFailure,undefined);
+ t.calls=24;t.status="running";handleModelBudget(s,t);
+ assert.equal(t.status,"paused");assert.equal(t.error,"GOAL_BUDGET");
+ const next=fixture();next.t.calls=6;next.s.usage.requests=500;
+ handleModelBudget(next.s,next.t);
+ assert.equal(next.t.status,"waiting_user");assert.equal(next.t.error,"VALIDATION_BUDGET");
+ assert.equal(next.t.goal!.segments.length,1);assert.equal(next.s.usage.requests,500);
 });

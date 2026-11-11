@@ -192,3 +192,20 @@ export function taskOrder(a: Task, b: Task) {
 export function orderedTasks(s: State) {
   return [...s.tasks].sort(taskOrder);
 }
+
+
+/** A provider can exhaust a segment within one Pi run; this is a host checkpoint, not a provider outage. */
+export function handleModelBudget(s: State, t: Task) {
+  const validationExhausted =
+    s.usage.requests >= 500 ||
+    s.usage.input + s.usage.reservedInput + 52000 > 6000000 ||
+    s.usage.output + s.usage.reservedOutput + 2048 > 1000000;
+  const a = taskAllowance(t);
+  if (!validationExhausted && t.goal && (a.calls <= 0 || a.activeMs <= 0)) {
+    if (nextSegment(t, "segment_budget")) { t.modelFailure = undefined; return; }
+    if (t.status === "paused") return;
+  }
+  t.status = "waiting_user";
+  t.error = validationExhausted ? "VALIDATION_BUDGET" : "MODEL_BUDGET";
+  checkpoint(t, t.error);
+}

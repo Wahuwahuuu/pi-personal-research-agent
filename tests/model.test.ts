@@ -232,3 +232,27 @@ test("actual provider payload excludes superseded archived memory in a managed c
  const result=await models.stream(models.getModel("pra","test")!,{messages}).result();
  assert.equal(result.stopReason,"stop");assert.equal(sent.messages.length,1);assert.ok(!JSON.stringify(sent).includes("DELETED_MEMORY_SENTINEL"));assert.ok(JSON.stringify(sent).includes("corrected preference"));
 });
+
+test("mock empty search retains explicit current paper scope without inventing fixture identifiers", async () => {
+ const {mockModels, MODEL}=await import("../src/model.ts");
+ const models=mockModels(()=>{},()=>{});
+ const tools=[{name:"search_papers",description:"search",parameters:{type:"object"}},{name:"retrieve_chunks",description:"read",parameters:{type:"object"}}];
+ for(const ids of [["known-paper"],[]]){
+  const frame={stage:"agent",frame:{ordered_targets:ids},observations:[{result:{papers:[]}}]};
+  const result=await models.stream(models.getModel(MODEL.provider,MODEL.id)!,{messages:[{role:"user",content:JSON.stringify(frame),timestamp:0}],tools}).result();
+  const call=result.content.find(c=>c.type==="toolCall");
+  if(ids.length){assert.equal(call?.name,"retrieve_chunks");assert.deepEqual(call?.arguments.paper_ids,ids);}
+  else {assert.equal(call,undefined);const text=result.content.find(c=>c.type==="text")?.text!;assert.equal(JSON.parse(text).execution.state,"partial");}
+ }
+});
+test("mock preserves known admission denials without leaking arbitrary errors or settling rejected calls", async()=>{
+ const {mockModels,MODEL}=await import("../src/model.ts");
+ for(const message of ["MODEL_BUDGET","BACKGROUND_DAILY_BUDGET","private exception content"]){
+  let settled=0,failure="";
+  const models=mockModels(()=>{throw Error(message);},()=>{settled++;},code=>{failure=code;});
+  const result=await models.stream(models.getModel(MODEL.provider,MODEL.id)!,{messages:[]}).result();
+  assert.equal(result.stopReason,"error");assert.equal(settled,0);
+  assert.equal(failure,message==="private exception content"?"MODEL_REQUEST_FAILED":message);
+  assert.ok(!JSON.stringify(result).includes("private exception content"));
+ }
+});
