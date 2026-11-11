@@ -1,4 +1,5 @@
 import { isAbsolute } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   PythonWorkerClient,
   type SearchParams,
@@ -8,7 +9,7 @@ import {
 import type { Tool } from "../src/domain.ts";
 export interface PythonConfig {
   executable: string;
-  worker: string;
+  worker?: string;
   corpus: string;
   index?: string;
   models?: string;
@@ -19,11 +20,11 @@ export interface PythonConfig {
 }
 /** Restricted facade over AsterCite's existing JSONL transport. Model loading is readiness, not tool execution. */
 export class PythonBridge {
-  config: PythonConfig;
+  config: PythonConfig & {worker:string};
   private client?: PythonWorkerClient;
   private pending = false;
   constructor(config: PythonConfig) {
-    this.config = config;
+    this.config = {...config,worker:config.worker ?? fileURLToPath(new URL("../packages/retrieval/retriever/worker.py",import.meta.url))};
     for (const p of [
       config.executable,
       config.worker,

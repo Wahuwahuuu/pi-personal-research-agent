@@ -1,15 +1,16 @@
 {
- "endpoint":"https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev",
- "secretFile":".local/device.secret",
- "dataDir":".local/node",
- "port":48731,
- "fixture":false,
- "python":{
-  "executable":"C:/path/to/AsterCite/.venv/Scripts/python.exe",
-  "worker":"C:/path/to/AsterCite/retriever/worker.py",
-  "corpus":"C:/path/to/corpus",
-  "index":"C:/path/to/index",
-  "models":"C:/path/to/models",
-  "profile":"rrf_rerank","device":"cuda","indexVersion":"YOUR_INDEX_VERSION"
- }
+  "endpoint": "https://YOUR-WORKER.YOUR-SUBDOMAIN.workers.dev",
+  "secretFile": ".local/device.secret",
+  "dataDir": ".local/node",
+  "port": 48731,
+  "fixture": false,
+  "python": {
+    "executable": "C:/path/to/Python312/python.exe",
+    "corpus": "C:/path/to/corpus",
+    "index": "C:/path/to/index",
+    "models": "C:/path/to/models",
+    "profile": "rrf_rerank",
+    "device": "cuda",
+    "indexVersion": "YOUR_INDEX_VERSION"
+  }
 }

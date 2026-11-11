@@ -23,15 +23,10 @@ The transport and memory implementations remain owned by the host; close does no
 terminate a shared transport. Session state and budget survive close/reopen.
 Credentials are loaded into memory and are not configuration fields.
 
-This release is the **Node compatibility adapter**, pinned to Pi 1.0.4 in an
-independent package. Do not import it into a Cloudflare Worker or start it on the
-local research node. The existing cloud application is unchanged. A Pi Durable
-adapter must be implemented and verified before cloud cutover; this package does
-not claim cross-device recovery or physical deletion of cloud transcripts.
+The package root is the **Node compatibility adapter**, pinned to Pi 1.0.4 for original-engine compatibility. Do not import this root into a Worker or start it on the local research node. The cloud host uses the framework-independent workflow and ports through its Pi Durable adapter. Cloud scheduling, admission, memory and deletion are host responsibilities, not features supplied by this Node facade.
 
 The adapter preserves AsterCite's existing request and comparison budgets,
-file-based sessions and translation budget. These are not yet the cloud application's
-global quota. Production cloud admission must cover all model calls before cutover.
+file-based sessions and translation budget. The cloud host instead applies its own cumulative task and application-wide monetary limits to every model request.
 PDF reading supports the original fixed-source policy; arbitrary URL/path ingestion
 is not exposed. No corpus, historical conversation, personal memory or model is bundled.
 
@@ -52,3 +47,5 @@ measurements.
 ./core 提供不依赖旧会话运行时的工具参数、结果与证据校验，以及执行完成判定基础逻辑。云端使用根项目的 Pi Durable 运行时，不能在 Worker 中导入 Node 会话 facade。
 
 ./catalog 为本地节点提供 loadCorpusIndex(corpusRoot,indexRoot,device)，复用原目录、哈希和原文范围验证。返回公开论文目录与来源身份映射；不会读取密钥或运行模型。此入口使用 Node 文件系统，不能在 Worker 中运行。
+
+The bundled Python implementation lives in ../retrieval. It uses the same restricted transport and requires private, locally configured corpus/index/model paths. It does not depend on an AsterCite checkout being installed.
