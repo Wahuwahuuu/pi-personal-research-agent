@@ -781,7 +781,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.capabilities = Array.isArray(m.capabilities)
           ? m.capabilities.filter((v: unknown) =>
-              ["abstract-v1", "scientific-html-v1", "pdf-public-v1"].includes(
+              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1"].includes(
                 String(v),
               ),
             )

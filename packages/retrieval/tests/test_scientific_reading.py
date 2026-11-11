@@ -36,6 +36,29 @@ class ScientificReadingTests(unittest.TestCase):
         self.assertIn("The loss measures", equations[0]["text"])
         self.assertNotIn("DO NOT INCLUDE", json.dumps(blocks))
 
+    def test_footnotes_do_not_change_scores_and_true_exponents_survive(self):
+        html = """<article><table><tr><th>Value</th></tr>
+        <tr><td>89.2<sup><a role="doc-noteref" href="#fn1">1</a></sup></td></tr>
+        <tr><td>90.3<span class="ltx_note_mark">2</span></td></tr>
+        <tr><td>80.4<a href="#S1.footnote3">3</a></td></tr>
+        <tr><td>10<sup>2</sup> and H<sub>2</sub>O</td></tr>
+        <tr><td><math><msup><mn>10</mn><mn>2</mn></msup></math></td></tr>
+        </table></article>"""
+        table = extract_blocks(html)[0]["text"]
+        self.assertIn("89.2 [注：1]", table)
+        self.assertIn("90.3 [注：2]", table)
+        self.assertIn("80.4 [注：3]", table)
+        self.assertNotIn("89.21", table)
+        self.assertIn("10^(2) and H_(2)O", table)
+        self.assertIn("$"+"{10}^{2}$", table)
+
+    def test_new_parser_never_reuses_legacy_source_identity(self):
+        from retriever.scientific_reading import VERSION, make_chunk
+        source = make_chunk({"section":"Results","text":"89.2 [注：1]","kind":"table"}, PAPER, "index", "a"*64, 0, "https://arxiv.org/html/"+PAPER+"v1")
+        self.assertEqual(VERSION, "scientific-html-v2")
+        self.assertIn(":scientific-v2:", source["chunk_id"])
+        self.assertIn(":scientific-v2:", source["paragraph_id"])
+
     def test_long_tables_split_only_between_rows_and_repeat_headers(self):
         rows = [f"<tr><td>row-{i}</td><td>{'value ' * 120}</td></tr>" for i in range(35)]
         blocks = extract_blocks('<article><table><tr><th>Item</th><th>Value</th></tr>'+''.join(rows)+'</table></article>')

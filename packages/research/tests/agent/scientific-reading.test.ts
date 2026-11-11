@@ -16,9 +16,9 @@ const paper='1908.10084',index='reading-fixture';
 const table='### Table 1: Scores (%)\n\n| Model | Score (%) | Objective |\n| --- | --- | --- |\n'+Array.from({length:25},(_,i)=>`| Encoder ${i} | 89.2 | $\\frac{a}{b}$ ${'notes '.repeat(16)} |`).join('\n');
 const block={kind:'table',text:table,section:'Table 1: Scores (%)',locator:'T1',format:'markdown'};
 function config():P2HarnessConfig{return {profile:'B',indexVersion:index,evidenceIndex:new Map(),publicPapers:[{paper_id:paper,title:'Study',abstract:'Complete abstract.'}]};}
-async function cache(root:string){
+async function cache(root:string,version='scientific-html-v1'){
   const original='<article><table><tr><td>fixture</td></tr></table></article>',digest=sha(original),directory=join(root,'.cache/scientific-reading',sha(index).slice(0,16));await mkdir(directory,{recursive:true});
-  const data={version:'scientific-html-v1',index_version:index,paper_id:paper,original_sha256:digest,source_url:`https://arxiv.org/html/${paper}v1`,blocks:[block],blocks_sha256:sha(JSON.stringify([block]))};
+  const data={version,index_version:index,paper_id:paper,original_sha256:digest,source_url:`https://arxiv.org/html/${paper}v1`,blocks:[block],blocks_sha256:sha(JSON.stringify([block]))};
   await writeFile(join(directory,paper+'.html'),original);await writeFile(join(directory,paper+'.json'),JSON.stringify(data));return {data,directory};
 }
 function toolContext(p2:P2HarnessConfig,workbench=true):ToolContext{return {knownPaperIds:new Set([paper]),getScope:()=>[paper],getLedger:()=>new TurnLedger('reading',[paper],[],12,20,true),p2,workbench};}
@@ -78,4 +78,20 @@ test('the real harness accepts more than five sources and the web response expos
     worker:{async request(_method,value){const args=value as RetrieveParams;requests.push(args);return {backend:'rrf_rerank',index_version:PREPARED_INDEX,chunks:chunks.slice(0,args.top_k??5).map(c=>({...c,citation:`[${c.chunk_id}]`}))};}}});
   try{const record=await setup.harness.runTurn('逐项说明论文 p1 的全部实验结果',['p1'],'reading-twelve');assert.equal(record.status,'completed',record.error??'');assert.ok(requests.some(r=>r.top_k===12));assert.equal(record.citation_validity.cited_ids.length,12);assert.equal(webTurn(record,'question',[],new Map(chunks.map(c=>[c.chunk_id,c]))).sources.length,12);}
   finally{setup.harness.dispose();}
+});
+
+test('parser upgrades use a distinct source identity and keep legacy archives readable',async()=>{
+ const root=await mkdtemp(join(tmpdir(),'pra-parser-upgrade-'));
+ try{
+  const worker:WorkerTransport={async request(){throw Error('No network');}};
+  await cache(root);
+  const old=await ScientificReading.open(root,index,new Set([paper]),worker);
+  const prior=[...old.sources.values()][0];
+  await cache(root,'scientific-html-v2');
+  const updated=await ScientificReading.open(root,index,new Set([paper]),worker);
+  const next=[...updated.sources.values()][0];
+  assert.equal(prior.text,next.text);
+  assert.notEqual(prior.chunk_id,next.chunk_id);
+  assert.match(prior.chunk_id,/:scientific-v1:/);assert.match(next.chunk_id,/:scientific-v2:/);
+ }finally{await rm(root,{recursive:true,force:true});}
 });

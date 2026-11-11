@@ -304,7 +304,7 @@ function connect() {
       deviceId: "windows-primary",
       indexVersion,
       tools: ["search_papers", "retrieve_chunks"],
-      capabilities: ["abstract-v1", "scientific-html-v1", "pdf-public-v1"],
+      capabilities: ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1"],
       readerPort: config.port ?? 48731,
     });
   });

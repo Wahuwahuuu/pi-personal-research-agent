@@ -26,9 +26,7 @@ export function readingSources(
       !c.papers.some((p) => p.paper_id === v.paper_id) ||
       !(op.params.paper_ids as string[])?.includes(v.paper_id) ||
       typeof v.chunk_id !== "string" ||
-      !v.chunk_id.startsWith(
-        c.indexVersion + ":scientific-v1:" + v.paper_id + ":",
-      ) ||
+      !["scientific-v1","scientific-v2"].some(schema=>v.chunk_id.startsWith(c.indexVersion + ":" + schema + ":" + v.paper_id + ":")) ||
       typeof v.section !== "string" ||
       typeof v.paragraph_id !== "string" ||
       v.citation !== "[" + v.chunk_id + "]" ||

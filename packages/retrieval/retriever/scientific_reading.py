@@ -10,7 +10,7 @@ import time
 from urllib.parse import urlparse
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 
-VERSION = "scientific-html-v1"
+VERSION = "scientific-html-v2"
 MAX_HTML = 8 * 1024 * 1024
 MAX_BLOCK = 8000
 ALLOWED_HOSTS = {"arxiv.org", "ar5iv.labs.arxiv.org"}
@@ -108,6 +108,21 @@ def render(node, cell=False):
         return "$" + tex + "$"
     if node.tag == "br":
         return " " if cell else "\n"
+    # An annotation after a numeric score must never become another digit.
+    classes = set(node.attrs.get("class", "").split())
+    role = node.attrs.get("role", "")
+    href = node.attrs.get("href", "")
+    marker = bool(classes & {"ltx_note_mark", "footnote-ref", "footnoteref"}) or role == "doc-noteref"
+    marker = marker or (node.tag == "a" and bool(re.search(r"#(?:[^#]*[.:-])?(?:fn|footnote|note)[-_:.]?\d", href, re.I)))
+    if marker:
+        return " [注：" + compact(plain(node)) + "] "
+    if "ltx_note_content" in classes or role == "doc-footnote":
+        return " [脚注：" + compact(plain(node)) + "] "
+    if node.tag in {"sup", "sub"}:
+        content = "".join(render(child, cell) if isinstance(child, Element) else child for child in node.children)
+        if "[注：" in content:
+            return content
+        return ("^(" if node.tag == "sup" else "_(") + compact(content) + ")"
     return "".join(render(child, cell) if isinstance(child, Element) else child for child in node.children)
 
 
@@ -235,8 +250,8 @@ def fetch_html(url):
 
 
 def make_chunk(block, paper_id, index, digest, number, url):
-    text = block["text"]; cid = f"{index}:scientific-v1:{paper_id}:{digest[:16]}:{number}:c0-{len(text)}"
-    return {"paper_id": paper_id, "paragraph_id": f"{paper_id}:scientific-v1:{digest[:16]}:{number}", "chunk_id": cid,
+    text = block["text"]; cid = f"{index}:scientific-v2:{paper_id}:{digest[:16]}:{number}:c0-{len(text)}"
+    return {"paper_id": paper_id, "paragraph_id": f"{paper_id}:scientific-v2:{digest[:16]}:{number}", "chunk_id": cid,
             "section": block["section"], "text": text, "start": 0, "end": len(text), "index_version": index,
             "citation": f"[{cid}]", "truncated": False, "format": "markdown", "content_type": block["kind"],
             "source_url": url + ("#" + block["locator"] if block.get("locator") else "")}

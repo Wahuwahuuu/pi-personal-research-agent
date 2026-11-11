@@ -9,7 +9,7 @@ import { checkedResult } from "../src/research-coordinator.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
 import type { Operation } from "../src/domain.ts";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
-test("complete abstract, long original table, pagination and PDF reuse the migrated reading module", async () => {
+for (const parserVersion of [1,2]) test("complete reading and source validation with parser version "+parserVersion, async () => {
   const root = await mkdtemp(join(tmpdir(), "pra-reading-")),
     paper = "2401.00001",
     index = "reading-v1";
@@ -30,7 +30,7 @@ test("complete abstract, long original table, pagination and PDF reuse the migra
   await writeFile(
     join(directory, paper + ".json"),
     JSON.stringify({
-      version: "scientific-html-v1",
+      version: "scientific-html-v"+parserVersion,
       index_version: index,
       paper_id: paper,
       original_sha256: hash,
@@ -41,7 +41,7 @@ test("complete abstract, long original table, pagination and PDF reuse the migra
   );
   const chunk_id =
     index +
-    ":scientific-v1:" +
+    ":scientific-v"+parserVersion+":" +
     paper +
     ":" +
     hash.slice(0, 16) +
@@ -49,7 +49,7 @@ test("complete abstract, long original table, pagination and PDF reuse the migra
     table.length;
   const source = {
     paper_id: paper,
-    paragraph_id: paper + ":scientific-v1:" + hash.slice(0, 16) + ":0",
+    paragraph_id: paper + ":scientific-v"+parserVersion+":" + hash.slice(0, 16) + ":0",
     chunk_id,
     text: table,
     section: "Results",
@@ -81,7 +81,7 @@ test("complete abstract, long original table, pagination and PDF reuse the migra
       },
       async readScientificSources(p) {
         return {
-          backend: "scientific-html-v1",
+          backend: "scientific-html-v"+parserVersion,
           index_version: index,
           chunks: p.offset ? [] : [source],
           selection: {
