@@ -512,3 +512,112 @@ test("user task pause also prevents queued import dispatch and assessment admiss
     f.db.close();
   }
 });
+
+test("twenty daily budget waits retry only after Shanghai rollover, retain the same allowance and survive restoration", () => {
+  const f = fixture(1);
+  try {
+    const t = f.select();
+    t.proactive!.stage = "select";
+    const calls = t.calls,
+      taskId = t.id;
+    for (let i = 0; i < 20; i++) {
+      const at = Date.parse("2026-11-01T12:00:00+08:00") + i * 86400000;
+      t.status = "waiting_user";
+      t.error = "BACKGROUND_DAILY_BUDGET";
+      t.updated = at;
+      f.host.budgetWait(t, at);
+      const wake = f.host.nextBudgetWake()!;
+      for (let n = 0; n < 5; n++) f.host.tick(at + n * 1000);
+      assert.equal(t.status, "waiting_user");
+      assert.equal(t.calls, calls);
+      assert.ok(wake > at);
+      f.repo.save(f.state);
+      const restored = f.repo.load().tasks.find((x) => x.id === taskId)!;
+      assert.equal(restored.proactive!.budgetResumeAt, wake);
+      f.host.tick(wake);
+      assert.equal(t.status, "queued");
+      assert.equal(t.id, taskId);
+      assert.equal(t.calls, calls);
+      assert.equal(f.host.nextBudgetWake(), undefined);
+    }
+  } finally {
+    f.db.close();
+  }
+});
+test("monthly limits wait for the month, while user pauses and price-review blocks never resume automatically", () => {
+  const f = fixture(1);
+  try {
+    const t = f.select();
+    t.proactive!.stage = "select";
+    const at = Date.parse("2026-11-12T12:00:00+08:00"),
+      december = Date.parse("2026-12-01T00:00:00+08:00");
+    t.status = "waiting_user";
+    t.error = "BACKGROUND_BUDGET";
+    t.updated = at;
+    f.host.budgetWait(t, at);
+    assert.equal(f.host.nextBudgetWake(), december);
+    f.host.tick(at + 86400000);
+    assert.equal(t.status, "waiting_user");
+    t.pauseRequested = true;
+    t.status = "paused";
+    f.host.tick(december);
+    assert.equal(t.status, "paused");
+    assert.equal(f.host.nextBudgetWake(), undefined);
+    t.pauseRequested = false;
+    t.status = "waiting_user";
+    f.host.tick(december);
+    assert.equal(t.status, "queued");
+    t.status = "waiting_user";
+    t.error = "PRICE_REVIEW_REQUIRED";
+    f.host.budgetWait(t, at);
+    f.host.tick(december);
+    assert.equal(t.status, "waiting_user");
+    assert.equal(f.host.nextBudgetWake(), undefined);
+  } finally {
+    f.db.close();
+  }
+});
+test("resuming a plan does not trigger a budget retry inside the blocked period", () => {
+  const f = fixture(1);
+  try {
+    const t = f.select();
+    t.proactive!.stage = "select";
+    const now = Date.now();
+    t.status = "waiting_user";
+    t.error = "BACKGROUND_DAILY_BUDGET";
+    t.updated = now;
+    f.host.budgetWait(t, now);
+    f.plan.enabled = false;
+    f.host.tick(now);
+    assert.equal(t.status, "paused");
+    f.plan.enabled = true;
+    f.host.tick(now + 1000);
+    assert.equal(t.status, "waiting_user");
+    assert.equal(t.pauseRequested, false);
+    assert.equal(t.calls, 1);
+    assert.ok(f.host.nextBudgetWake()! > now);
+  } finally {
+    f.db.close();
+  }
+});
+
+test("automatic budget renewal cannot erase cumulative long-goal exhaustion", () => {
+  const f = fixture(1);
+  try {
+    const t = f.select();
+    t.proactive!.stage = "select";
+    t.calls = 24;
+    t.activeMs = 720000;
+    t.status = "waiting_user";
+    t.error = "MONTHLY_BUDGET";
+    const at = Date.parse("2026-12-31T23:59:59+08:00");
+    f.host.budgetWait(t, at);
+    assert.equal(f.host.nextBudgetWake(), Date.parse("2027-01-01T00:00:00+08:00"));
+    f.host.tick(at + 1000);
+    assert.equal(t.error, "GOAL_BUDGET");
+    assert.equal(t.status, "paused");
+    assert.equal(t.calls, 24);
+    assert.equal(t.activeMs, 720000);
+    assert.equal(f.host.nextBudgetWake(), undefined);
+  } finally { f.db.close(); }
+});

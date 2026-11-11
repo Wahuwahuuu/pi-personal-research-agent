@@ -1,3 +1,4 @@
+import { nextBudgetWindow } from "./budget-resume.ts";
 import {
   Problem,
   text,
@@ -35,6 +36,7 @@ export interface ProactiveState {
   candidateIds: string[];
   selectedIds: string[];
   planPaused?: boolean;
+  budgetResumeAt?: number;
   readingAnswer?: string;
   gaps: string[];
 }
@@ -90,7 +92,7 @@ export class ProactiveResearch {
       task.status !== "paused"
     );
   }
-  syncPauses() {
+  syncPauses(now = Date.now()) {
     const s = this.ports.state();
     for (const t of s.tasks.filter((t) => t.proactive && !closed(t))) {
       if (!this.allowed(t)) {
@@ -101,7 +103,14 @@ export class ProactiveResearch {
       } else if (t.proactive!.planPaused && settledForControl(s, t)) {
         // Only resume a pause imposed by this plan, never a user's own task pause.
         try {
-          resumeTask(s, t);
+          if (
+            t.proactive!.budgetResumeAt &&
+            t.proactive!.budgetResumeAt > now
+          ) {
+            t.status = "waiting_user";
+            t.pauseRequested = false;
+            t.pausedFrom = undefined;
+          } else resumeTask(s, t);
           t.proactive!.planPaused = false;
         } catch {}
       }
@@ -203,9 +212,59 @@ export class ProactiveResearch {
     }
     return out;
   }
-  tick() {
-    this.syncPauses();
+  budgetWait(t: Task, now = Date.now()) {
+    if (t.proactive)
+      t.proactive.budgetResumeAt = nextBudgetWindow(t.error, now);
+  }
+  nextBudgetWake() {
+    const times = this.ports
+      .state()
+      .tasks.filter(
+        (t) =>
+          t.proactive &&
+          t.status === "waiting_user" &&
+          !t.pauseRequested &&
+          this.allowed(t) &&
+          settledForControl(this.ports.state(), t),
+      )
+      .map((t) => t.proactive!.budgetResumeAt)
+      .filter((time): time is number => Number.isFinite(time));
+    return times.length ? Math.min(...times) : undefined;
+  }
+  tick(now = Date.now()) {
+    this.syncPauses(now);
     const s = this.ports.state();
+    for (const t of s.tasks) {
+      if (
+        !t.proactive ||
+        t.status !== "waiting_user" ||
+        t.pauseRequested ||
+        !this.allowed(t) ||
+        !settledForControl(s, t)
+      )
+        continue;
+      if (t.proactive.budgetResumeAt === undefined)
+        this.budgetWait(t, t.updated || now);
+      if (
+        t.proactive.budgetResumeAt === undefined ||
+        t.proactive.budgetResumeAt > now
+      )
+        continue;
+      delete t.proactive.budgetResumeAt;
+      try {
+        resumeTask(s, t);
+      } catch (error) {
+        if (!(error instanceof Problem)) throw error;
+        if (
+          !["GOAL_BUDGET", "MODEL_BUDGET", "NEW_TASK_REQUIRED"].includes(
+            error.code,
+          )
+        )
+          throw error;
+        t.error = error.code;
+        if (!t.pauseRequested) t.status = "waiting_user";
+      }
+    }
     for (const b of this.ports.batches.pending()) {
       if (!this.allowedBatch(b.id)) continue;
       let t = b.taskId ? s.tasks.find((t) => t.id === b.taskId) : undefined;

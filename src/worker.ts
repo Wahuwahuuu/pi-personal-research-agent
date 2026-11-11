@@ -1260,7 +1260,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.finishProactiveReading(t);
         if(t.origin!=="schedule")notice(this.state,"task:"+t.id,"研究回答已保留，本轮记忆整理未完成。");
       } else if(t.modelFailure&&BUDGET_STOPS.has(t.modelFailure)) {
-        t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();
+        t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();this.proactive.budgetWait(t);
         if(t.origin!=="schedule")notice(this.state,"budget:"+t.id,"任务已因预算或费率检查暂停，已完成的研究仍保留。");
       } else failResearch(this.state, t, t.modelFailure ?? result.reason ?? "MODEL_FAILED");
       this.save();
@@ -1645,7 +1645,9 @@ export class PersonalAgent extends DurableObject<Env> {
         for (const n of this.workspace.settings().notifications?this.state.notices.filter((n) => !n.read):[])
           this.send(ws, { type: "notice", notice: n });
       const importDeadline=this.libraryJobs.nextDeadline();
+      const budgetWake=this.proactive.nextBudgetWake();
       const times = [
+        ...(budgetWake===undefined?[]:[budgetWake]),
         ...(importDeadline===undefined?[]:[importDeadline]),
         ...this.state.operations
           .filter((o) => o.state === "sent")
