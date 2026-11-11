@@ -1,3 +1,4 @@
+import { StateRepository } from "./state-store.ts";
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
@@ -80,6 +81,7 @@ class Maintenance extends LifecycleCapability {
 }
 export class PersonalAgent extends DurableObject<Env> {
   state: State;
+  repository: StateRepository;
   private busy = false;
   private runtime?: Harness;
   private catalogCache = new Map<string, ResearchCatalog>();
@@ -88,16 +90,9 @@ export class PersonalAgent extends DurableObject<Env> {
   lifecycle: Lifecycle<Env>;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS pra_state (id INTEGER PRIMARY KEY, value TEXT NOT NULL)",
-    );
-    ctx.storage.sql.exec(
-      "CREATE TABLE IF NOT EXISTS pra_auth (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, expires INTEGER NOT NULL)",
-    );
-    const row = ctx.storage.sql
-      .exec<{ value: string }>("SELECT value FROM pra_state WHERE id=1")
-      .toArray()[0];
-    this.state = row ? JSON.parse(row.value) : initialState();
+    this.repository = new StateRepository({sql: {exec(query, ...bindings) {const rows=ctx.storage.sql.exec(query,...bindings);return {toArray:()=>rows.toArray() as any};}},transactionSync:fn=>ctx.storage.transactionSync(fn)});
+    this.state = this.repository.load();
+    ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_auth (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, expires INTEGER NOT NULL)");
     if(!this.state.cloudMemory){
       this.state.cloudMemory=newCloudMemory();
       this.state.cloudMemory.entries=this.state.memories.map(m=>({id:m.id,kind:"note",content:m.content,paper_ids:[],source_session:"",source_turn:"",created_at:new Date(m.updated).toISOString(),updated_at:new Date(m.updated).toISOString(),slot:"manual:"+m.id,edited:true}));
@@ -205,14 +200,12 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   save() {
     this.state.memories=this.state.cloudMemory!.entries.map(m=>({id:m.id,content:m.content,source:m.source_session||"user",updated:Date.parse(m.updated_at)}));
-    this.ctx.storage.sql.exec(
-      "INSERT INTO pra_state(id,value) VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",
-      JSON.stringify(this.state),
-    );
+    this.repository.save(this.state);
   }
   snapshot() {
     return {
       ...this.state,
+      cursor:this.repository.cursor(),
       build:this.env.BUILD_ID??"development",
       tasks: this.state.tasks.map(({ modelPrompt, ...t }) => t),
       deviceOnline: !!this.device(),
@@ -296,6 +289,17 @@ export class PersonalAgent extends DurableObject<Env> {
       throw new Problem("UNAUTHORIZED", 401);
     if (path === "/api/events")
       return this.upgrade(r, "ui", await digest(cookie(r)!));
+    if (path === "/api/changes" && r.method === "GET") {
+      const params=new URL(r.url).searchParams;
+      return json(this.repository.changes(Number(params.get("after")??0),Number(params.get("limit")??100)));
+    }
+    const collectionPage=path.match(/^\/api\/collections\/(tasks|conversations|messages|memory_entries|plans|notices|papers)$/);
+    if(collectionPage&&r.method==="GET") {
+      const params=new URL(r.url).searchParams;
+      const page=this.repository.page(collectionPage[1],params.get("after")??"",Number(params.get("limit")??50),params.get("parent")??undefined);
+      if(collectionPage[1]==="tasks")page.items=page.items.map(({modelPrompt,...task})=>task);
+      return json(page);
+    }
     if (path === "/api/state" && r.method === "GET") {
       await this.maintenance.arm();
       return json(this.snapshot());
