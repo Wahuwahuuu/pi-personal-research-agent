@@ -14,7 +14,7 @@ export interface Task {
   id: string;
   requestId: string;
   input: string;
-  kind: "chat" | "research";
+  kind: "chat" | "research" | "auto";
   origin?: "user" | "schedule";
   status: Status;
   created: number;
@@ -141,7 +141,7 @@ export function submit(
 ): Task {
   const key = text(requestId, 128),
     prompt = text(input);
-  if (kind !== "chat" && kind !== "research") throw new Problem("INVALID_KIND");
+  if (kind !== "chat" && kind !== "research" && kind !== "auto") throw new Problem("INVALID_KIND");
   const old = s.tasks.find((t) => t.requestId === key);
   if (old) {
     if (old.input !== prompt || old.kind !== kind)

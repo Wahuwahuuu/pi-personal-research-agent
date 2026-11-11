@@ -479,7 +479,7 @@ export class PersonalAgent extends DurableObject<Env> {
         t.tools === 0 &&
         (this.env.RESEARCH_ENGINE === "durable" || b.engine === "durable")
       )
-        { t.engine = "durable"; t.workflow ??= {...newWorkflow(),cloudOnly:t.kind==="chat"}; }
+        { t.engine = "durable"; t.workflow ??= {...newWorkflow(),cloudOnly:t.kind!=="research",automatic:t.kind==="auto"}; }
       this.save();
       await this.maintenance.arm();
       this.publish();
@@ -1020,7 +1020,10 @@ export class PersonalAgent extends DurableObject<Env> {
         try {
           if (t.workflow) {
             const outcome = advanceWorkflow(t.workflow,this.workflowContext(t),result.text ?? "");
-            if (!outcome.status) { t.status="queued"; this.save(); continue; }
+            if (!outcome.status) {
+              if(t.workflow.automatic&&!t.workflow.cloudOnly&&t.researchIndex==="cloud-only")t.researchIndex=undefined;
+              t.status="queued";this.save();continue;
+            }
             t.status=outcome.status; t.answer=outcome.answer;
             const conversation=this.state.conversations!.find(c=>c.id===t.conversationId)!;
             if(!t.workflow.translation)await this.memoryService().remember(conversation.id,t.id,t.input,conversation.domain!,t.status);
@@ -1103,6 +1106,7 @@ export class PersonalAgent extends DurableObject<Env> {
         return;
       }
       t.researchIndex = attachment.indexVersion;
+      if(t.workflow?.automatic&&t.workflow.preparedIndex==="cloud-only"){t.workflow.phase="prepare";t.workflow.cloudOnly=false;}
     }
     if (!t.workflow?.cloudOnly && dev && attachment.indexVersion !== t.researchIndex) {
       failResearch(this.state, t, "INDEX_CHANGED");

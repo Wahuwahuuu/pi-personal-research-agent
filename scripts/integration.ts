@@ -457,6 +457,15 @@ try {
   const afterDelete=await api("tasks","POST",{input:"new chat after deletion",kind:"chat",requestId:"after-delete"});
   await until(async()=> (await api("state")).tasks.find((t:any)=>t.id===afterDelete.id)?.status==="completed");
   checks.push("conversation deletion removed application and Pi session while subsequent chat reopened the same host runtime");
+  const automaticChat=await api("tasks","POST",{requestId:"auto-chat",input:"你好",kind:"auto"});
+  await until(async()=>(await api("tasks/"+automaticChat.id)).status==="completed");
+  assert.equal((await api("tasks/"+automaticChat.id)).tools,0);
+  const automaticResearch=await api("tasks","POST",{requestId:"auto-research",input:"阅读新的论文",kind:"auto"});
+  await until(async()=>(await api("tasks/"+automaticResearch.id)).status==="waiting_device");
+  const autoCalls=(await api("tasks/"+automaticResearch.id)).calls;
+  await new Promise(r=>setTimeout(r,1000));assert.equal((await api("tasks/"+automaticResearch.id)).calls,autoCalls);
+  await api("tasks/"+automaticResearch.id+"/cancel","POST",{});
+  checks.push("automatic intent uses existing NLU: ordinary conversation finishes offline and paper work pauses without repeated model calls");
   const project=await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"});
   assert.equal((await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"})).id,project.id);
   await api("projects/"+project.id,"PATCH",{requestId:"project-edit",pinned:true});
