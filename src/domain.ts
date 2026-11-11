@@ -1,3 +1,4 @@
+import type {ProactiveState} from "./proactive-research.ts";
 import type {LongGoal} from "./task-control.ts";
 import type {CloudMemoryState} from "../packages/research/cloud-memory.ts";
 import type { ResearchConversation, ResearchWorkflow } from "../packages/research/cloud-workflow.ts";
@@ -18,6 +19,7 @@ export interface Task {
   input: string;
   kind: "chat" | "research" | "auto";
   origin?: "user" | "schedule";
+  proactive?: ProactiveState;
   status: Status;
   created: number;
   updated: number;
@@ -68,6 +70,7 @@ export interface Memory {
 }
 export interface Notice {
   id: string;
+  artifactId?:string;batchId?:string;
   text: string;
   read: boolean;
   created: number;
@@ -333,7 +336,7 @@ export function memory(
   s.memories.push(m);
   return m;
 }
-export function notice(s: State, id: string, value: string) {
+export function notice(s: State, id: string, value: string):Notice {
   const old = s.notices.find((n) => n.id === id);
   if (old) {
     old.text = value;

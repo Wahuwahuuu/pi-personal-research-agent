@@ -37,6 +37,9 @@ export interface ResearchBatch {
   screenTaskId?: string;
   summaryTaskId?: string;
   artifactId?: string;
+  taskId?: string;
+  selectedIds?: string[];
+  coverageGaps?: string[];
 }
 export type CandidatePhase =
   | "discovered"
@@ -147,7 +150,10 @@ export class ResearchBatches {
     );
     if (old) return old;
     // An in-flight legacy metadata scan has no per-topic membership journal. Re-scan its bounded window.
-    if(checkpoint.offset){checkpoint.offset=0;checkpoint.count=0;}
+    if (checkpoint.offset) {
+      checkpoint.offset = 0;
+      checkpoint.count = 0;
+    }
     const b: ResearchBatch = {
       id,
       planId: plan.id,
@@ -262,11 +268,13 @@ export class ResearchBatches {
         plan.batch!.count = batch.discovered;
         delete plan.sourceError;
         if (complete) {
-          batch.status = batch.discovered
-            ? batch.autoProcess
-              ? "screening"
-              : "metadata_only"
-            : "completed";
+          batch.status =
+            batch.discovered ||
+            (batch.autoProcess && this.backlogCount(plan.id, batch.revision))
+              ? batch.autoProcess
+                ? "screening"
+                : "metadata_only"
+              : "completed";
           plan.cursor = batch.until;
           plan.next = nextShanghaiMorning(now);
           plan.latestBatchId = batch.id;
@@ -307,12 +315,10 @@ export class ResearchBatches {
       )
       .toArray();
     return {
-      items: rows
-        .slice(0, limit)
-        .map((r) => ({
-          ...read<ResearchBatch>(r)!,
-          counts: this.counts(read<ResearchBatch>(r)!.id),
-        })),
+      items: rows.slice(0, limit).map((r) => ({
+        ...read<ResearchBatch>(r)!,
+        counts: this.counts(read<ResearchBatch>(r)!.id),
+      })),
       nextCursor: rows.length > limit ? after + limit : null,
     };
   }
@@ -364,6 +370,9 @@ export class ResearchBatches {
         | "screenTaskId"
         | "summaryTaskId"
         | "artifactId"
+        | "taskId"
+        | "selectedIds"
+        | "coverageGaps"
       >
     >,
     now = Date.now(),
@@ -430,6 +439,58 @@ export class ResearchBatches {
       )
       .toArray()
       .map((r) => read<ResearchBatch>(r)!);
+  }
+  backlog(planId: string, revision: number, limit = 20) {
+    this.pageArgs(0, limit);
+    return this.db.sql
+      .exec<{ value: string }>(
+        "SELECT c.value FROM pra_research_candidates c JOIN pra_research_batches b ON b.id=c.batch_id WHERE c.plan_id=? AND c.revision=? AND c.phase='discovered' ORDER BY b.created,c.id LIMIT ?",
+        planId,
+        revision,
+        limit,
+      )
+      .toArray()
+      .map((r) => read<ResearchCandidate>(r)!);
+  }
+  backlogCount(planId: string, revision: number) {
+    return this.db.sql
+      .exec<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM pra_research_candidates WHERE plan_id=? AND revision=? AND phase='discovered'",
+        planId,
+        revision,
+      )
+      .toArray()[0].n;
+  }
+  clearResearch(conversationId: string) {
+    const batches = this.db.sql
+      .exec<{ value: string }>(
+        "SELECT value FROM pra_research_batches WHERE json_extract(value,'$.conversationId')=?",
+        conversationId,
+      )
+      .toArray()
+      .map((r) => read<ResearchBatch>(r)!);
+    for (const b of batches) {
+      for (const id of b.selectedIds ?? []) {
+        const c = this.candidate(id);
+        this.updateCandidate(id, {
+          phase: "cancelled",
+          reason: "研究会话已删除",
+          taskId: undefined,
+          analysisSummary: undefined,
+          citations: undefined,
+          important: undefined,
+        });
+      }
+      this.update(b.id, {
+        status: "completed",
+        error: "RESEARCH_DELETED",
+        taskId: undefined,
+        conversationId: undefined,
+        artifactId: undefined,
+        selectedIds: [],
+        coverageGaps: [],
+      });
+    }
   }
   removePlan(planId: string) {
     const batches = this.db.sql

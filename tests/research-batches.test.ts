@@ -32,6 +32,7 @@ test("each topic keeps its own seen set, while unchanged cycles produce no work 
  const f=fixture(),a=plan("a"),b=plan("b");try{
   for(const p of[a,b]){const batch=f.batches.start(p,5000000000);f.batches.commit(p,batch.id,0,[paper(1)],true);}
   assert.equal(f.batches.page().items.length,2);assert.equal(f.batches.pending().length,2);
+  for(const c of f.batches.backlog(a.id,1))f.batches.updateCandidate(c.id,{phase:"skipped",reason:"No relevant change"});
   const repeated=f.batches.start(a,5000001000);f.batches.commit(a,repeated.id,0,[paper(1)],true);
   assert.equal(f.batches.get(repeated.id).status,"completed");assert.deepEqual(f.batches.counts(repeated.id),{});
   const topics=f.batches.pending();assert.equal(topics.length,2);assert.equal(topics.every(v=>v.discovered===1),true);

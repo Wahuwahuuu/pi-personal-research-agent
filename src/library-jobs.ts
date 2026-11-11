@@ -277,13 +277,13 @@ export class LibraryJobs {
       return updated;
     });
   }
-  dispatch(hash: string, now = Date.now()) {
+  dispatch(hash: string, now = Date.now(), allowed:(job:LibraryJob)=>boolean=()=>true) {
     return this.db.transactionSync(() => {
       const rows = this.db.sql
         .exec<any>(
-          "SELECT * FROM pra_library_jobs WHERE status='queued' AND attempts<3 ORDER BY created LIMIT 20",
+          "SELECT * FROM pra_library_jobs WHERE status='queued' AND attempts<3 ORDER BY created LIMIT 100",
         )
-        .toArray();
+        .toArray().filter(r=>allowed(this.parse(r))).slice(0,20);
       for (const r of rows)
         this.db.sql.exec(
           "UPDATE pra_library_jobs SET status='sent',device_hash=?,assigned_at=?,attempts=attempts+1,updated=? WHERE id=?",

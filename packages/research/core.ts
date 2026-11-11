@@ -6,3 +6,5 @@ export type {Chunk,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
 export {withAbstractReading,corpusAbstracts,abstractReadingSection} from "./internal/agent/paper-reading.ts";
 export {retrieveOriginal,type OriginalReadParams} from "./internal/agent/tools.ts";
 export type {ScientificParams,ScientificReadingPort,WorkerTransport,RetrieveResult} from "./internal/agent/contracts.ts";
+export {prepareWorkbenchAnswer} from "./internal/agent/workbench-answer.ts";
+export {stageObject} from "./internal/agent/p2-stages.ts";
