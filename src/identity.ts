@@ -1,3 +1,4 @@
+import { DiscoveryGate } from "./discovery-gate.ts";
 import {SharedBudget} from "./shared-budget.ts";
 import type {ModelUsage,BudgetLedger} from "./budget.ts";
 import { DurableObject } from "cloudflare:workers";
@@ -13,12 +14,15 @@ const token=()=>crypto.randomUUID().replaceAll("-","")+crypto.randomUUID().repla
 export class IdentityRegistry extends DurableObject<Env> {
  store:IdentityStore;
  budget:SharedBudget;
+ discovery:DiscoveryGate;
  constructor(ctx:DurableObjectState,env:Env){
   super(ctx,env);
   let depth=0;
   const db:StateStorage={sql:{exec(query,...bindings){const rows=ctx.storage.sql.exec(query,...bindings);return{toArray:()=>rows.toArray() as any};}},transactionSync:fn=>{if(depth)return fn();return ctx.storage.transactionSync(()=>{depth++;try{return fn();}finally{depth--;}});}};
-  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);
+  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);this.discovery=new DiscoveryGate(db);
  }
+ async claimDiscovery(owner:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");return this.discovery.claim(owner);}
+ async releaseDiscovery(owner:string,token:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.discovery.release(owner,token);}
  async importBudget(owner:string,rows:any[]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.budget.import(owner,rows);}
  async reserveBudget(owner:string,request:Parameters<BudgetLedger["reserve"]>[0]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");return this.budget.reserve(owner,request);}
  async settleBudget(owner:string,id:string,usage?:ModelUsage){return this.budget.settle(owner,id,usage);}

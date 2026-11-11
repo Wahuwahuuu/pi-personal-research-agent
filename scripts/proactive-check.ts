@@ -29,6 +29,7 @@ const token = crypto.randomUUID() + crypto.randomUUID(),
   };
 const now = new Date().toISOString();
 let sourceCalls = 0;
+const sourceStarts: number[] = [];
 const options = convertV4MiniflareOptions({
   name: "proactive-check",
   scriptPath: resolve(directory, "bundle/worker.js"),
@@ -81,6 +82,7 @@ const options = convertV4MiniflareOptions({
     if (url.hostname !== "export.arxiv.org" || url.pathname !== "/api/query")
       throw Error("UNEXPECTED_EXTERNAL_REQUEST");
     sourceCalls++;
+    sourceStarts.push(Date.now());
     const q = url.searchParams.get("search_query") ?? "";
     if (q.includes("sourcefail"))
       return new Response("Unavailable", { status: 503 });
@@ -358,6 +360,14 @@ try {
   report.checks.push(
     "source failure retains the discovery checkpoint and exposes the coverage gap",
   );
+  const paced = await Promise.all(["pacealpha", "pacebeta"].map(query =>
+    api("plans", "POST", {requestId:crypto.randomUUID(),query,autoProcess:false})));
+  await until(async () => {
+    for(const p of paced) if(!(await api("research-batches?plan="+p.id)).items.some((b:any)=>b.discovered===1)) return false;
+    return true;
+  });
+  for(let i=1;i<sourceStarts.length;i++) assert.ok(sourceStarts[i]-sourceStarts[i-1]>=2950,"arXiv calls were not separated");
+  report.checks.push("simultaneously due metadata topics share a persisted source permit with a three-second gap");
   if (process.env.PRA_PROACTIVE_BROWSER === "1") {
     await api("settings", "PATCH", {
       requestId: crypto.randomUUID(),

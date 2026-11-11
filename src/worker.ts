@@ -1621,20 +1621,30 @@ export class PersonalAgent extends DurableObject<Env> {
       }
       const p = this.state.plans.find((p) => p.enabled && p.next <= Date.now());
       if(p){
-        const prior=structuredClone(p);
-        let b:ReturnType<ResearchBatches["start"]>;
-        try{b=this.database.transactionSync(()=>{const batch=this.researchBatches.start(p);this.save();return batch;});}
-        catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,prior);this.repository.load();throw e;}
-        try{
-          const page=await discover(b.query,b.from,b.until,b.offset);
-          if(p.enabled&&this.state.plans.includes(p)){
-            const previous=structuredClone(p);
-            try{this.database.transactionSync(()=>{this.researchBatches.commit(p,b.id,b.offset,page.rows,page.complete);this.save();});}
-            catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,previous);this.repository.load();throw e;}
-          }
-        }catch(error){
-          if(this.state.plans.includes(p)){
-            this.researchBatches.sourceFailure(p,b.id,error instanceof Problem?error.code:"SOURCE_UNAVAILABLE");this.save();
+        let slot:Awaited<ReturnType<IdentityRegistry["claimDiscovery"]>>|undefined;
+        try{slot=await this.identityRegistry().claimDiscovery(this.ownerId);}
+        catch{p.next=Date.now()+60000;this.save();}
+        if(slot&&!slot.ok){p.next=slot.retryAt;this.save();}
+        if(slot?.ok){
+          try{
+            const prior=structuredClone(p);
+            let b:ReturnType<ResearchBatches["start"]>;
+            try{b=this.database.transactionSync(()=>{const batch=this.researchBatches.start(p);this.save();return batch;});}
+            catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,prior);this.repository.load();throw e;}
+            try{
+              const page=await discover(b.query,b.from,b.until,b.offset);
+              if(p.enabled&&this.state.plans.includes(p)){
+                const previous=structuredClone(p);
+                try{this.database.transactionSync(()=>{this.researchBatches.commit(p,b.id,b.offset,page.rows,page.complete);this.save();});}
+                catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,previous);this.repository.load();throw e;}
+              }
+            }catch(error){
+              if(this.state.plans.includes(p)){
+                this.researchBatches.sourceFailure(p,b.id,error instanceof Problem?error.code:"SOURCE_UNAVAILABLE");this.save();
+              }
+            }
+          }finally{
+            await this.identityRegistry().releaseDiscovery(this.ownerId,slot.token).catch(()=>{});
           }
         }
       }
