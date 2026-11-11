@@ -66,3 +66,27 @@ test("reused AsterCite transport separates readiness, strips model secrets, and 
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("Windows cancellation terminates the owned launcher and its worker child within ten seconds", {skip:process.platform!=="win32"}, async()=>{
+ const {PythonWorkerClient}=await import("../packages/research/transport.ts");
+ const {readFile}=await import("node:fs/promises");
+ const dir=await mkdtemp(join(tmpdir(),"pra-owned-tree-")),pidFile=join(dir,"child.pid"),worker=join(dir,"launcher.mjs");
+ await writeFile(worker,[
+  'import {spawn} from "node:child_process";import {writeFileSync} from "node:fs";',
+  'const child=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{windowsHide:true,stdio:"ignore"});',
+  'child.once("spawn",()=>{writeFileSync('+JSON.stringify(pidFile)+',String(child.pid));process.stdout.write(JSON.stringify({version:1,type:"ready",backend:"fixture",index_version:"v1"})+"\\n");});',
+  'setInterval(()=>{},1000);'
+ ].join("\n"));
+ const client=new PythonWorkerClient({pythonPath:process.execPath,workerPath:worker,corpusDir:dir,expectReady:true});
+ let descendant:number|undefined;
+ try{
+  await client.ready();descendant=Number(await readFile(pidFile,"utf8"));process.kill(descendant,0);
+  const started=Date.now();client.close();await client.whenClosed();
+  while(Date.now()-started<3000){try{process.kill(descendant,0);await new Promise(r=>setTimeout(r,20));}catch{break;}}
+  assert.throws(()=>process.kill(descendant!,0));assert.ok(Date.now()-started<10000);
+ }finally{
+  client.close();await client.whenClosed();
+  if(descendant)try{process.kill(descendant);}catch{}
+  await rm(dir,{recursive:true,force:true});
+ }
+});

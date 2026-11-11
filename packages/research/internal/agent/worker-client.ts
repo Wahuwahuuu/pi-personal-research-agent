@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { isAbsolute } from "node:path";
 import { RuntimeFailure, object, type RetrieveParams, type SearchParams, type ToolName, type WorkerTransport,type ScientificParams } from "./contracts.ts";
@@ -45,6 +45,7 @@ export class PythonWorkerClient implements WorkerTransport {
   private readyPending: { resolve(value: WorkerReady): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> } | undefined;
   private readonly expectReady: boolean;
   private readyReceived = false;
+  private closing?: Promise<void>;
 
   constructor(options: WorkerOptions) {
     for (const path of [options.pythonPath, options.workerPath, options.corpusDir, options.indexDir, options.modelsDir,options.scientificCacheDir,options.memoryDir].filter((path): path is string => path !== undefined)) {
@@ -58,7 +59,7 @@ export class PythonWorkerClient implements WorkerTransport {
       ...(options.modelsDir ? ["--models-dir", options.modelsDir] : []), ...(options.device ? ["--device", options.device] : []),...(options.scientificCacheDir?["--scientific-cache-dir",options.scientificCacheDir]:[]),...(options.memoryDir?['--memory-dir',options.memoryDir]:[])];
     this.readiness = this.expectReady ? new Promise<WorkerReady>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.fail(new RuntimeFailure("WORKER_READY_TIMEOUT", "Corpus worker did not become ready in time")); this.process.kill();
+        this.fail(new RuntimeFailure("WORKER_READY_TIMEOUT", "Corpus worker did not become ready in time")); void this.terminateOwnedProcess();
       }, options.readyTimeoutMs ?? 180_000);
       this.readyPending = { resolve, reject, timer };
     }) : Promise.resolve(undefined);
@@ -91,7 +92,7 @@ export class PythonWorkerClient implements WorkerTransport {
       this.buffer = this.buffer.slice(newline + 1);
       if (Buffer.byteLength(line, "utf8") > this.maxFrameBytes) {
         this.fail(new RuntimeFailure("FRAME_TOO_LARGE", "Corpus worker response exceeded its frame limit"));
-        this.process.kill();
+        void this.terminateOwnedProcess();
         return;
       }
       try {
@@ -126,14 +127,14 @@ export class PythonWorkerClient implements WorkerTransport {
         }
       } catch {
         this.fail(new RuntimeFailure("PROTOCOL_ERROR", "Corpus worker emitted invalid JSONL"));
-        this.process.kill();
+        void this.terminateOwnedProcess();
         return;
       }
       newline = this.buffer.indexOf("\n");
     }
     if (Buffer.byteLength(this.buffer, "utf8") > this.maxFrameBytes) {
       this.fail(new RuntimeFailure("FRAME_TOO_LARGE", "Corpus worker response exceeded its frame limit"));
-      this.process.kill();
+      void this.terminateOwnedProcess();
     }
   }
 
@@ -172,9 +173,23 @@ export class PythonWorkerClient implements WorkerTransport {
     });
   }
 
+  private terminateOwnedProcess():Promise<void> {
+    return this.closing??=new Promise(resolve=>{
+      const child=this.process;
+      if(!child.pid||child.exitCode!==null||child.signalCode!==null){resolve();return;}
+      if(process.platform==="win32"){
+        // A venv launcher may own a separate Python process with resident GPU models.
+        execFile("taskkill",["/PID",String(child.pid),"/T","/F"],{windowsHide:true},()=>resolve());
+      }else{
+        child.once("close",()=>resolve());child.kill("SIGKILL");
+      }
+    });
+  }
+  whenClosed():Promise<void>{return this.closing??Promise.resolve();}
+
   close(): void {
     this.fail(new RuntimeFailure("WORKER_CLOSED", "Corpus worker closed"));
+    void this.terminateOwnedProcess();
     this.process.stdin.end();
-    this.process.kill();
   }
 }

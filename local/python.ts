@@ -130,6 +130,11 @@ export class PythonBridge {
       signal?.removeEventListener("abort", abort);
     }
   }
+  async close() {
+    const client=this.client;
+    this.stop();
+    await client?.whenClosed();
+  }
   stop() {
     const client = this.client;
     this.client = undefined;
