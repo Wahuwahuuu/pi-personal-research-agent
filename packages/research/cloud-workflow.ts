@@ -9,7 +9,7 @@ import {TaskProgressTracker,GOAL_PROGRESS_INSTRUCTION,type TaskProgress} from ".
 import type {Chunk,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
 
 export interface ResearchConversation {
-  id:string; title:string; projectId:string; scope:string[]; created:number;
+  id:string; title:string; projectId:string; scope:string[]; created:number; updated?:number; pinned?:boolean; archived?:boolean;
   sessionId?:string; domain?:DomainState; history:DialogueRecord[];
 }
 export interface ResearchWorkflow {

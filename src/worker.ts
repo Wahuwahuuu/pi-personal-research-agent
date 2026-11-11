@@ -1,3 +1,4 @@
+import {Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
 import { IdentityRegistry } from "./identity.ts";
 export { IdentityRegistry };
 import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
@@ -89,6 +90,7 @@ export class PersonalAgent extends DurableObject<Env> {
   repository: StateRepository;
   budgetLedger: BudgetLedger;
   deletions: DeletionStore;
+  workspace:Workspace;
   database: StateStorage;
   private busy = false;
   private ownerId: string;
@@ -108,6 +110,7 @@ export class PersonalAgent extends DurableObject<Env> {
     }};
     this.repository = new StateRepository(this.database);
     this.state = this.repository.load();
+    this.workspace=new Workspace(this.database);this.workspace.migrate(this.state);
     this.budgetLedger = new BudgetLedger(this.database);
     this.deletions = new DeletionStore(this.database);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_billing_outbox(id TEXT PRIMARY KEY,usage TEXT NOT NULL)");
@@ -280,7 +283,7 @@ export class PersonalAgent extends DurableObject<Env> {
   publish() {
     for (const ws of this.ctx.getWebSockets("ui")) {
       if(!this.validHash(ws.deserializeAttachment()?.hash??"","user")){ws.close(1008,"expired");continue;}
-      this.send(ws, { type: "state", state: this.snapshot() });
+      this.send(ws,ws.deserializeAttachment()?.view===2?{type:"change",cursor:this.repository.cursor(),active:this.state.tasks.filter(t=>!terminal(t)).map(taskSummary)}:{type:"state",state:this.snapshot()});
     }
   }
   device() {
@@ -355,6 +358,7 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (!(await this.authorized(r, "user")))
       throw new Problem("UNAUTHORIZED", 401);
+    const workspaceResponse=await this.workspaceRoute(r,path);if(workspaceResponse)return workspaceResponse;
     if (path === "/api/events")
       return this.upgrade(r, "ui", await digest(cookie(r)!));
     if (path === "/api/budget" && r.method === "GET"){if(this.env.MODEL_MODE!=="mock")await this.syncBudget();return json(await this.identityRegistry().budgetSnapshot());}
@@ -420,7 +424,11 @@ export class PersonalAgent extends DurableObject<Env> {
       for(const ws of this.ctx.getWebSockets("device"))if(rows.some(row=>row.hash===ws.deserializeAttachment()?.hash))ws.close(1008,"revoked");
       return json({ok:true});
     }
-    if (path === "/api/conversations" && r.method === "GET") return json(this.state.conversations ?? []);
+    if(path==="/api/conversations"&&r.method==="GET"){
+      const p=new URL(r.url).searchParams;
+      if(!p.has("limit"))return json(this.state.conversations??[]);
+      return json(conversationPage(this.state,{q:p.get("q")??"",projectId:p.get("project")??undefined,archived:p.get("archived")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit"))}));
+    }
     const conversationMatch=path.match(/^\/api\/conversations\/([^/]+)$/);
     if(conversationMatch && r.method==="DELETE") {
       const id=conversationMatch[1];
@@ -436,8 +444,8 @@ export class PersonalAgent extends DurableObject<Env> {
     if(conversationMatch && r.method==="PATCH"){
       const c=this.state.conversations?.find(c=>c.id===conversationMatch[1]);
       if(!c)throw new Problem("NOT_FOUND",404);
-      if(this.state.tasks.some(t=>t.conversationId===c.id&&!terminal(t)&&t.status!=="waiting_user"))throw new Problem("CONVERSATION_BUSY",409);
       const b=await this.body(r);
+      if((b.scope!==undefined||b.projectId!==undefined)&&this.state.tasks.some(t=>t.conversationId===c.id&&!terminal(t)&&t.status!=="waiting_user"))throw new Problem("CONVERSATION_BUSY",409);
       if(b.scope!==undefined){
         if(!Array.isArray(b.scope)||b.scope.length>20||b.scope.some((id:unknown)=>typeof id!=="string"))throw new Problem("INVALID_SCOPE");
         const version=this.device()?.deserializeAttachment()?.indexVersion ?? c.domain?.index_version;
@@ -445,8 +453,9 @@ export class PersonalAgent extends DurableObject<Env> {
         c.scope=[...new Set(b.scope as string[])];
       }
       if(b.title!==undefined)c.title=text(b.title,100);
-      if(b.projectId!==undefined)c.projectId=text(b.projectId,128);
-      this.save();return json(c);
+      if(b.projectId!==undefined)c.projectId=this.workspace.getProject(text(b.projectId,128)).id;
+      for(const key of ["pinned","archived"] as const)if(b[key]!==undefined){if(typeof b[key]!=="boolean")throw new Problem("INVALID_SETTING");c[key]=b[key];}
+      c.updated=Date.now();this.save();this.publish();return json(c);
     }
     if (path === "/api/tasks" && r.method === "POST") {
       const b = await this.body(r);
@@ -457,11 +466,13 @@ export class PersonalAgent extends DurableObject<Env> {
       let conversation = this.state.conversations.find(c => c.id === conversationId);
       if (b.conversationId && !conversation) throw new Problem("UNKNOWN_CONVERSATION",404);
       if (prior && prior.conversationId !== conversationId) throw new Problem("REQUEST_CONFLICT",409);
+      const project=this.workspace.getProject(conversation?.projectId??(typeof b.projectId==="string"?text(b.projectId,128):"default"));
       const t = submit(this.state, b.input, b.requestId, b.kind);
       if (!conversation) {
-        conversation = {id:conversationId,title:t.input.slice(0,100),projectId:typeof b.projectId==="string"?text(b.projectId,128):"default",scope:[],created:Date.now(),history:[]};
+        conversation = {id:conversationId,title:t.input.slice(0,100),projectId:project.id,scope:project.paperIds.slice(0,20),created:Date.now(),history:[]};
         this.state.conversations.push(conversation);
       }
+      conversation.updated=Date.now();
       t.conversationId = conversationId;
       if (
         !t.sessionId &&
@@ -589,6 +600,62 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     throw new Problem("NOT_FOUND", 404);
   }
+  async workspaceRoute(r:Request,path:string):Promise<Response|undefined>{
+    const p=new URL(r.url).searchParams;
+    if(path==="/api/overview"&&r.method==="GET")return json({
+      build:this.env.BUILD_ID??"development",settings:this.workspace.settings(),
+      projects:this.workspace.projects({limit:50}),conversations:conversationPage(this.state,{limit:30}),
+      tasks:[...this.state.tasks].sort((a,b)=>b.created-a.created).slice(0,50).map(t=>({...taskSummary(t),answer:t.answer?.slice(0,240)})),
+      notices:[...this.state.notices].sort((a,b)=>b.created-a.created).slice(0,50),plans:this.state.plans,
+      memoryCount:this.state.cloudMemory!.entries.length,deviceOnline:!!this.device(),cursor:this.repository.cursor(),
+      model:{id:this.env.MODEL_MODE==="mock"?MODEL.id:this.env.MODEL_ID,mode:this.env.MODEL_MODE,thinking:"off"}
+    });
+    if(path==="/api/settings"){
+      if(r.method==="GET")return json(this.workspace.settings());
+      if(r.method==="PATCH"){const b=await this.body(r);const result=this.workspace.once(b.requestId,"settings",b,()=>this.workspace.updateSettings(b));this.publish();return json(result);}
+    }
+    if(path==="/api/projects"){
+      if(r.method==="GET")return json(this.workspace.projects({q:p.get("q")??"",archived:p.get("archived")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit")??50)}));
+      if(r.method==="POST"){const b=await this.body(r);const project=this.workspace.once(b.requestId,"project:create",b,()=>this.workspace.createProject(b));this.publish();return json(project,201);}
+    }
+    const project=path.match(/^\/api\/projects\/([^/]+)$/);
+    if(project){
+      const id=project[1];
+      if(r.method==="GET"){const value=this.workspace.getProject(id);return json({...value,conversations:conversationPage(this.state,{projectId:id}),tasks:this.state.tasks.filter(t=>this.state.conversations?.some(c=>c.id===t.conversationId&&c.projectId===id)).map(taskSummary)});}
+      if(r.method==="PATCH"){const b=await this.body(r);const result=this.workspace.once(b.requestId,"project:"+id,b,()=>this.workspace.updateProject(id,b));this.publish();return json(result);}
+      if(r.method==="DELETE"){
+        const b=await this.body(r);
+        const result=this.workspace.once(b.requestId,"project:delete:"+id,{},()=>{
+          const conversations=(this.state.conversations??[]).filter(c=>c.projectId===id);
+          this.workspace.deleteProject(id);
+          for(const c of conversations)this.deletions.request(this.state,c.id);
+          this.save();return {id,deletions:conversations.map(c=>c.id)};
+        });
+        for(const id of result.deletions){const d=this.deletions.get(id);for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});if(d?.session_id)this.ctx.waitUntil(this.harness.abort({session:d.session_id}).catch(()=>{}));}
+        await this.maintenance.arm();this.publish();return json(result,202);
+      }
+    }
+    if(path==="/api/conversations"&&r.method==="POST"){
+      const b=await this.body(r);
+      const result=this.workspace.once(b.requestId,"conversation:create",b,()=>{
+        const project=this.workspace.getProject(typeof b.projectId==="string"?b.projectId:"default"),now=Date.now();
+        const c={id:crypto.randomUUID(),title:text(b.title??"新的研究",100),projectId:project.id,scope:project.paperIds.slice(0,20),created:now,updated:now,history:[]};
+        this.state.conversations??=[];this.state.conversations.push(c);this.save();return c;
+      });this.publish();return json(result,201);
+    }
+    const messages=path.match(/^\/api\/conversations\/([^/]+)\/messages$/);
+    if(messages&&r.method==="GET"){
+      const c=this.state.conversations?.find(c=>c.id===messages[1]);if(!c)throw new Problem("NOT_FOUND",404);
+      const page=taskPage(this.state,{conversationId:c.id,before:p.get("before")??undefined,limit:Number(p.get("limit")??30)});
+      return json({conversation:{id:c.id,title:c.title,scope:c.scope,projectId:c.projectId},items:page.items.reverse().map(({modelPrompt,...t})=>t),nextCursor:page.nextCursor});
+    }
+    if(path==="/api/tasks"&&r.method==="GET"){
+      const page=taskPage(this.state,{status:p.get("status")??undefined,before:p.get("before")??undefined,limit:Number(p.get("limit")??30)});
+      return json({...page,items:page.items.map(taskSummary)});
+    }
+    const task=path.match(/^\/api\/tasks\/([^/]+)$/);
+    if(task&&r.method==="GET"){const {modelPrompt,...t}=getTask(this.state,task[1]);return json(t);}
+  }
   async body(r: Request) {
     const raw = await r.text();
     if (raw.length > 16000) throw new Problem("BODY_TOO_LARGE", 413);
@@ -616,9 +683,10 @@ export class PersonalAgent extends DurableObject<Env> {
         ws.close(1000, "replaced");
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [kind]);
-    pair[1].serializeAttachment({ kind, hash, ready: false });
+    const view=kind==="ui"&&new URL(r.url).searchParams.get("version")==="2"?2:1;
+    pair[1].serializeAttachment({ kind, hash, ready: false,view });
     if (kind === "ui")
-      this.send(pair[1], { type: "state", state: this.snapshot() });
+      this.send(pair[1],view===2?{type:"change",cursor:this.repository.cursor(),active:this.state.tasks.filter(t=>!terminal(t)).map(taskSummary)}:{type:"state",state:this.snapshot()});
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
@@ -1121,6 +1189,7 @@ export class PersonalAgent extends DurableObject<Env> {
         await this.harness.dispose();this.runtime=undefined;
         this.database.transactionSync(()=>{
           if(d.session_id)deletePiConversation(this.database,d.session_id);
+          this.workspace.forgetEntity(d.id);
           deleteConversationState(this.state,d.id);this.save();this.deletions.cloudDone(d.id);
         });
       } catch(error) {

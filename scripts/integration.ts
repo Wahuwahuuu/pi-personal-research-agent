@@ -457,6 +457,19 @@ try {
   const afterDelete=await api("tasks","POST",{input:"new chat after deletion",kind:"chat",requestId:"after-delete"});
   await until(async()=> (await api("state")).tasks.find((t:any)=>t.id===afterDelete.id)?.status==="completed");
   checks.push("conversation deletion removed application and Pi session while subsequent chat reopened the same host runtime");
+  const project=await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"});
+  assert.equal((await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"})).id,project.id);
+  await api("projects/"+project.id,"PATCH",{requestId:"project-edit",pinned:true});
+  const newConversation=await api("conversations","POST",{requestId:"conversation-create",title:"Research notebook",projectId:project.id});
+  await api("conversations/"+newConversation.id,"PATCH",{archived:true,title:"Archived notebook"});
+  assert.equal((await api("conversations?limit=10&archived=true&project="+project.id)).items[0].id,newConversation.id);
+  await api("settings","PATCH",{requestId:"settings-update",agentName:"Synthetic Aster",theme:"dark",onboarded:true});
+  assert.equal((await api("overview")).settings.agentName,"Synthetic Aster");
+  assert.equal((await api("budget")).scope,"application");
+  await api("projects/"+project.id,"DELETE",{requestId:"project-delete"});
+  await until(async()=>(await api("deletions/"+newConversation.id)).status==="completed");
+  assert.ok(!(await api("projects")).items.some((p:any)=>p.id===project.id));
+  checks.push("project, settings, conversation archive/search and paginated product APIs persist real data; deleting project schedules real conversation deletion");
   const authReport=await verifyIdentity(base,cookie,admin);checks.push(...authReport.checks);
   // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
   for (const p of [...children].reverse()) await stopChild(p);
