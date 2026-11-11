@@ -1,3 +1,5 @@
+import {freezeWorker} from "./freeze-worker.ts";
+import {verifyLibraryQueue} from "./library-integration.ts";
 import { verifyIdentity } from "./auth-integration.ts";
 import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
@@ -27,6 +29,7 @@ isolated.main=resolve("src/worker.ts");isolated.assets.directory=resolve(directo
 isolated.vars={...isolated.vars,ADMIN_TOKEN:admin,OWNER_ID:"validation-"+crypto.randomUUID(),MODEL_MODE:"mock"};
 await cp(resolve("dist/web"),isolated.assets.directory,{recursive:true});
 const isolatedConfig=resolve(directory,"wrangler.json");await writeFile(isolatedConfig,JSON.stringify(isolated));
+await freezeWorker(isolatedConfig,resolve(directory,"bundle"));
 const children: ChildProcess[] = [];
 let logs = "";
 const terminated = new Set<number>();
@@ -537,6 +540,7 @@ try {
   assert.equal((await api("tasks/"+long.id)).calls,beforePause.calls);
   await api("tasks/"+long.id+"/cancel","POST",{});
   checks.push("long-goal pause/amend/priority are idempotent through real DO; another conversation completes, offline resume keeps task identity and allowance");
+  checks.push(...await verifyLibraryQueue(base,api));
   const authReport=await verifyIdentity(base,cookie,admin);checks.push(...authReport.checks);
   // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
   for (const p of [...children].reverse()) await stopChild(p);
@@ -581,7 +585,9 @@ try {
   console.log(JSON.stringify(report, null, 2));
 } catch (e) {
   console.error("Integration failed:", e);
-  console.error(logs.replaceAll(admin, "[REDACTED]").slice(-10000));
+  const safeLogs=logs.replaceAll(admin,"[REDACTED]").replace(/^.*env\.(?:ADMIN_TOKEN|MODEL_API_KEY).*$/gm,"[secret binding omitted]");
+  await writeFile(resolve(directory,"failure.json"),JSON.stringify({timestamp:new Date().toISOString(),checks,message:e instanceof Error?e.message:String(e),paidCalls:0},null,2));
+  console.error(safeLogs.slice(-5000));
   process.exitCode = 1;
 } finally {
   for (const p of children.reverse()) await stopChild(p);

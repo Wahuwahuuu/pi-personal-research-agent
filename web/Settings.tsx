@@ -1,3 +1,4 @@
+import {deviceView} from "./device-state.ts";
 import { useEffect, useState } from "react";
 import { startRegistration } from "@simplewebauthn/browser";
 import { api, mutate, download } from "./api.ts";
@@ -259,11 +260,9 @@ export function SettingsView({
       {section === "devices" && (
         <div className="settings-form">
           <h2>本地节点</h2>
-          <p className={data.deviceOnline ? "success-line" : "muted"}>
+          <p className={deviceView(data).connected ? "success-line" : "muted"}>
             <Icon name="desktop" />
-            {data.deviceOnline
-              ? "本机已连接，可执行科研工具"
-              : "本机尚未连接，检索任务会等待"}
+            {deviceView(data).detail}
           </p>
           <p>节点在 Windows 登录后运行。网页关闭后，节点仍可继续工作。</p>
           <form

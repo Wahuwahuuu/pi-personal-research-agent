@@ -1,3 +1,4 @@
+import {CloudImports} from "./cloud-imports.ts";
 import {timingSafeEqual,randomUUID} from "node:crypto";
 import {LibraryClient,type ImportJob} from "./library-client.ts";
 import {SnapshotManager} from "./snapshots.ts";
@@ -158,6 +159,11 @@ let socket: WebSocket | undefined,
 function send(data: unknown) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
 }
+const cloudImports=library?new CloudImports(db,library,send,id=>{if(activeImport===id)importAbort?.abort();}):undefined;
+async function flushImports(force=false){
+ if(!cloudImports||stopping||!catalogAcknowledged||socket?.readyState!==WebSocket.OPEN)return;
+ try{await cloudImports.flush(force);}catch{lastLocalError="IMPORT_STATUS_UNAVAILABLE";}
+}
 function frame(id: string, data: unknown) {
   if(db.prepare("SELECT id FROM deleted_operations WHERE id=?").get(id))return;
   const encoded = JSON.stringify(data);
@@ -280,7 +286,7 @@ function connect() {
       indexVersion,
       retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
-      capabilities: ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1"],
+      capabilities: ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
       readerPort: config.port ?? 48731,
     });
   });
@@ -305,7 +311,10 @@ function connect() {
           .prepare("SELECT frame FROM outbox WHERE acked=0")
           .all() as { frame: string }[])
           send(JSON.parse(r.frame));
-        void announceReady();
+        void announceReady();void flushImports(true);
+      } else if(["library_import","library_cancel","library_ack"].includes(m.type)) {
+        if(!catalogAcknowledged||!cloudImports)throw Error("IMPORT_CAPABILITY_REQUIRED");
+        void cloudImports.receive(m).then(()=>{void pollLibrary();}).catch(()=>{lastLocalError="INVALID_IMPORT_COMMAND";});
       } else if(m.type==="purge_operations") {
         if(typeof m.deletionId!=="string"||!Array.isArray(m.operationIds)||m.operationIds.length>200||m.operationIds.some((id:unknown)=>typeof id!=="string"||id.length>512))throw Error("INVALID_PURGE");
         db.exec("BEGIN IMMEDIATE");
@@ -347,7 +356,7 @@ function stop() {
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 connect();
-const libraryTimer=setInterval(()=>{void pollLibrary();},5000);libraryTimer.unref();
+const libraryTimer=setInterval(()=>{void pollLibrary();void flushImports();},5000);libraryTimer.unref();
 console.log("Local research node started; credentials are never logged.");
 
 async function announceReady(){

@@ -62,6 +62,7 @@ export interface Overview {
   plans: Plan[];
   memoryCount: number;
   deviceOnline: boolean;
+  deviceState?: {connected:boolean;ready:boolean;phase:string;canImport:boolean};
   cursor: number;
   build: string;
   model: { id: string; mode: string; thinking: string };

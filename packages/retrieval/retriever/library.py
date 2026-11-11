@@ -182,6 +182,20 @@ class Library:
         return [dict(r) for r in self.db.execute(
             "SELECT id,source,status,error,created,updated,paper_id,version,json_extract(payload,'$.metadata.title') AS title FROM jobs ORDER BY status IN ('published','failed','cancelled'),created ASC LIMIT ?", (limit,))]
 
+    def statuses(self, identifiers):
+        if not isinstance(identifiers, list) or len(identifiers) > 100 or any(not isinstance(i, str) or len(i) > 128 for i in identifiers):
+            raise LibraryError("INVALID_IMPORT_IDS")
+        if not identifiers:
+            return []
+        fields = "id,source,status,error,created,updated,paper_id,version,json_extract(payload,'$.sha') AS content_sha"
+        return [dict(r) for r in self.db.execute("SELECT " + fields + " FROM jobs WHERE id IN (" + ",".join("?" for _ in identifiers) + ")", identifiers)]
+
+    def cancel_remote(self, identifier):
+        # A local user registration is an independent owner of the underlying work.
+        if self.db.execute("SELECT id FROM requests WHERE job_id=? AND substr(id,1,6)!='cloud:' LIMIT 1", (identifier,)).fetchone():
+            return self.job(identifier)
+        return self.cancel(identifier)
+
     def _register(self, request_id, source, payload):
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
             raise LibraryError("INVALID_REQUEST_ID")
@@ -437,6 +451,10 @@ def main():
             result = library.mark_failure(value["id"], value["code"])
         elif action == "retry":
             result = library.retry(value["id"])
+        elif action == "statuses":
+            result = library.statuses(value["ids"])
+        elif action == "cancel_remote":
+            result = library.cancel_remote(value["id"])
         elif action == "status":
             result = library.job(value["id"])
         elif action == "list":
@@ -449,7 +467,9 @@ def main():
             raise LibraryError("ACTION_DENIED")
         # Full text and selected filesystem paths are never returned on the command channel.
         if isinstance(result, dict):
-            result.pop("payload", None)
+            payload = result.pop("payload", None)
+            if payload:
+                result["content_sha"] = json.loads(payload).get("sha")
         print(json.dumps({"result": result}, ensure_ascii=False))
     except Exception as error:
         print(json.dumps({"error": str(error) if isinstance(error, LibraryError) else "LIBRARY_COMMAND_FAILED"}))

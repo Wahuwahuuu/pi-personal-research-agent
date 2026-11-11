@@ -1,3 +1,6 @@
+import {freezeWorker} from "./freeze-worker.ts";
+import WebSocket from "ws";
+import {nodeCatalog,catalogPages} from "../local/catalog.ts";
 import { chromium, expect } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, writeFile, cp } from "node:fs/promises";
@@ -25,6 +28,7 @@ config.vars = {
 };
 const configFile = resolve(directory, "wrangler.json");
 await writeFile(configFile, JSON.stringify(config));
+await freezeWorker(configFile,resolve(directory,"bundle"));
 const children: ChildProcess[] = [],
   errors: string[] = [],
   checks: string[] = [];
@@ -83,7 +87,7 @@ async function route(hash: string) {
 async function screenshot(name: string) {
   await page.screenshot({
     path: resolve(shots, name + ".png"),
-    fullPage: false,
+    fullPage: name.startsWith("imports-"),
   });
   assert.equal(
     await page.evaluate(
@@ -92,6 +96,56 @@ async function screenshot(name: string) {
     true,
     "horizontal overflow " + name,
   );
+}
+async function verifyImportBrowser(){
+  await api("settings","PATCH",{requestId:crypto.randomUUID(),theme:"light"});
+  await page.setViewportSize({width:1440,height:900});
+  await route("papers");
+  await page.getByRole("button",{name:"从 arXiv 添加",exact:true}).click();
+  await page.getByLabel("arXiv 编号与版本",{exact:true}).fill("2401.00001v2");
+  await page.getByLabel("标题（可选）",{exact:true}).fill("入库流程软件测试");
+  await page.getByRole("button",{name:"加入入库待办",exact:true}).click();
+  const importRow=page.locator(".import-row").filter({hasText:"入库流程软件测试"});
+  await expect(importRow).toBeVisible();await expect(importRow.getByText("等待你的电脑上线",{exact:true})).toBeVisible();
+  await screenshot("imports-desktop");
+  await page.setViewportSize({width:390,height:844});await screenshot("imports-mobile");
+  await api("settings","PATCH",{requestId:crypto.randomUUID(),theme:"dark"});await route("papers");
+  const toggle=page.getByRole("button",{name:"从 arXiv 添加",exact:true});if(await toggle.isVisible())await toggle.click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
+  await screenshot("imports-mobile-dark");
+  await importRow.getByRole("button",{name:"取消入库",exact:true}).click();
+  await expect(importRow.getByText("已取消",{exact:true})).toBeVisible();
+  await importRow.getByRole("button",{name:"重新入库",exact:true}).click();
+  await expect(importRow.getByText("等待你的电脑上线",{exact:true})).toBeVisible();
+  await page.reload();await expect(page.locator(".import-row").filter({hasText:"入库流程软件测试"})).toBeVisible();
+  checks.push("arXiv import registration, offline persistence, cancellation and retry work through real DO on desktop and mobile");
+  const token=(await api("device/pair","POST",{requestId:crypto.randomUUID(),label:"Browser import state"})).token;
+  const catalog=await nodeCatalog(undefined,true),pages=catalogPages(catalog);
+  const device=new WebSocket(base.replace("http","ws")+"/api/device/connect",{headers:{Authorization:"Bearer "+token}});
+  device.on("error",()=>{});
+  const send=(value:unknown)=>device.send(JSON.stringify(value));
+  device.on("message",raw=>{
+   const m=JSON.parse(raw.toString());
+   if(m.type==="hello_ack"){send({type:"catalog_begin",pages:pages.length});pages.forEach((value,page)=>send({type:"catalog_page",page,value}));send({type:"catalog_end"});}
+   if(m.type==="catalog_ack")send({type:"availability",ready:false,phase:"indexing"});
+   if(m.type==="library_import")send({type:"library_result",id:m.id,generation:m.generation,phase:"indexing"});
+  });
+  try{
+   await new Promise<void>((ok,no)=>{device.once("open",ok);device.once("error",no);});
+   send({type:"hello",version:1,deviceId:"browser-import",indexVersion:catalog.indexVersion,tools:["search_papers","retrieve_chunks"],capabilities:["library-v1"]});
+   await expect(page.locator(".topbar-status")).toContainText("本机正在建索引");
+   await expect(page.getByRole("button",{name:"连接电脑",exact:true})).not.toBeVisible();
+   await expect(importRow).toContainText("正在建立检索索引");
+   await api("settings","PATCH",{requestId:crypto.randomUUID(),theme:"light"});
+   await expect(page.locator("html")).toHaveAttribute("data-theme","light");
+   await page.setViewportSize({width:1440,height:900});await screenshot("imports-indexing-desktop");
+   await page.setViewportSize({width:390,height:844});await screenshot("imports-indexing-mobile");
+   await route("settings/devices");
+   await expect(page.getByText("本机已连接，正在建立论文索引；检索任务会在完成后继续。",{exact:true})).toBeVisible();
+   checks.push("connected but indexing node remains visibly connected across header, library and device settings; no false reconnect prompt");
+  }finally{device.terminate();}
+
+
 }
 try {
   child([
@@ -111,6 +165,11 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
+  if(process.env.PRA_BROWSER_SCOPE==="imports"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    await verifyImportBrowser();
+  }else{
   await page.goto(base);
   await expect(
     page.getByRole("button", { name: "使用通行密钥登录" }),
@@ -521,6 +580,7 @@ try {
   checks.push(
     "long-goal creation, pause, direction amendment, priority and offline resume preserve real progress on desktop and mobile; cancellation persists",
   );
+  await verifyImportBrowser();
   await route("settings/account");
   await page.getByRole("button", { name: "退出登录", exact: true }).click();
   await expect(
@@ -531,22 +591,24 @@ try {
     page.getByRole("button", { name: "开始新讨论", exact: true }).first(),
   ).toBeVisible({ timeout: 20000 });
   checks.push("browser passkey sign-in works after logout");
+  }
   assert.deepEqual(errors, [], "unhandled browser errors");
   const report = {
     kind: "local-browser-product-flows",
     timestamp: new Date().toISOString(),
     checks,
-    browser: "installed Microsoft Edge, virtual WebAuthn authenticator",
+    browser: process.env.PRA_BROWSER_SCOPE==="imports"?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
     viewports: ["1440x900", "390x844"],
     paidCalls: 0,
     cloudDeployment: false,
   };
   await writeFile(
-    "docs/validation/browser-product.json",
+    process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));
 } catch (e) {
+  await writeFile(resolve(directory,"failure.json"),JSON.stringify({timestamp:new Date().toISOString(),checks,scope:process.env.PRA_BROWSER_SCOPE??"all",message:e instanceof Error?e.message:String(e)},null,2));
   await page
     .screenshot({ path: resolve(shots, "failure.png") })
     .catch(() => {});

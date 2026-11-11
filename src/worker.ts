@@ -1,3 +1,4 @@
+import {LibraryJobs} from "./library-jobs.ts";
 import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts";
 import {DeviceIndexes} from "./device-indexes.ts";
 import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks} from "./task-control.ts";
@@ -98,6 +99,7 @@ export class PersonalAgent extends DurableObject<Env> {
   budgetLedger: BudgetLedger;
   deletions: DeletionStore;
   deviceIndexes: DeviceIndexes;
+  libraryJobs: LibraryJobs;
   workspace:Workspace;
   artifacts:Artifacts;
   memoryIndex:MemoryIndex;
@@ -125,6 +127,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.budgetLedger = new BudgetLedger(this.database);
     this.deletions = new DeletionStore(this.database);
     this.deviceIndexes = new DeviceIndexes(this.database);
+    this.libraryJobs = new LibraryJobs(this.database);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_billing_outbox(id TEXT PRIMARY KEY,usage TEXT NOT NULL)");
     if(env.MODEL_MODE!=="mock")this.budgetLedger.importLegacy(this.state.usage);
     this.budgetLedger.recoverInterrupted();
@@ -312,6 +315,22 @@ export class PersonalAgent extends DurableObject<Env> {
       return a?.ready && this.validHash(a.hash, "device");
     });
   }
+  connectedDevice(capability?:string) {
+    return this.ctx.getWebSockets("device").find(ws=>{
+      const a=ws.deserializeAttachment();
+      return ws.readyState===WebSocket.OPEN&&a?.catalogReady&&this.validHash(a.hash,"device")&&(!capability||a.capabilities?.includes(capability));
+    });
+  }
+  deviceState(){
+    const ws=this.connectedDevice(),a=ws?.deserializeAttachment();
+    return{connected:!!ws,ready:!!a?.ready,phase:a?.ready?"ready":ws?(a?.phase??"loading"):"offline",canImport:!!a?.capabilities?.includes("library-v1")};
+  }
+  dispatchImports(){
+    const ws=this.connectedDevice("library-v1");if(!ws)return;
+    const a=ws.deserializeAttachment();
+    for(const job of this.libraryJobs.cancellations())if(job.deviceHash===a.hash)this.send(ws,{type:"library_cancel",id:job.id,generation:job.generation});
+    for(const job of this.libraryJobs.dispatch(a.hash))this.send(ws,{type:"library_import",id:job.id,generation:job.generation,arxivId:job.arxivId,title:job.title});
+  }
   validHash(hash: string, kind: string) {
     return !!this.ctx.storage.sql
       .exec(
@@ -438,9 +457,10 @@ export class PersonalAgent extends DurableObject<Env> {
       this.database.transactionSync(()=>{for(const row of rows){
         this.ctx.storage.sql.exec("DELETE FROM pra_auth WHERE kind='device' AND hash=?",row.hash);
         this.ctx.storage.sql.exec("UPDATE pra_devices SET revoked=1 WHERE hash=?",row.hash);
+        this.libraryJobs.revokeDevice(row.hash);
       }});
       for(const ws of this.ctx.getWebSockets("device"))if(rows.some(row=>row.hash===ws.deserializeAttachment()?.hash))ws.close(1008,"revoked");
-      return json({ok:true});
+      this.publish();return json({ok:true});
     }
     if(path==="/api/conversations"&&r.method==="GET"){
       const p=new URL(r.url).searchParams;
@@ -639,6 +659,19 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   async workspaceRoute(r:Request,path:string):Promise<Response|undefined>{
     const p=new URL(r.url).searchParams;
+    if(path==="/api/imports"){
+      if(r.method==="GET")return json(this.libraryJobs.page(p.get("project")??undefined,Number(p.get("after")??0),Number(p.get("limit")??30)));
+      if(r.method==="POST"){
+        const b=await this.body(r),projectId=text(b.projectId??"default",128);this.workspace.getProject(projectId);
+        const job=this.libraryJobs.create(b.requestId,{projectId,arxivId:text(b.arxivId,32),title:b.title===undefined?undefined:text(b.title,500)});
+        this.dispatchImports();await this.maintenance.arm();this.publish();return json(this.libraryJobs.public(job),202);
+      }
+    }
+    const importAction=path.match(/^\/api\/imports\/([^/]+)\/(cancel|retry)$/);
+    if(importAction&&r.method==="POST"){
+      const b=await this.body(r),job=this.libraryJobs.action(importAction[1],importAction[2] as "cancel"|"retry",b.requestId);
+      this.dispatchImports();await this.maintenance.arm();this.publish();return json(this.libraryJobs.public(job));
+    }
     if(path==="/api/memories"&&r.method==="GET")return json(this.memoryIndex.page({query:p.get("q")??"",projectId:p.get("project")??undefined,category:p.get("category")??undefined,includeInactive:p.get("inactive")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit")??30)}));
     const memoryRevision=path.match(/^\/api\/memories\/([^/]+)\/revisions$/);
     if(memoryRevision&&r.method==="GET")return json(this.memoryIndex.revisions(memoryRevision[1]));
@@ -647,7 +680,7 @@ export class PersonalAgent extends DurableObject<Env> {
       projects:this.workspace.projects({limit:50}),conversations:conversationPage(this.state,{limit:30}),
       tasks:[...this.state.tasks].sort((a,b)=>b.created-a.created).slice(0,50).map(t=>({...taskSummary(t),answer:t.answer?.slice(0,240)})),
       notices:[...this.state.notices].sort((a,b)=>b.created-a.created).slice(0,50),plans:this.state.plans,
-      memoryCount:this.state.cloudMemory!.entries.length,deviceOnline:!!this.device(),cursor:this.repository.cursor(),
+      memoryCount:this.state.cloudMemory!.entries.length,deviceOnline:!!this.device(),deviceState:this.deviceState(),cursor:this.repository.cursor(),
       model:{id:this.env.MODEL_MODE==="mock"?MODEL.id:this.env.MODEL_ID,mode:this.env.MODEL_MODE,thinking:"off"}
     });
     if(path==="/api/artifacts"){
@@ -698,11 +731,12 @@ export class PersonalAgent extends DurableObject<Env> {
         const result=this.workspace.once(b.requestId,"project:delete:"+id,{},()=>{
           const conversations=(this.state.conversations??[]).filter(c=>c.projectId===id);
           this.workspace.deleteProject(id);
+          const removedImports=this.libraryJobs.removeProject(id);this.state.notices=this.state.notices.filter(n=>!removedImports.some(job=>n.id==="import:"+job));
           for(const c of conversations)this.deletions.request(this.state,c.id);
           this.save();return {id,deletions:conversations.map(c=>c.id)};
         });
         for(const id of result.deletions){const d=this.deletions.get(id);for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});if(d?.session_id)this.ctx.waitUntil(this.harness.abort({session:d.session_id}).catch(()=>{}));}
-        await this.maintenance.arm();this.publish();return json(result,202);
+        this.dispatchImports();await this.maintenance.arm();this.publish();return json(result,202);
       }
     }
     if(path==="/api/conversations"&&r.method==="POST"){
@@ -783,7 +817,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.capabilities = Array.isArray(m.capabilities)
           ? m.capabilities.filter((v: unknown) =>
-              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1"].includes(
+              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1"].includes(
                 String(v),
               ),
             )
@@ -798,6 +832,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.deviceIndexes.declare(a.hash,a.indexVersion,m.retainedIndexes);
         a.ready = false;
         a.catalogReady = false;
+        if(a.capabilities.includes("library-v1"))this.libraryJobs.reconnect(a.hash);
         ws.serializeAttachment(a);
         this.send(ws, { type: "hello_ack", accountScope:await digest(this.ownerId) });
       } else if (m.type === "catalog_begin") {
@@ -880,6 +915,36 @@ export class PersonalAgent extends DurableObject<Env> {
         ws.serializeAttachment(a);
         this.sendPurges(ws);
         this.send(ws, { type: "catalog_ack", indexVersion: c.indexVersion });
+        this.dispatchImports();
+      } else if(m.type==="library_result") {
+        if(!a.catalogReady||!a.capabilities?.includes("library-v1"))throw new Problem("IMPORT_CAPABILITY_REQUIRED");
+        const importId=text(m.id,128);
+        if(this.libraryJobs.deleted(importId)){this.send(ws,{type:"library_ack",id:importId,generation:m.generation,terminal:true});this.dispatchImports();return;}
+        const job=this.libraryJobs.get(importId);
+        if(m.phase==="published"&&job.status!=="cancelled"&&job.deviceHash===a.hash&&job.generation===m.generation){
+          let published=false;
+          try{published=this.catalog(text(m.indexVersion,256)).papers.some(p=>p.paper_id===m.paperId);}catch{}
+          if(!published){this.send(ws,{type:"library_ack",id:m.id,generation:m.generation,terminal:false});return;}
+        }
+        const noticeId="import:"+job.id,previousNotice=this.state.notices.find(n=>n.id===noticeId),previousText=previousNotice?.text;
+        let result:ReturnType<LibraryJobs["receive"]>;
+        try{
+          result=this.database.transactionSync(()=>{
+            const result=this.libraryJobs.receive(a.hash,m);
+            if(result.accepted&&result.job.status==="published"&&result.job.origin==="user"&&!previousNotice){
+              notice(this.state,noticeId,"论文已入库："+result.job.title);this.save();
+            }
+            return result;
+          });
+        }catch(error){
+          if(previousNotice)previousNotice.text=previousText!;
+          else this.state.notices=this.state.notices.filter(n=>n.id!==noticeId);
+          this.repository.load();throw error;
+        }
+        this.send(ws,{type:"library_ack",id:m.id,generation:m.generation,terminal:result.terminal});
+      } else if(m.type==="library_cancelled"){
+        if(!a.capabilities?.includes("library-v1"))throw new Problem("IMPORT_CAPABILITY_REQUIRED");
+        if(this.libraryJobs.cancelled(text(m.id,128),m.generation,a.hash))this.send(ws,{type:"library_ack",id:m.id,generation:m.generation,terminal:true});
       } else if(m.type==="purged") {
         if(typeof m.deletionId!=="string"||!Array.isArray(m.operationIds))throw new Problem("INVALID_PURGE_ACK");
         this.deletions.localDone(m.deletionId,m.operationIds);this.sendPurges(ws);
@@ -1341,6 +1406,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.busy = true;
     try {
       expire(this.state);
+      this.libraryJobs.expire();this.dispatchImports();
       await this.tickResearch();
       if(await this.processDeletion())return Date.now()+1000;
       const running = this.state.tasks.find(
@@ -1525,7 +1591,9 @@ export class PersonalAgent extends DurableObject<Env> {
       for (const ws of this.ctx.getWebSockets("device"))
         for (const n of this.workspace.settings().notifications?this.state.notices.filter((n) => !n.read):[])
           this.send(ws, { type: "notice", notice: n });
+      const importDeadline=this.libraryJobs.nextDeadline();
       const times = [
+        ...(importDeadline===undefined?[]:[importDeadline]),
         ...this.state.operations
           .filter((o) => o.state === "sent")
           .map((o) => o.deadline),

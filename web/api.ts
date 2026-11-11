@@ -42,6 +42,18 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  VERSIONED_ARXIV_ID_REQUIRED:"请填写包含版本号的 arXiv 编号，例如 2401.00001v2。",
+  IMPORT_QUEUE_FULL:"入库待办已达到 100 项，请完成或取消部分待办后再添加。",
+  LOCAL_CANCEL_PENDING:"取消已保存，等待本机确认后才能重新入库。",
+  IMPORT_ALREADY_PUBLISHED:"这篇论文已经入库。取消待办不会删除已入库的论文。",
+  IMPORT_DEVICE_REVOKED:"执行入库的设备已被撤销。连接有效设备后可以重新入库。",
+  IMPORT_NOT_RETRYABLE:"这项入库仍在处理中，请刷新查看最新状态。",
+  IMPORT_REGISTRATION_TIMEOUT:"本机未确认收到请求，请检查连接后重新入库。",
+  IMPORT_DELIVERY_LIMIT:"多次连接未能登记成功，请检查本机状态后重新入库。",
+  DOWNLOAD_UNAVAILABLE:"未能获取论文，请核对编号和版本，检查本机网络后重试。",
+  TEXT_LAYER_REQUIRED:"这份 PDF 没有可读取的文本层，当前版本不支持扫描件。",
+  IMPORT_PROCESS_INTERRUPTED:"本机处理被中断，请检查节点状态后重新入库。",
+  IMPORT_TIMEOUT:"本机处理超时，请查看托盘诊断后重新入库。",
   UNAUTHORIZED: "登录已过期，请重新登录。",
   INVITATION_REQUIRED: "需要有效的邀请码，才能创建账户。",
   INVITE_EXPIRED: "邀请已使用或过期，请获取新的邀请。",

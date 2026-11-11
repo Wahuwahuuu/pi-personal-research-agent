@@ -1,3 +1,5 @@
+import {deviceView} from "./device-state.ts";
+import {LibraryImports} from "./LibraryImports.tsx";
 import { TaskControls } from "./TaskControls.tsx";
 import { useEffect, useState, useRef } from "react";
 import { api, mutate, errorText } from "./api.ts";
@@ -398,13 +400,14 @@ export function Library({
               : "本机索引的论文目录；原文片段可随讨论进入云端。"}
           </p>
         </div>
-        {!data.deviceOnline && (
+        {!deviceView(data).connected && (
           <button onClick={() => navigate("settings", "devices")}>
             <Icon name="desktop" />
             连接电脑
           </button>
         )}
       </div>
+      <LibraryImports projectId={projectId} data={data} revision={revision} run={run} refresh={refresh}/>
       {projectId && (
         <div className="selection-bar">
           <span>已选 {selected.length} 篇</span>

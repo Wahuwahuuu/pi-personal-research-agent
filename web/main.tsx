@@ -1,3 +1,4 @@
+import {deviceView} from "./device-state.ts";
 import { MemoryView } from "./Memory.tsx";
 import {
   StrictMode,
@@ -484,11 +485,11 @@ function Workspace({
           <div className="topbar-status">
             <span
               className={
-                "connection " + (data?.deviceOnline ? "connected" : "")
+                "connection " + (deviceView(data).connected ? "connected" : "")
               }
             >
               <i />
-              {data?.deviceOnline ? "本机已连接" : "本机离线"}
+              {deviceView(data).label}
             </span>
             {connection !== "online" && (
               <span className="sync-state" role="status">

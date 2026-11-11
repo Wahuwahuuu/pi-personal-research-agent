@@ -58,6 +58,23 @@ class LibraryTests(unittest.TestCase):
     def run_job(self, **kwargs):
         return self.library.run_one(self.root, "cpu", builder=build, verifier=verify, **kwargs)
 
+    def test_remote_cancellation_preserves_a_separate_local_registration(self):
+        remote = self.library.register_arxiv("cloud:job:0", "2401.00001v1")
+        self.library.register_arxiv("local-user", "2401.00001v1")
+        self.assertEqual(self.library.cancel_remote(remote["id"])["status"], "queued")
+        sole = self.library.register_arxiv("cloud:other:0", "2401.00002v1")
+        self.assertEqual(self.library.cancel_remote(sole["id"])["status"], "cancelled")
+
+    def test_batch_status_is_bounded_and_does_not_expose_payload_or_file_paths(self):
+        row = self.library.register_pdf("pdf", self.first)
+        states = self.library.statuses([row["id"]])
+        self.assertEqual(states[0]["content_sha"], sha(self.first.read_bytes()))
+        self.assertNotIn("payload", states[0])
+        self.assertNotIn(str(self.first), json.dumps(states))
+        self.assertEqual(self.library.statuses([]), [])
+        with self.assertRaisesRegex(LibraryError, "INVALID_IMPORT_IDS"):
+            self.library.statuses(["x"] * 101)
+
     def test_dynamic_library_search_supports_chinese_without_changing_legacy_tokens(self):
         self.assertEqual(tokenize_bm25("中文检索"), [])
         self.assertIn("检索", tokenize_library("中文检索"))

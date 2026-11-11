@@ -3,7 +3,7 @@ import {isAbsolute} from "node:path";
 import {fileURLToPath} from "node:url";
 import {workerEnvironment} from "../packages/research/transport.ts";
 export interface LibraryConfig {root:string;executable:string;models:string;device?:"cpu"|"cuda";proxy?:string;baseCorpus?:string;}
-export interface ImportJob {id:string;source:string;title?:string;status:"queued"|"acquiring"|"parsing"|"indexing"|"validating"|"published"|"failed"|"cancelled";error?:string;paper_id?:string;version?:string;}
+export interface ImportJob {id:string;source:string;title?:string;status:"queued"|"acquiring"|"parsing"|"indexing"|"validating"|"published"|"failed"|"cancelled";error?:string;paper_id?:string;version?:string;content_sha?:string;}
 export interface IndexDescriptor {version:string;index:string;corpus:string;manifest_sha:string;job_id:string;}
 export type ImportMetadata={title?:string;authors?:string;abstract?:string};
 /** Fixed module, fixed actions, JSON stdin. Filesystem selection is exclusively a local UI concern. */
@@ -58,6 +58,8 @@ export class LibraryClient {
  }
  run(signal?:AbortSignal){return this.invoke<ImportJob|null>({action:"run",models:this.config.models,device:this.config.device??"cuda",baseCorpus:this.config.baseCorpus},signal,1800000);}
  jobs(){return this.invoke<ImportJob[]>({action:"list",limit:200});}
+ statuses(ids:string[]){return this.invoke<ImportJob[]>({action:"statuses",ids});}
+ cancelRemote(id:string){return this.invoke<ImportJob>({action:"cancel_remote",id});}
  status(id:string){return this.invoke<ImportJob>({action:"status",id});}
  cancel(id:string){return this.invoke<ImportJob>({action:"cancel",id});}
  fail(id:string,code:"IMPORT_PROCESS_INTERRUPTED"|"IMPORT_TIMEOUT"){return this.invoke<ImportJob>({action:"mark_failure",id,code});}

@@ -1960,3 +1960,24 @@ textarea {
 .goal-checkpoints li {padding:8px 0}
 .goal-checkpoints li p {margin:6px 0}
 .long-goal-option {margin:10px 0 0;font-size:12px}
+
+@layer components {
+ .library-imports {border-block:1px solid var(--line);padding-block:20px;margin-block:20px 28px;}
+ .import-heading {display:flex;align-items:center;justify-content:space-between;gap:16px;}
+ .library-imports form {margin-top:20px;}
+ .import-fields {display:grid;grid-template-columns:minmax(180px,1fr) minmax(180px,2fr);gap:20px;}
+ .import-hint {margin-top:12px;max-width:72ch;}
+ .import-list {margin-top:16px;}
+ .import-row {display:flex;gap:20px;align-items:flex-start;padding-block:16px;border-top:1px solid var(--line);}
+ .import-row h3 {font-size:14px;overflow-wrap:anywhere;}
+ .import-state {color:var(--accent);margin-top:6px;}
+ .import-error {color:var(--error);margin-top:6px;}
+ .import-actions {flex-shrink:0;}
+}
+@layer responsive {
+ @media(max-width:640px) {
+  .import-fields {grid-template-columns:1fr;gap:0;}
+  .import-row {flex-direction:column;gap:10px;}
+  .import-heading {gap:10px;flex-wrap:wrap;}
+ }
+}
