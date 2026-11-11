@@ -254,7 +254,9 @@ try {
     pages = catalogPages(catalog);
   let frames: any[] = [],
     controlled: WebSocket;
-  async function connectControlled() {
+  async function connectControlled(activeVersion="fixture-v1", retainedIndexes=[activeVersion]) {
+    const activeCatalog={...catalog,indexVersion:activeVersion,evidence:catalog.evidence.map(e=>({...e,index_version:activeVersion}))};
+    const pages=catalogPages(activeCatalog);
     frames = [];
     controlled = new WebSocket(
       base.replace("http", "ws") + "/api/device/connect",
@@ -287,7 +289,8 @@ try {
         type: "hello",
         version: 1,
         deviceId: "controlled",
-        indexVersion: catalog.indexVersion,
+        indexVersion: activeVersion,
+        retainedIndexes,
         tools: ["search_papers", "retrieve_chunks"],
       }),
     );
@@ -320,7 +323,7 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
-  await connectControlled();
+  await connectControlled("fixture-v2",["fixture-v1","fixture-v2"]);
   const replayed = await until(
     async () =>
       frames.find(
@@ -328,6 +331,8 @@ try {
       )?.operation ?? false,
   );
   assert.equal(replayed.id, first.id);
+  assert.equal(replayed.indexVersion,"fixture-v1");
+  checks.push("pending operation stays on its original snapshot after reconnect publishes a newer active index");
   const restoredWaiting = (await api("state")).tasks.find(
     (t: any) => t.id === inFlight.id,
   );

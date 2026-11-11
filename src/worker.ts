@@ -1,3 +1,4 @@
+import {DeviceIndexes} from "./device-indexes.ts";
 import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks} from "./task-control.ts";
 import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
@@ -95,6 +96,7 @@ export class PersonalAgent extends DurableObject<Env> {
   repository: StateRepository;
   budgetLedger: BudgetLedger;
   deletions: DeletionStore;
+  deviceIndexes: DeviceIndexes;
   workspace:Workspace;
   artifacts:Artifacts;
   memoryIndex:MemoryIndex;
@@ -121,6 +123,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.artifacts=new Artifacts(this.database);
     this.budgetLedger = new BudgetLedger(this.database);
     this.deletions = new DeletionStore(this.database);
+    this.deviceIndexes = new DeviceIndexes(this.database);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_billing_outbox(id TEXT PRIMARY KEY,usage TEXT NOT NULL)");
     if(env.MODEL_MODE!=="mock")this.budgetLedger.importLegacy(this.state.usage);
     this.budgetLedger.recoverInterrupted();
@@ -793,6 +796,7 @@ export class PersonalAgent extends DurableObject<Env> {
             ? m.readerPort
             : undefined;
         a.indexVersion = text(m.indexVersion, 256);
+        this.deviceIndexes.declare(a.hash,a.indexVersion,m.retainedIndexes);
         a.ready = false;
         a.catalogReady = false;
         ws.serializeAttachment(a);
@@ -1170,7 +1174,7 @@ export class PersonalAgent extends DurableObject<Env> {
       );
       if (op) {
         const t = getTask(this.state, op.taskId);
-        if (op.indexVersion !== attachment.indexVersion)
+        if (!this.deviceIndexes.supports(attachment.hash,op.indexVersion,attachment.indexVersion))
           failResearch(this.state, t, "INDEX_CHANGED");
         else if ((op.attempts ?? 0) >= 3)
           failResearch(this.state, t, "LOCAL_RETRY_LIMIT");
@@ -1211,7 +1215,7 @@ export class PersonalAgent extends DurableObject<Env> {
       t.researchIndex = attachment.indexVersion;
       if(t.workflow?.automatic&&t.workflow.preparedIndex==="cloud-only"){t.workflow.phase="prepare";t.workflow.cloudOnly=false;}
     }
-    if (!t.workflow?.cloudOnly && dev && attachment.indexVersion !== t.researchIndex) {
+    if (!t.workflow?.cloudOnly && dev && !this.deviceIndexes.supports(attachment.hash,t.researchIndex!,attachment.indexVersion)) {
       failResearch(this.state, t, "INDEX_CHANGED");
       return;
     }
@@ -1425,7 +1429,7 @@ export class PersonalAgent extends DurableObject<Env> {
                   query: t.input.slice(0, 1000),
                   limit: 3,
                 });
-              if (op.indexVersion !== a.indexVersion) {
+              if (!this.deviceIndexes.supports(a.hash,op.indexVersion,a.indexVersion)) {
                 t.status = "failed";
                 t.error = "INDEX_CHANGED";
               } else if (op.state === "pending") {
