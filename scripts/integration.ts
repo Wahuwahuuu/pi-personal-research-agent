@@ -170,9 +170,11 @@ try {
       fixture: true,
     }),
   );
+  const localControl=crypto.randomUUID()+crypto.randomUUID();
   const node = child(["local/node.ts", config], {
     ...process.env,
     PRA_DEVICE_TOKEN: pair.token,
+    PRA_LOCAL_TOKEN:localControl,
   });
   await until(async () => {
     const s = await api("state");
@@ -192,6 +194,14 @@ try {
   assert.equal(findings.items.length,1);assert.equal(findings.items[0].sources[0].quote,"Evidence.");assert.equal(findings.items[0].semanticStatus,"unreviewed");assert.equal(findings.items[0].projectId,"default");
   assert.equal(researchDone.workflow.memory.state,"saved");
   checks.push("real workerd FTS5 finds source-bound reading conclusions; consolidation is charged to the original task");
+  const localBase="http://127.0.0.1:48739";
+  assert.equal((await fetch(localBase+"/local/status")).status,401);
+  const localRequest=async(action:string)=>{const r=await fetch(localBase+"/local/control",{method:"POST",headers:{Authorization:"Bearer "+localControl,"Content-Type":"application/json"},body:JSON.stringify({action})});assert.equal(r.status,200);};
+  await localRequest("pause");await until(async()=>!(await api("state")).deviceOnline);
+  const pauseWaiting=await api("tasks","POST",{requestId:"node-pause-research",kind:"research",input:"research waits while local work is paused"});
+  await until(async()=>(await api("tasks/"+pauseWaiting.id)).status==="waiting_device");
+  await localRequest("resume");await until(async()=>(await api("tasks/"+pauseWaiting.id)).status==="completed");
+  checks.push("local management rejects unauthenticated access; pause and resume preserve queued research through actual node");
   const savedArtifact=await api("artifacts","POST",{requestId:"artifact-save",taskId:research.id,kind:"reading",title:"Research record"});
   assert.equal(savedArtifact.sources[0].chunk_id,"fixture-chunk");
   const editedArtifact=await api("artifacts/"+savedArtifact.id,"PATCH",{requestId:"artifact-edit",version:1,content:"User-edited result [cite:fixture-chunk]"});
@@ -342,6 +352,16 @@ try {
     "workerd restart DURING pending tool reused operation/session without another model call",
   );
 
+  const deferralCalls=(await api("tasks/"+inFlight.id)).calls;
+  controlled!.send(JSON.stringify({type:"operation_deferred",operationId:first.id,reason:"indexing"}));
+  await until(async()=>!(await api("state")).deviceOnline);
+  assert.equal((await api("state")).operations.find((o:any)=>o.id===first.id).state,"pending");
+  await new Promise(r=>setTimeout(r,1500));
+  assert.equal((await api("tasks/"+inFlight.id)).calls,deferralCalls);
+  const dispatches=frames.filter(m=>m.type==="operation"&&m.operation.id===first.id).length;
+  controlled!.send(JSON.stringify({type:"ready"}));
+  await until(async()=>frames.filter(m=>m.type==="operation"&&m.operation.id===first.id).length>dispatches);
+  checks.push("indexing deferral releases the device without failing a task or spending a retry; the same operation resumes after readiness");
   const searchFrame = {
     type: "result",
     operationId: first.id,

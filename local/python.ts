@@ -23,6 +23,7 @@ export class PythonBridge {
   config: PythonConfig & {worker:string};
   private client?: PythonWorkerClient;
   private pending = false;
+  private closing:Promise<void>=Promise.resolve();
   constructor(config: PythonConfig) {
     this.config = {...config,worker:config.worker ?? fileURLToPath(new URL("../packages/retrieval/retriever/worker.py",import.meta.url))};
     for (const p of [
@@ -53,6 +54,7 @@ export class PythonBridge {
     }));
   }
   async ready() {
+    await this.closing;
     const client = this.getClient();
     try {
       const event = await client.ready();
@@ -131,13 +133,13 @@ export class PythonBridge {
     }
   }
   async close() {
-    const client=this.client;
     this.stop();
-    await client?.whenClosed();
+    await this.closing;
   }
   stop() {
     const client = this.client;
     this.client = undefined;
     client?.close();
+    if(client)this.closing=Promise.all([this.closing,client.whenClosed()]).then(()=>{});
   }
 }

@@ -952,11 +952,24 @@ export class PersonalAgent extends DurableObject<Env> {
           operationId: m.operationId,
           status: "discarded",
         });
+      } else if (m.type === "availability") {
+        if(!a.indexVersion||m.ready!==false||!["indexing","paused","loading"].includes(m.phase))throw new Problem("INVALID_AVAILABILITY");
+        a.ready=false;a.phase=m.phase;ws.serializeAttachment(a);
+      } else if (m.type === "operation_deferred") {
+        if(!["indexing","paused","busy"].includes(m.reason))throw new Problem("INVALID_DEFERRAL");
+        const op=this.state.operations.find(o=>o.id===m.operationId);
+        if(op?.state==="sent"){
+          const task=getTask(this.state,op.taskId);
+          op.state="pending";op.deadline=0;op.attempts=Math.max(0,(op.attempts??1)-1);
+          if(!terminal(task)&&!task.pauseRequested)task.status="waiting_device";
+          a.ready=false;a.phase=m.reason;ws.serializeAttachment(a);this.save();
+        }
+        this.send(ws,{type:"deferred_ack",operationId:m.operationId});
       } else if (m.type === "ready") {
         if (!a.indexVersion) throw new Problem("HELLO_REQUIRED");
         if (this.env.RESEARCH_ENGINE === "durable" && !a.catalogReady)
           throw new Problem("CATALOG_REQUIRED");
-        a.ready = true;
+        a.ready = true;delete a.phase;
         ws.serializeAttachment(a);
         for (const op of this.state.operations.filter(
           (o) => o.state === "sent",

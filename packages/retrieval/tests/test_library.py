@@ -84,6 +84,22 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(papers[0]["title"], "Known title")
         self.assertTrue(any(p["text"] == "Page three evidence." for p in paragraphs.values()))
 
+    def test_new_library_keeps_the_configured_base_papers_without_mutating_them(self):
+        self.library.register_pdf("base", self.first)
+        self.run_job()
+        active = self.library.active(verify)
+        corpus = self.library.path(active["corpus"])
+        before = (corpus / "papers.jsonl").read_bytes()
+        other = Library(self.root / "second-library")
+        try:
+            other.register_pdf("new", self.second)
+            self.assertEqual(other.run_one(self.root, "cpu", builder=build, verifier=verify, base_corpus=corpus)["status"], "published")
+            combined = other.active(verify)
+            self.assertEqual(len(load_source(other.path(combined["corpus"]))[0]), 2)
+            self.assertEqual((corpus / "papers.jsonl").read_bytes(), before)
+        finally:
+            other.close()
+
     def test_request_and_content_idempotence_and_conflict(self):
         a = self.library.register_pdf("same", self.first)
         self.assertEqual(a["id"], self.library.register_pdf("same", self.first)["id"])
@@ -186,6 +202,18 @@ class LibraryTests(unittest.TestCase):
         self.assertEqual(self.library.job(row["id"])["status"], "published")
         self.assertEqual(self.library.job(row["id"])["version"], active["version"])
         self.assertIsNone(self.run_job())
+
+    def test_interrupted_jobs_have_bounded_restarts_and_explicit_retry(self):
+        row = self.library.register_pdf("bounded", self.first)
+        def interrupt(stage):
+            if stage == "parsed": raise SimulatedPowerLoss()
+        for _ in range(3):
+            with self.assertRaises(SimulatedPowerLoss):
+                self.run_job(hook=interrupt)
+        self.assertEqual(self.run_job()["error"], "IMPORT_RETRY_LIMIT")
+        self.library.retry(row["id"])
+        self.assertEqual(self.run_job()["status"], "published")
+        self.assertEqual(self.library.job(row["id"])["attempts"], 1)
 
     def test_index_tampering_and_parallel_heavy_work_fail_closed(self):
         self.library.register_pdf("first", self.first)

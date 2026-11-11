@@ -1,3 +1,6 @@
+import {timingSafeEqual,randomUUID} from "node:crypto";
+import {LibraryClient,type ImportJob} from "./library-client.ts";
+import {SnapshotManager} from "./snapshots.ts";
 import { bindNodeAccount } from "./account-binding.ts";
 import { createLocalReading } from "../packages/research/local-reading.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
@@ -9,7 +12,7 @@ import { HttpsProxyAgent } from "https-proxy-agent";
 import { DatabaseSync } from "node:sqlite";
 import { readFile, mkdir } from "node:fs/promises";
 import { resolve, dirname, join } from "node:path";
-import { createServer } from "node:http";
+import { createServer,type IncomingMessage,type ServerResponse } from "node:http";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PythonBridge, type PythonConfig } from "./python.ts";
@@ -22,6 +25,9 @@ interface Config {
   fixture?: boolean;
   python?: PythonConfig;
   proxy?: string;
+  libraryRoot?:string;
+  libraryPython?:string;
+  localSecretFile?:string;
 }
 const configPath = resolve(process.argv[2] ?? ".local/node.json");
 const config = JSON.parse(await readFile(configPath, "utf8")) as Config;
@@ -58,6 +64,7 @@ if (!token || token.length < 32) throw new Error("DEVICE_CREDENTIAL_REQUIRED");
 await mkdir(resolve(config.dataDir), { recursive: true });
 // OS-owned singleton lock disappears after termination; no stale PID files.
 let reading: Awaited<ReturnType<typeof createLocalReading>> | undefined;
+let localHandler:((req:IncomingMessage,res:ServerResponse)=>Promise<boolean>)|undefined;
 const lock = createServer(async (req, res) => {
   try {
     if (
@@ -76,6 +83,7 @@ const lock = createServer(async (req, res) => {
       res.writeHead(204).end();
       return;
     }
+    if(localHandler&&await localHandler(req,res))return;
     if (req.method !== "GET") {
       res.writeHead(405).end();
       return;
@@ -110,70 +118,38 @@ const db = new DatabaseSync(join(resolve(config.dataDir), "node.sqlite"));
 db.exec(
   "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,frame TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS deleted_operations(id TEXT PRIMARY KEY);",
 );
-if (config.python)
-  config.python.scientificCacheDir = resolve(
-    config.dataDir,
-    ".cache/scientific-reading",
-  );
-const bridge = config.python ? new PythonBridge(config.python) : undefined;
-if (!bridge && !config.fixture) throw new Error("PYTHON_CONFIG_REQUIRED");
-const catalog = await nodeCatalog(config.python, config.fixture);
-const pages = catalogPages(catalog);
-const indexVersion = config.fixture
-  ? "fixture-v1"
-  : config.python!.indexVersion;
-reading = await createLocalReading({
-  root: resolve(config.dataDir),
-  indexVersion: catalog.indexVersion,
-  papers: catalog.papers,
-  evidence: catalog.evidence,
-  worker: {
-    request: async (tool, params, signal) => {
-      if (!config.fixture)
-        return bridge!.request(
-          tool,
-          { ...params },
-          signal ?? AbortSignal.timeout(60000),
-        );
-      return tool === "search_papers"
-        ? {
-            backend: "fixture",
-            index_version: indexVersion,
-            papers: [
-              {
-                paper_id: "fixture-paper",
-                title: "Deterministic research fixture",
-                abstract: "Not a scientific evaluation.",
-              },
-            ],
-          }
-        : {
-            backend: "fixture",
-            index_version: indexVersion,
-            chunks: [
-              {
-                paper_id: "fixture-paper",
-                chunk_id: "fixture-chunk",
-                paragraph_id: "p1",
-                citation: "[fixture-chunk]",
-                truncated: false,
-                section: "abstract",
-                start: 0,
-                end: 9,
-                text: "Evidence.",
-                index_version: indexVersion,
-              },
-            ],
-          };
-    },
-    ...(bridge
-      ? {
-          readScientificSources: (params: any, signal?: AbortSignal) =>
-            bridge.readScientificSources(params, signal),
-        }
-      : {}),
-  },
+const snapshots=config.python&&!config.fixture?new SnapshotManager(config.python,resolve(config.dataDir),config.libraryRoot):undefined;
+if(!snapshots&&!config.fixture)throw Error("PYTHON_CONFIG_REQUIRED");
+await snapshots?.refresh();
+let catalog=snapshots?(await snapshots.runtime(snapshots.activeVersion)).catalog:await nodeCatalog(undefined,true);
+let pages=catalogPages(catalog),indexVersion=catalog.indexVersion;
+reading=snapshots?(await snapshots.runtime(indexVersion)).reading:await createLocalReading({
+ root:resolve(config.dataDir),indexVersion,papers:catalog.papers,evidence:catalog.evidence,
+ worker:{request:async(tool)=>tool==="search_papers"?{
+  backend:"fixture",index_version:indexVersion,papers:catalog.papers
+ }:{
+  backend:"fixture",index_version:indexVersion,chunks:[{
+   paper_id:"fixture-paper",chunk_id:"fixture-chunk",paragraph_id:"p1",citation:"[fixture-chunk]",
+   truncated:false,section:"abstract",start:0,end:9,text:"Evidence.",index_version:indexVersion
+  }]
+ }}
 });
+const library=config.libraryRoot&&config.python?.models?new LibraryClient({
+ root:resolve(config.libraryRoot),executable:config.libraryPython??config.python.executable,
+ models:config.python.models,device:config.python.device,proxy:config.proxy,baseCorpus:config.python.corpus
+}):undefined;
+let paused=false,building=false,polling=false,preparing=false,catalogAcknowledged=false,announcedReady=false,lastLocalError="",importJobs:ImportJob[]=[],importAbort:AbortController|undefined,activeImport:string|undefined;
+let controlToken=process.env.PRA_LOCAL_TOKEN;
+if(!controlToken&&!config.fixture&&process.platform==="win32"){
+ const file=resolve(config.localSecretFile??join(config.dataDir,"local.secret"));
+ const read=spawnSync("powershell.exe",["-NoProfile","-NonInteractive","-File",join(dirname(fileURLToPath(import.meta.url)),"../scripts/read-secret.ps1"),file],{windowsHide:true,encoding:"utf8",stdio:["pipe","pipe","pipe"]});
+ if(read.status===0)controlToken=read.stdout.trim();
+ else{
+  controlToken=randomUUID()+randomUUID();
+  const saved=spawnSync("powershell.exe",["-NoProfile","-NonInteractive","-File",join(dirname(fileURLToPath(import.meta.url)),"../scripts/write-secret.ps1"),file],{windowsHide:true,input:controlToken,encoding:"utf8",stdio:["pipe","pipe","pipe"]});
+  if(saved.status!==0)throw Error("LOCAL_CREDENTIAL_SAVE_FAILED");
+ }
+}
 let socket: WebSocket | undefined,
   retry = 0,
   stopping = false,
@@ -216,13 +192,14 @@ async function execute(op: Operation) {
     return;
   }
   if (active?.id === op.id) return;
-  if (active) {
-    send({ type: "operation_error", operationId: op.id, code: "BUSY" });
+  if (active||building||paused) {
+    announcedReady=false;
+    send({ type: "operation_deferred", operationId: op.id, reason:building?"indexing":paused?"paused":"busy" });
     return;
   }
   if (
     !op ||
-    op.indexVersion !== indexVersion ||
+    !(snapshots?snapshots.retained().includes(op.indexVersion):op.indexVersion===indexVersion) ||
     !["search_papers", "retrieve_chunks"].includes(op.tool) ||
     !Number.isFinite(op.deadline)
   ) {
@@ -241,25 +218,22 @@ async function execute(op: Operation) {
     Math.max(1, Math.min(180000, op.deadline - Date.now())),
   );
   try {
-    validatePaperParams(op.tool, op.params, researchContext(catalog));
-    const { result, sources } = await reading!.execute(
-      op.tool,
-      op.params,
-      abort.signal,
-    );
+    const scopedCatalog=snapshots?(await snapshots.runtime(op.indexVersion)).catalog:catalog;
+    validatePaperParams(op.tool, op.params, researchContext(scopedCatalog));
+    const {result,sources}=snapshots?await snapshots.execute(op.indexVersion,op.tool,op.params,abort.signal):await reading!.execute(op.tool,op.params,abort.signal);
     if (abort.signal.aborted) throw new Error("CANCELLED");
-    validateEvidence(op.tool, result, indexVersion);
+    validateEvidence(op.tool, result, op.indexVersion);
     checkedResult(
       op,
       result,
       sources.length
-        ? withReadingSources(catalog, readingSources(catalog, op, sources))
-        : catalog,
+        ? withReadingSources(scopedCatalog, readingSources(scopedCatalog, op, sources))
+        : scopedCatalog,
     );
     frame(op.id, {
       type: "result",
       operationId: op.id,
-      indexVersion,
+      indexVersion:op.indexVersion,
       result,
       sources,
       executionMs: Math.ceil(performance.now() - started),
@@ -273,6 +247,7 @@ async function execute(op: Operation) {
   } finally {
     clearTimeout(timeout);
     active = undefined;
+    void announceReady();
   }
 }
 function connect() {
@@ -285,7 +260,7 @@ function connect() {
     maxPayload: 1000000,
     handshakeTimeout: 15000,
   });
-  socket = ws;
+  socket = ws;catalogAcknowledged=false;
   let pong = true;
   const heartbeat = setInterval(() => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -297,12 +272,13 @@ function connect() {
     ws.send("ping");
   }, 30000);
   ws.on("open", () => {
-    retry = 0;
+    retry = 0;announcedReady=false;catalogAcknowledged=false;
     send({
       type: "hello",
       version: 1,
       deviceId: "windows-primary",
       indexVersion,
+      retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
       capabilities: ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1"],
       readerPort: config.port ?? 48731,
@@ -324,16 +300,12 @@ function connect() {
         );
         send({ type: "catalog_end" });
       } else if (m.type === "catalog_ack") {
+        catalogAcknowledged=true;
         for (const r of db
           .prepare("SELECT frame FROM outbox WHERE acked=0")
           .all() as { frame: string }[])
           send(JSON.parse(r.frame));
-        void (bridge?.ready() ?? Promise.resolve())
-          .then(() => {
-            if (socket === ws && ws.readyState === WebSocket.OPEN)
-              send({ type: "ready" });
-          })
-          .catch(() => ws.terminate());
+        void announceReady();
       } else if(m.type==="purge_operations") {
         if(typeof m.deletionId!=="string"||!Array.isArray(m.operationIds)||m.operationIds.length>200||m.operationIds.some((id:unknown)=>typeof id!=="string"||id.length>512))throw Error("INVALID_PURGE");
         db.exec("BEGIN IMMEDIATE");
@@ -364,7 +336,7 @@ function stop() {
   stopping = true;
   clearTimeout(timer);
   active?.abort.abort();
-  bridge?.stop();
+  snapshots?.stop();importAbort?.abort();
   socket?.terminate();
   lock.close();
   setTimeout(() => {
@@ -375,4 +347,87 @@ function stop() {
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 connect();
+const libraryTimer=setInterval(()=>{void pollLibrary();},5000);libraryTimer.unref();
 console.log("Local research node started; credentials are never logged.");
+
+async function announceReady(){
+ const ws=socket;
+ if(!ws||ws.readyState!==WebSocket.OPEN||!catalogAcknowledged||announcedReady||preparing||paused||building||active)return;
+ preparing=true;
+ try{
+  await snapshots?.ready();
+  if(socket===ws&&ws.readyState===WebSocket.OPEN&&!paused&&!building&&!active){announcedReady=true;send({type:"ready"});}
+ }catch{lastLocalError="MODEL_LOADING_FAILED";ws.terminate();}
+ finally{preparing=false;}
+}
+function unavailable(phase:"indexing"|"paused"|"loading"){
+ announcedReady=false;send({type:"availability",ready:false,phase});
+}
+async function refreshLibrary(){
+ if(!snapshots||active||building)return;
+ if(await snapshots.refresh()){
+  indexVersion=snapshots.activeVersion;
+  const runtime=await snapshots.runtime(indexVersion);catalog=runtime.catalog;reading=runtime.reading;pages=catalogPages(catalog);
+  announcedReady=false;socket?.terminate();
+ }
+}
+async function pollLibrary(){
+ if(!library||!snapshots||polling||stopping)return;
+ polling=true;
+ try{
+  importJobs=await library.jobs();
+  const queued=importJobs.find(j=>!["published","failed","cancelled"].includes(j.status));
+  if(queued&&!active&&!paused&&!building&&!snapshots.busy){
+   building=true;activeImport=queued.id;importAbort=new AbortController();unavailable("indexing");
+   try{await snapshots.maintain(()=>library.run(importAbort!.signal));lastLocalError="";}
+   catch(e){lastLocalError=e instanceof Error&&/^[A-Z_]+$/.test(e.message)?e.message:"IMPORT_PROCESS_INTERRUPTED";await library.fail(queued.id,lastLocalError==="LIBRARY_TIMEOUT"?"IMPORT_TIMEOUT":"IMPORT_PROCESS_INTERRUPTED");}
+   finally{building=false;activeImport=undefined;importAbort=undefined;}
+   importJobs=await library.jobs();
+  }
+  await refreshLibrary();
+  void announceReady();
+ }catch{lastLocalError="LIBRARY_UNAVAILABLE";}
+ finally{polling=false;}
+}
+localHandler=async(req,res)=>{
+ const path=new URL(req.url??"/","http://127.0.0.1").pathname;
+ if(!path.startsWith("/local/"))return false;
+ const received=String(req.headers.authorization??"").replace(/^Bearer /,"");
+ if(!controlToken||Buffer.byteLength(received)!==Buffer.byteLength(controlToken)||!timingSafeEqual(Buffer.from(received),Buffer.from(controlToken))){
+  res.writeHead(401,{"Content-Type":"application/json"}).end('{"error":"LOCAL_AUTH_REQUIRED"}');return true;
+ }
+ const reply=(value:unknown,status=200)=>{res.writeHead(status,{"Content-Type":"application/json","Cache-Control":"no-store"});res.end(JSON.stringify(value));};
+ try{
+  if(req.method==="GET"&&path==="/local/status"){
+   if(library&&building)importJobs=await library.jobs();
+   reply({connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:building?"indexing":active?"reading":announcedReady?"ready":"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
+  }
+  if(req.method!=="POST"){reply({error:"METHOD_DENIED"},405);return true;}
+  let bytes=0,body="";for await(const part of req){bytes+=part.length;if(bytes>24000)throw Error("BODY_LIMIT");body+=part.toString("utf8");}
+  const value=JSON.parse(body);
+  if(path==="/local/control"){
+   if(value.action==="pause"){paused=true;unavailable("paused");}
+   else if(value.action==="resume"){paused=false;void announceReady();}
+   else if(value.action==="reconnect"){socket?.terminate();}
+   else throw Error("ACTION_DENIED");
+   reply({accepted:true});return true;
+  }
+  if(!library)throw Error("LIBRARY_NOT_CONFIGURED");
+  if(path==="/local/import"){
+   const result=value.kind==="pdf"?await library.registerPdf(value.requestId,value.path,value.metadata):
+    value.kind==="arxiv"?await library.registerArxiv(value.requestId,value.arxivId,value.metadata):undefined;
+   if(!result)throw Error("IMPORT_KIND_DENIED");
+   reply(result);void pollLibrary();return true;
+  }
+  if(path==="/local/import/cancel"){
+   const result=await library.cancel(value.id);if(activeImport===value.id)importAbort?.abort();reply(result);return true;
+  }
+  if(path==="/local/import/retry"){reply(await library.retry(value.id));void pollLibrary();return true;}
+  if(path==="/local/index/rollback"){
+   if(active||building)throw Error("LOCAL_BUSY");
+   await snapshots!.maintain(()=>library.rollback(value.version));await refreshLibrary();reply({accepted:true});return true;
+  }
+  reply({error:"NOT_FOUND"},404);
+ }catch(e){reply({error:e instanceof Error&&/^[A-Z_]+$/.test(e.message)?e.message:"INVALID_LOCAL_REQUEST"},400);}
+ return true;
+};

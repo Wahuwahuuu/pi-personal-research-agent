@@ -13,7 +13,7 @@ import time
 from urllib.request import Request, build_opener
 from uuid import uuid4
 from .scientific_reading import SafeRedirect
-from .p2 import build_index, verify_artifacts
+from .p2 import build_index, verify_artifacts, load_source
 
 MAX_PDF = 64 * 1024 * 1024
 TERMINAL = {"published", "failed", "cancelled"}
@@ -117,6 +117,8 @@ class Library:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
+        if self.db.execute("PRAGMA user_version").fetchone()[0] not in {0, 1, 2}:
+            raise LibraryError("LIBRARY_SCHEMA_UNSUPPORTED")
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, source TEXT UNIQUE NOT NULL, payload TEXT NOT NULL,
           status TEXT NOT NULL, error TEXT, cancel INTEGER NOT NULL DEFAULT 0, created REAL NOT NULL,
@@ -124,8 +126,12 @@ class Library:
         CREATE TABLE IF NOT EXISTS requests(id TEXT PRIMARY KEY, digest TEXT NOT NULL, job_id TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS papers(id TEXT PRIMARY KEY, sha TEXT UNIQUE NOT NULL, record TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS versions(version TEXT PRIMARY KEY, descriptor TEXT NOT NULL, paper_ids TEXT NOT NULL);
-        PRAGMA user_version=1;
         """)
+        with self.db:
+            self.db.execute("BEGIN IMMEDIATE")
+            if "attempts" not in {row[1] for row in self.db.execute("PRAGMA table_info(jobs)")}:
+                self.db.execute("ALTER TABLE jobs ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+            self.db.execute("PRAGMA user_version=2")
 
     def path(self, relative: str):
         target = self.root / relative
@@ -174,7 +180,7 @@ class Library:
             raise LibraryError("INVALID_PAGE_LIMIT")
         # No selected local filename or arbitrary path is persisted or returned.
         return [dict(r) for r in self.db.execute(
-            "SELECT id,source,status,error,created,updated,paper_id,version FROM jobs ORDER BY created DESC LIMIT ?", (limit,))]
+            "SELECT id,source,status,error,created,updated,paper_id,version FROM jobs ORDER BY status IN ('published','failed','cancelled'),created ASC LIMIT ?", (limit,))]
 
     def _register(self, request_id, source, payload):
         if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
@@ -231,7 +237,16 @@ class Library:
             row = self.job(identifier)
             if row["status"] not in {"failed", "cancelled"}:
                 raise LibraryError("IMPORT_NOT_RETRYABLE")
-            self.db.execute("UPDATE jobs SET cancel=0,status='queued',error=NULL,updated=? WHERE id=?", (time.time(), identifier))
+            self.db.execute("UPDATE jobs SET cancel=0,status='queued',error=NULL,attempts=0,updated=? WHERE id=?", (time.time(), identifier))
+        return self.job(identifier)
+
+    def mark_failure(self, identifier, code):
+        if code not in {"IMPORT_PROCESS_INTERRUPTED", "IMPORT_TIMEOUT"}:
+            raise LibraryError("INVALID_FAILURE_CODE")
+        with self.db:
+            row = self.job(identifier)
+            if row["status"] not in TERMINAL:
+                self.db.execute("UPDATE jobs SET status='failed',error=?,updated=? WHERE id=?", (code, time.time(), identifier))
         return self.job(identifier)
 
     def check_cancel(self, identifier):
@@ -293,15 +308,22 @@ class Library:
             return self.active(verifier)
 
     def run_one(self, models: Path, device="cuda", builder=build_index, verifier=verify_artifacts,
-                parser=extract_pdf, downloader=download_arxiv, hook=lambda _: None):
+                parser=extract_pdf, downloader=download_arxiv, hook=lambda _: None, base_corpus: Path | None = None):
         if device not in {"cpu", "cuda"} or not models.is_absolute():
             raise LibraryError("INVALID_MODEL_CONFIG")
+        if base_corpus is not None and not base_corpus.is_absolute():
+            raise LibraryError("ABSOLUTE_BASE_CORPUS_REQUIRED")
         with self.exclusive():
             self.recover(verifier)
             row = self.db.execute("SELECT id FROM jobs WHERE status NOT IN ('published','failed','cancelled') ORDER BY created LIMIT 1").fetchone()
             if not row:
                 return None
             identifier = row["id"]
+            with self.db:
+                if self.job(identifier)["attempts"] >= 3:
+                    self.db.execute("UPDATE jobs SET status='failed',error='IMPORT_RETRY_LIMIT',updated=? WHERE id=?", (time.time(), identifier))
+                    return self.job(identifier)
+                self.db.execute("UPDATE jobs SET attempts=attempts+1 WHERE id=?", (identifier,))
             try:
                 payload = json.loads(self.job(identifier)["payload"])
                 self.stage(identifier, "acquiring")
@@ -329,7 +351,10 @@ class Library:
                                         (duplicate["id"], self.active(verifier)["version"], time.time(), identifier))
                     return self.job(identifier)
                 self.stage(identifier, "parsing")
+                baseline = load_source(base_corpus)[0] if base_corpus is not None else []
                 paper_id = duplicate["id"] if duplicate else payload.get("arxiv") or "local-" + digest
+                if not duplicate and paper_id.endswith("v1") and any(p["paper_id"] == paper_id[:-2] for p in baseline):
+                    paper_id = paper_id[:-2]
                 record_path = self.path("records/" + digest + ".json")
                 record = json.loads(record_path.read_bytes()) if duplicate else parser(pdf, paper_id, payload["metadata"])
                 if record["paper"]["paper_id"] != paper_id:
@@ -337,11 +362,12 @@ class Library:
                 record_path = self.path("records/" + digest + ".json")
                 atomic(record_path, canonical(record))
                 hook("parsed")
-                papers = [json.loads(self.path(r["record"]).read_bytes())["paper"]
-                          for r in self.db.execute("SELECT record FROM papers ORDER BY id")]
-                if not any(p["paper_id"] == paper_id for p in papers):
-                    papers.append(record["paper"])
-                papers.sort(key=lambda p: p["paper_id"])
+                by_id = {paper["paper_id"]: paper for paper in baseline}
+                for row in self.db.execute("SELECT record FROM papers ORDER BY id"):
+                    stored = json.loads(self.path(row["record"]).read_bytes())["paper"]
+                    by_id[stored["paper_id"]] = stored
+                by_id[paper_id] = record["paper"]
+                papers = sorted(by_id.values(), key=lambda p: p["paper_id"])
                 content = b"\n".join(canonical(p) for p in papers) + b"\n"
                 snapshot_id = sha(content)
                 corpus = self.path("snapshots/" + snapshot_id + "/corpus")
@@ -404,9 +430,11 @@ def main():
         elif action == "register_arxiv":
             result = library.register_arxiv(value["requestId"], value["arxivId"], value.get("metadata"))
         elif action == "run":
-            result = library.run_one(Path(value["models"]), value.get("device", "cuda"))
+            result = library.run_one(Path(value["models"]), value.get("device", "cuda"), base_corpus=Path(value["baseCorpus"]) if value.get("baseCorpus") else None)
         elif action == "cancel":
             result = library.cancel(value["id"])
+        elif action == "mark_failure":
+            result = library.mark_failure(value["id"], value["code"])
         elif action == "retry":
             result = library.retry(value["id"])
         elif action == "status":

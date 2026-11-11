@@ -12,5 +12,7 @@
     "profile": "rrf_rerank",
     "device": "cuda",
     "indexVersion": "YOUR_INDEX_VERSION"
-  }
+  },
+  "libraryRoot": "C:/path/to/personal-research-library",
+  "libraryPython": "C:/path/to/Python312/python.exe"
 }
