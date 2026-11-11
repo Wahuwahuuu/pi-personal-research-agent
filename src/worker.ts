@@ -1,4 +1,5 @@
-import { StateRepository } from "./state-store.ts";
+import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
+import { StateRepository, type StateStorage } from "./state-store.ts";
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
@@ -82,6 +83,8 @@ class Maintenance extends LifecycleCapability {
 export class PersonalAgent extends DurableObject<Env> {
   state: State;
   repository: StateRepository;
+  budgetLedger: BudgetLedger;
+  database: StateStorage;
   private busy = false;
   private runtime?: Harness;
   private catalogCache = new Map<string, ResearchCatalog>();
@@ -90,8 +93,20 @@ export class PersonalAgent extends DurableObject<Env> {
   lifecycle: Lifecycle<Env>;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.repository = new StateRepository({sql: {exec(query, ...bindings) {const rows=ctx.storage.sql.exec(query,...bindings);return {toArray:()=>rows.toArray() as any};}},transactionSync:fn=>ctx.storage.transactionSync(fn)});
+    let transactionDepth=0;
+    this.database={sql:{exec(query,...bindings){const rows=ctx.storage.sql.exec(query,...bindings);return{toArray:()=>rows.toArray() as any};}},transactionSync:fn=>{
+      if(transactionDepth)return fn();
+      return ctx.storage.transactionSync(()=>{transactionDepth++;try{return fn();}finally{transactionDepth--;}});
+    }};
+    this.repository = new StateRepository(this.database);
     this.state = this.repository.load();
+    this.budgetLedger = new BudgetLedger(this.database);
+    if(env.MODEL_MODE!=="mock")this.budgetLedger.importLegacy(this.state.usage);
+    this.budgetLedger.recoverInterrupted();
+    if(this.state.usage.reservedInput||this.state.usage.reservedOutput){
+      settle(this.state,this.state.usage.reservedInput,this.state.usage.reservedOutput);
+      this.repository.save(this.state);
+    }
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_auth (hash TEXT PRIMARY KEY, kind TEXT NOT NULL, expires INTEGER NOT NULL)");
     if(!this.state.cloudMemory){
       this.state.cloudMemory=newCloudMemory();
@@ -111,23 +126,34 @@ export class PersonalAgent extends DurableObject<Env> {
     );
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
-        let reservedOutput=2048,lastPreview=0;
+        let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
         const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
         const before = () => {
-          const t = this.state.tasks.find(
-            (t) => t.status === "running" && t.modelOperation,
-          );
-          if (!t) throw new Error("NO_ACTIVE_TASK");
+          const t=this.state.tasks.find(t=>t.status==="running"&&t.modelOperation);
+          if(!t)throw new Error("NO_ACTIVE_TASK");
           const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
           reservedOutput=outputLimit();
-          reserve(this.state, budget, 52000, reservedOutput);
-          if(budget!==t)t.calls++;
-
-          this.save();
+          const previousUsage={...this.state.usage},previousCalls=budget.calls,previousChildCalls=t.calls;
+          try {
+            this.database.transactionSync(()=>{
+              reserve(this.state,budget,52000,reservedOutput);
+              if(budget!==t)t.calls++;
+              if(env.MODEL_MODE!=="mock")reservationId=this.budgetLedger.reserve({id:crypto.randomUUID(),taskId:budget.id,input:52000,output:reservedOutput,
+                background:t.origin==="schedule",model:env.MODEL_ID??"",baseUrl:env.MODEL_BASE_URL??""});
+              this.save();
+            });
+          } catch(error) {Object.assign(this.state.usage,previousUsage);budget.calls=previousCalls;if(budget!==t)t.calls=previousChildCalls;this.repository.load();reservationId=undefined;throw error;}
         };
         const after = (usage?: { input: number; output: number }) => {
-          settle(this.state, 52000, reservedOutput, usage);
-          this.save();
+          const previousUsage={...this.state.usage};
+          try {
+            this.database.transactionSync(()=>{
+              settle(this.state,52000,reservedOutput,usage);
+              if(reservationId)this.budgetLedger.settle(reservationId,usage);
+              this.save();
+            });
+            reservationId=undefined;
+          } catch(error) {Object.assign(this.state.usage,previousUsage);this.repository.load();throw error;}
         };
         const models =
           env.MODEL_MODE === "mock"
@@ -206,6 +232,7 @@ export class PersonalAgent extends DurableObject<Env> {
     return {
       ...this.state,
       cursor:this.repository.cursor(),
+      budget:this.budgetLedger.snapshot(),
       build:this.env.BUILD_ID??"development",
       tasks: this.state.tasks.map(({ modelPrompt, ...t }) => t),
       deviceOnline: !!this.device(),
@@ -289,6 +316,10 @@ export class PersonalAgent extends DurableObject<Env> {
       throw new Problem("UNAUTHORIZED", 401);
     if (path === "/api/events")
       return this.upgrade(r, "ui", await digest(cookie(r)!));
+    if (path === "/api/budget" && r.method === "GET")return json(this.budgetLedger.snapshot());
+    if (path === "/api/budget/calls" && r.method === "GET") {
+      const p=new URL(r.url).searchParams;return json(this.budgetLedger.calls(p.get("after")??"",Number(p.get("limit")??50)));
+    }
     if (path === "/api/changes" && r.method === "GET") {
       const params=new URL(r.url).searchParams;
       return json(this.repository.changes(Number(params.get("after")??0),Number(params.get("limit")??100)));
@@ -430,7 +461,11 @@ export class PersonalAgent extends DurableObject<Env> {
           await this.maintenance.arm();
           return json(t); // A user retry must not reset an in-flight session or budgets.
         }
-        if (t.engine === "durable") throw new Problem("NEW_TASK_REQUIRED", 409);
+        if (t.engine === "durable") {
+          if(!t.error||!BUDGET_STOPS.has(t.error))throw new Problem("NEW_TASK_REQUIRED",409);
+          t.status="queued";t.error=undefined;t.modelFailure=undefined;t.modelOperation=undefined;t.modelAdmitted=false;
+          this.save();await this.maintenance.arm();return json(t);
+        }
         t.status = "queued";
         t.error = undefined;
         if (t.modelOperation) {
@@ -871,6 +906,9 @@ export class PersonalAgent extends DurableObject<Env> {
         } catch (error) {
           failResearch(this.state,t,error instanceof Error&&/^[A-Z_]{1,64}$/.test(error.message)?error.message:"RESEARCH_WORKFLOW_FAILED");
         }
+      } else if(t.modelFailure&&BUDGET_STOPS.has(t.modelFailure)) {
+        t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();
+        notice(this.state,"budget:"+t.id,"任务已因预算或费率检查暂停，已完成的研究仍保留。");
       } else failResearch(this.state, t, t.modelFailure ?? result.reason ?? "MODEL_FAILED");
       this.save();
     }

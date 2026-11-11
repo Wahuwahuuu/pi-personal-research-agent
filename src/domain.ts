@@ -15,6 +15,7 @@ export interface Task {
   requestId: string;
   input: string;
   kind: "chat" | "research";
+  origin?: "user" | "schedule";
   status: Status;
   created: number;
   updated: number;

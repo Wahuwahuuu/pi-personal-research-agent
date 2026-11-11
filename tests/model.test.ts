@@ -208,3 +208,10 @@ test("SSE rejects incomplete streams and secrets split across network frames",as
  }
  await assert.rejects(()=>modelResponse(new Response('data: {"choices":[]}\n\n',{headers:{"content-type":"text/event-stream"}}),config.apiKey,()=>{}),/INCOMPLETE_STREAM/);
 });
+
+test("budget rejection happens before network dispatch and is retained as an actionable code",async()=>{
+ let requests=0,settlements=0,failure="";
+ const models=liveModels({...config,onFailure:code=>{failure=code;}},()=>{throw Error("MONTHLY_BUDGET");},()=>{settlements++;},(async()=>{requests++;throw Error("MUST_NOT_CALL");}) as typeof fetch);
+ for await(const _event of models.stream(models.getModel("pra","test")!,{messages:[{role:"user",content:"synthetic",timestamp:0}]})){}
+ assert.equal(requests,0);assert.equal(settlements,0);assert.equal(failure,"MONTHLY_BUDGET");
+});

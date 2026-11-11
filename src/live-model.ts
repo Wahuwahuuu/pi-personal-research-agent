@@ -1,3 +1,4 @@
+import { BUDGET_STOPS } from "./budget.ts";
 import {modelResponse} from "./model-response.ts";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
 import {
@@ -160,7 +161,7 @@ export function liveModels(
         events.push({ type: "done", reason: message.stopReason, message });
         events.end(message);
       } catch (error) {
-        const known=new Set(["CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
+        const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
         const code=error instanceof Error&&known.has(error.message)?error.message:"MODEL_REQUEST_FAILED";
         config.onFailure?.(code);
         if (admitted && !settled) after();
