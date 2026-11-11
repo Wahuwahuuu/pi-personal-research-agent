@@ -1,3 +1,4 @@
+import { TaskControls } from "./TaskControls.tsx";
 import { useEffect, useState, useRef } from "react";
 import { api, mutate, errorText } from "./api.ts";
 import {
@@ -539,6 +540,7 @@ export function Activity({ data, revision, run, refresh }: Props) {
               queued: "排队中",
               waiting_device: "等待本机",
               waiting_user: "等待处理",
+              paused: "已暂停",
               completed: "已完成",
               failed: "失败",
               cancelled: "已取消",
@@ -581,6 +583,7 @@ export function Activity({ data, revision, run, refresh }: Props) {
                 {t.error && (
                   <p className="task-error">{errorText(new Error(t.error))}</p>
                 )}
+                <TaskControls task={t} run={run} refresh={refresh} />
                 <div className="button-row">
                   <button
                     className="text-button"

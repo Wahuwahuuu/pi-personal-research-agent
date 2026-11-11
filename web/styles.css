@@ -1951,3 +1951,12 @@ textarea {
  .memory-filters input {grid-column:1/-1;width:100%;min-width:0}
  .memory-filters select {width:100%;min-width:0}
 }
+
+.task-controls {margin-top:12px;font-size:13px}
+.task-priority {display:flex;align-items:center;gap:6px;color:var(--muted)}
+.task-priority select {font-size:13px;width:auto;padding:5px 8px;min-height:36px}
+.goal-checkpoints {margin-top:12px}
+.goal-checkpoints ol {padding-left:22px}
+.goal-checkpoints li {padding:8px 0}
+.goal-checkpoints li p {margin:6px 0}
+.long-goal-option {margin:10px 0 0;font-size:12px}

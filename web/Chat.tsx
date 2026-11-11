@@ -1,3 +1,4 @@
+import { TaskControls } from "./TaskControls.tsx";
 import { useEffect, useRef, useState } from "react";
 import { api, mutate, errorText } from "./api.ts";
 import {
@@ -35,6 +36,7 @@ export function Chat({
     revision,
   );
   const [draft, setDraft] = useState(""),
+    [longGoal, setLongGoal] = useState(false),
     [busy, setBusy] = useState(false),
     [older, setOlder] = useState<Task[]>([]),
     [olderCursor, setOlderCursor] = useState<string | null>(),
@@ -66,6 +68,7 @@ export function Chat({
       const task = await mutate<Task>("tasks", "POST", {
         input: draft,
         kind: "auto",
+        mode: longGoal ? "long" : "normal",
         ...(id ? { conversationId: id } : {}),
       });
       setDraft("");
@@ -258,6 +261,7 @@ export function Chat({
                     )}
                   </div>
                   <TaskProgress task={t} />
+                  <TaskControls task={t} run={run} refresh={refresh} />
                   <div className="message-actions">
                     {t.researchEvidence?.length ? (
                       <button
@@ -373,6 +377,14 @@ export function Chat({
             {localError}
           </p>
         )}
+        <label className="check-label long-goal-option">
+          <input
+            type="checkbox"
+            checked={longGoal}
+            onChange={(e) => setLongGoal(e.target.checked)}
+          />
+          作为长期研究目标，最多分四段推进
+        </label>
         <p className="composer-note">
           研究结论请结合引用原文核对。
           {data.model.mode === "mock" ? " 当前为模拟验证环境。" : ""}

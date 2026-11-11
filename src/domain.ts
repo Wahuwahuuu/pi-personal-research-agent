@@ -1,3 +1,4 @@
+import type {LongGoal} from "./task-control.ts";
 import type {CloudMemoryState} from "../packages/research/cloud-memory.ts";
 import type { ResearchConversation, ResearchWorkflow } from "../packages/research/cloud-workflow.ts";
 import type { Chunk } from "../packages/research/core.ts";
@@ -6,6 +7,7 @@ export type Status =
   | "running"
   | "waiting_device"
   | "waiting_user"
+  | "paused"
   | "completed"
   | "failed"
   | "cancelled";
@@ -26,6 +28,7 @@ export interface Task {
   conversationId?: string;
   workflow?: ResearchWorkflow;
   budgetTaskId?: string;
+  goal?:LongGoal;priority?:0|1|2;pauseRequested?:boolean;pausedFrom?:Status;amendments?:{text:string;at:number}[];
   translationKey?: string;
   researchIndex?: string;
   researchEvidence?: Chunk[];
@@ -190,7 +193,7 @@ export function operation(
     (o) => o.id === t.operationId && o.state !== "cancelled",
   );
   if (prior) return prior;
-  if (t.tools >= 10) throw new Problem("TOOL_BUDGET", 429);
+  if (taskAllowance(t).tools <= 0) throw new Problem("TOOL_BUDGET", 429);
   const op: Operation = {
     id: crypto.randomUUID(),
     taskId: t.id,
@@ -231,7 +234,7 @@ export function acceptResult(
   op.result = result;
   op.state = "done";
   t.evidence = result;
-  t.status = "queued";
+  t.status = t.pauseRequested?"paused":"queued";
   t.updated = now;
   return "accepted";
 }
@@ -268,15 +271,19 @@ export function expire(s: State, now = Date.now()) {
     if (op.state === "sent" && op.deadline <= now) {
       op.state = "pending";
       const t = getTask(s, op.taskId);
-      if (!["cancelled", "failed", "completed"].includes(t.status))
+      if (!["cancelled", "failed", "completed", "paused"].includes(t.status))
         t.status = "waiting_device";
     }
   }
 }
+export function taskAllowance(t:Task){
+ const segment=t.goal?.segments.at(-1),count=t.goal?4:1;
+ return {calls:Math.max(0,Math.min(6-(t.calls-(segment?.calls??0)),6*count-t.calls)),tools:Math.max(0,Math.min(10-(t.tools-(segment?.tools??0)),10*count-t.tools)),activeMs:Math.max(0,Math.min(180000-(t.activeMs-(segment?.activeMs??0)),180000*count-t.activeMs))};
+}
 export function reserve(s: State, t: Task, input: number, output: number) {
   if (
-    t.calls >= 6 ||
-    t.activeMs >= 180000 ||
+    taskAllowance(t).calls <= 0 ||
+    taskAllowance(t).activeMs <= 0 ||
     s.usage.requests >= 500 ||
     s.usage.input + s.usage.reservedInput + input > 6000000 ||
     s.usage.output + s.usage.reservedOutput + output > 1000000

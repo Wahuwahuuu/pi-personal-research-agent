@@ -30,6 +30,7 @@ export interface WorkflowContext {
   catalog:{papers:readonly Paper[];indexVersion:string;evidence:readonly EvidenceIdentity[]};
   conversation:ResearchConversation; memories:readonly {content:string}[];
   project?:{id:string;title:string;goal:string};researchDirection?:string;
+  goal?:{segment:number;maximum:number;calls:number;tools:number;activeMs:number;remaining:string[]};
   operations:readonly {tool:string;params:Record<string,unknown>;state:string}[];
 }
 export function workflowInstruction(w:ResearchWorkflow):string{
@@ -93,7 +94,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   domain.unresolved_questions=boundedItems(domain.unresolved_questions.slice(-6),1500);
   domain.pending_inferences=[];
   summary.conversation_only=boundedItems(summary.conversation_only.slice(-4),2500);
-  const shared={projection:"pra-context-v1",project:c.project,research_direction:c.researchDirection,context_manifest:{archived_turns:c.conversation.history.length,visible_recent_turns:history(c).slice(-4).map(h=>h.turn_id),invalidated_turns_excluded:c.invalidatedMemoryTurns?.length??0},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
+  const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{archived_turns:c.conversation.history.length,visible_recent_turns:history(c).slice(-4).map(h=>h.turn_id),invalidated_turns_excluded:c.invalidatedMemoryTurns?.length??0},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);

@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
 import { nodeCatalog, catalogPages } from "../local/catalog.ts";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, writeFile, readFile, readdir } from "node:fs/promises";
+import { mkdir, writeFile, readFile, readdir,cp } from "node:fs/promises";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
 const root = process.cwd(),
@@ -22,6 +22,11 @@ await writeFile(
   ".dev.vars",
   `ADMIN_TOKEN="${admin}"\nOWNER_ID="validation-${crypto.randomUUID()}"\n`,
 );
+const isolated=JSON.parse((await readFile("wrangler.jsonc","utf8")).replace(/,\s*([}\]])/g,"$1"));
+isolated.main=resolve("src/worker.ts");isolated.assets.directory=resolve(directory,"assets");
+isolated.vars={...isolated.vars,ADMIN_TOKEN:admin,OWNER_ID:"validation-"+crypto.randomUUID(),MODEL_MODE:"mock"};
+await cp(resolve("dist/web"),isolated.assets.directory,{recursive:true});
+const isolatedConfig=resolve(directory,"wrangler.json");await writeFile(isolatedConfig,JSON.stringify(isolated));
 const children: ChildProcess[] = [];
 let logs = "";
 const terminated = new Set<number>();
@@ -84,6 +89,7 @@ try {
   const serverArgs = [
     "node_modules/wrangler/bin/wrangler.js",
     "dev",
+    "--config",isolatedConfig,
     "--local",
     "--ip",
     "127.0.0.1",
@@ -490,6 +496,22 @@ try {
   await until(async()=>(await api("deletions/"+newConversation.id)).status==="completed");
   assert.ok(!(await api("projects")).items.some((p:any)=>p.id===project.id));
   checks.push("project, settings, conversation archive/search and paginated product APIs persist real data; deleting project schedules real conversation deletion");
+  const long=await api("tasks","POST",{input:"Long offline research",kind:"research",mode:"long",requestId:"long-goal"});
+  await until(async()=>(await api("tasks/"+long.id)).status==="waiting_device");
+  const beforePause=await api("tasks/"+long.id);
+  const pauseBody={requestId:"pause-long"};
+  await api("tasks/"+long.id+"/pause","POST",pauseBody);
+  await api("tasks/"+long.id+"/pause","POST",pauseBody);
+  await api("tasks/"+long.id+"/amend","POST",{requestId:"amend-long",input:"Only compare the methods"});
+  await api("tasks/"+long.id+"/priority","POST",{requestId:"priority-long",priority:2});
+  const foreground=await api("tasks","POST",{input:"hello while long research is paused",kind:"chat",requestId:"paused-foreground"});
+  await until(async()=>(await api("tasks/"+foreground.id)).status==="completed");
+  const paused=await api("tasks/"+long.id);assert.equal(paused.status,"paused");assert.equal(paused.calls,beforePause.calls);assert.equal(paused.goal.segments.length,1);assert.equal(paused.amendments.length,1);assert.equal((await api("tasks?status=paused")).items.find((t:any)=>t.id===long.id).amendments.length,1);
+  await api("tasks/"+long.id+"/resume","POST",{requestId:"resume-long"});
+  await until(async()=>(await api("tasks/"+long.id)).status==="waiting_device");
+  assert.equal((await api("tasks/"+long.id)).calls,beforePause.calls);
+  await api("tasks/"+long.id+"/cancel","POST",{});
+  checks.push("long-goal pause/amend/priority are idempotent through real DO; another conversation completes, offline resume keeps task identity and allowance");
   const authReport=await verifyIdentity(base,cookie,admin);checks.push(...authReport.checks);
   // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
   for (const p of [...children].reverse()) await stopChild(p);
@@ -499,6 +521,7 @@ try {
       const path = resolve(dir, entry.name);
       if (entry.isDirectory()) await scan(path);
       else {
+        if(path===isolatedConfig)continue;
         const bytes = await readFile(path);
         assert.ok(
           !bytes.includes(Buffer.from(admin)),

@@ -56,7 +56,7 @@ export class Workspace {
 }
 export function taskSummary(t:Task){
  const {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin}=t;
- return {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin,progress:t.workflow?.progress??null};
+ return {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin,amendments:t.amendments,runOpen:t.runOpen,priority:t.priority,goal:t.goal,pauseRequested:t.pauseRequested,progress:t.workflow?.progress??null};
 }
 export function conversationPage(s:State,options:{q?:string;projectId?:string;archived?:boolean;after?:number;limit?:number}={}){
  const after=options.after??0,limit=options.limit??30;if(!Number.isInteger(after)||after<0||!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");

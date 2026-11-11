@@ -1,5 +1,5 @@
 import {
-  Problem,
+  Problem,taskAllowance,
   acceptResult,
   type State,
   type Task,
@@ -97,13 +97,14 @@ export function acceptResearchResult(
     t.researchEvidence = [...evidence.values()];
     t.evidence = { chunks: t.researchEvidence, index_version: op.indexVersion };
   }
-  t.status =
+  t.status = t.pauseRequested?"paused":
     t.runOpen ||
     s.operations.some(
       (o) => o.taskId === t.id && ["pending", "sent"].includes(o.state),
     )
       ? "waiting_device"
       : "queued";
+  if(t.pauseRequested&&t.goal){const last=t.goal.segments.at(-1)!;if(last.checkpoint)last.checkpoint.evidenceIds=(t.researchEvidence??[]).map(e=>e.chunk_id);}
   return result;
 }
 export function createResearchPorts(
@@ -139,6 +140,7 @@ export function createResearchPorts(
       const s = getState(),
         t = task(r.conversationId);
       if (terminal(t)) throw new Problem("TASK_CLOSED");
+      if(t.pauseRequested)throw new Problem("TASK_PAUSED");
       if (r.indexVersion !== t.researchIndex)
         throw new Problem("INDEX_CHANGED");
       let op = s.operations.find((o) => o.id === r.operationId);
@@ -150,7 +152,7 @@ export function createResearchPorts(
       )
         throw new Problem("OPERATION_CONFLICT");
       if (!op) {
-        if (t.tools >= 10) throw new Problem("TOOL_BUDGET");
+        if (taskAllowance(t).tools <= 0) throw new Problem("TOOL_BUDGET");
         op = {
           id: r.operationId,
           taskId: t.id,

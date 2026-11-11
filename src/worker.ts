@@ -1,3 +1,5 @@
+import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks} from "./task-control.ts";
+import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries} from "../packages/research/memory.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
@@ -171,7 +173,7 @@ export class PersonalAgent extends DurableObject<Env> {
           }
           const previousUsage={...this.state.usage},previousCalls=budget.calls,previousChildCalls=t.calls;
           try {
-            if(t.status!=="running")throw new Error("TASK_CLOSED");
+            if(t.status!=="running"||t.pauseRequested)throw new Error("TASK_CLOSED");
             if(this.state.cloudMemory?.invalidatedTurns?.includes(t.id))throw new Error("CONTEXT_CHANGED");
             this.database.transactionSync(()=>{
               reserve(this.state,budget,52000,reservedOutput);
@@ -473,7 +475,10 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (path === "/api/tasks" && r.method === "POST") {
       const b = await this.body(r);
+      if(b.mode!==undefined&&!["normal","long"].includes(b.mode as string))throw new Problem("INVALID_TASK_MODE");
+      if(b.priority!==undefined&&![0,1,2].includes(b.priority as number))throw new Problem("INVALID_PRIORITY");
       const prior = this.state.tasks.find(t => t.requestId === b.requestId);
+      if(prior&&b.mode!==undefined&&(b.mode==="long")!==!!prior.goal)throw new Problem("REQUEST_CONFLICT",409);
       const conversationId = typeof b.conversationId === "string" ? text(b.conversationId,128) : prior?.conversationId ?? crypto.randomUUID();
       if(this.deletions.get(conversationId))throw new Problem("CONVERSATION_DELETED",410);
       this.state.conversations ??= [];
@@ -482,6 +487,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if (prior && prior.conversationId !== conversationId) throw new Problem("REQUEST_CONFLICT",409);
       const project=this.workspace.getProject(conversation?.projectId??(typeof b.projectId==="string"?text(b.projectId,128):"default"));
       const t = submit(this.state, b.input, b.requestId, b.kind);
+      if(!prior)configureTask(t,b.mode,b.priority);
       if (!conversation) {
         conversation = {id:conversationId,title:t.input.slice(0,100),projectId:project.id,scope:project.paperIds.slice(0,20),created:Date.now(),history:[]};
         this.state.conversations.push(conversation);
@@ -511,13 +517,25 @@ export class PersonalAgent extends DurableObject<Env> {
       const key=await digest(JSON.stringify({model:this.env.MODEL_ID??MODEL.id,recipe:"zh-source-structures-v2",sources:sources.map(e=>({chunk_id:e!.chunk_id,text:e!.text}))}));
       const cached=this.state.tasks.find(t=>t.translationKey===key&&t.status==="completed");
       if(cached)return json(cached);
-      if(sourceTask.calls>=6||sourceTask.activeMs>=180000)throw new Problem("MODEL_BUDGET",429);
+      if(taskAllowance(sourceTask).calls<=0||taskAllowance(sourceTask).activeMs<=0)throw new Problem("MODEL_BUDGET",429);
       const t=submit(this.state,"翻译所选原文",b.requestId,"research");
       if(t.budgetTaskId&&(t.budgetTaskId!==sourceTask.id||t.translationKey!==key))throw new Problem("REQUEST_CONFLICT",409);
       if(!t.budgetTaskId&&t.calls)throw new Problem("REQUEST_CONFLICT",409);
       t.engine="durable";t.conversationId=sourceTask.conversationId;t.budgetTaskId=sourceTask.id;t.researchIndex=sourceTask.researchIndex;t.translationKey=key;
       t.workflow??={phase:"translation",warnings:[],translation:{sources:sources.map(e=>({chunk_id:e!.chunk_id,text:e!.text}))}};
       this.save();await this.maintenance.arm();return json(t,202);
+    }
+    const control=path.match(/^\/api\/tasks\/([^/]+)\/(pause|resume|amend|priority)$/);
+    if(control&&r.method==="POST"){
+      const t=getTask(this.state,control[1]),b=await this.body(r);
+      const value=this.workspace.once(b.requestId??crypto.randomUUID(),"task:"+control[1]+":"+control[2],b,()=>{
+        if(control[2]==="pause")pauseTask(t);
+        if(control[2]==="resume")resumeTask(this.state,t);
+        if(control[2]==="amend")amendTask(this.state,t,b.input);
+        if(control[2]==="priority"){if(![0,1,2].includes(b.priority as number))throw new Problem("INVALID_PRIORITY");t.priority=b.priority as 0|1|2;}
+        this.save();return {id:t.id,accepted:true};
+      });
+      await this.maintenance.arm();this.publish();return json(t);
     }
     const match = path.match(/^\/api\/tasks\/([^/]+)\/(cancel|continue)$/);
     if (match && r.method === "POST") {
@@ -941,7 +959,7 @@ export class PersonalAgent extends DurableObject<Env> {
         )) {
           op.state = "pending";
           const t = getTask(this.state, op.taskId);
-          if (!terminal(t)) t.status = "waiting_device";
+          if (!terminal(t)&&!t.pauseRequested) t.status = "waiting_device";
         }
         this.save();
         for (const n of this.workspace.settings().notifications?this.state.notices.filter((n) => !n.read):[])
@@ -1013,7 +1031,7 @@ export class PersonalAgent extends DurableObject<Env> {
   workflowContext(t: import("./domain.ts").Task): WorkflowContext {
     const conversation=this.state.conversations?.find(c=>c.id===t.conversationId);
     if(!conversation) throw new Problem("UNKNOWN_CONVERSATION");
-    return {id:t.id,input:t.input,calls:t.calls,invalidatedMemoryTurns:this.state.cloudMemory?.invalidatedTurns,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
+    return {id:t.id,input:currentInstruction(t),calls:segmentUsage(t).calls,goal:t.goal?{segment:t.goal.segments.length,maximum:4,calls:t.calls,tools:t.tools,activeMs:t.activeMs,remaining:t.goal.segments.at(-2)?.checkpoint?.remaining??[]}:undefined,invalidatedMemoryTurns:this.state.cloudMemory?.invalidatedTurns,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
   }
   async tickResearch() {
     for(const changed of this.state.tasks.filter(t=>!terminal(t)&&this.state.cloudMemory?.invalidatedTurns?.includes(t.id)&&t.error!=="CONTEXT_CHANGED")){
@@ -1033,16 +1051,17 @@ export class PersonalAgent extends DurableObject<Env> {
         continue;
       }
       if (
-        t.activeMs +
-          (t.modelStoppedAt ?? Date.now()) -
+        (t.modelStoppedAt ?? Date.now()) -
           (t.modelStarted ?? Date.now()) >=
-        180000
+        taskAllowance(t.budgetTaskId?getTask(this.state,t.budgetTaskId):t).activeMs
       ) {
+        const elapsed=Math.max(0,(t.modelStoppedAt??Date.now())-(t.modelStarted??Date.now()));t.activeMs+=elapsed;
+        if(t.budgetTaskId)getTask(this.state,t.budgetTaskId).activeMs+=elapsed;
+        await this.harness.abort({ session: t.sessionId });t.runOpen=false;t.modelPrompt=undefined;
         const retained=t.workflow&&skipMemory(t.workflow,"budget_exhausted");
-        if(retained){Object.assign(t,retained);notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮时间上限。");}else failResearch(this.state, t, "ACTIVE_DEADLINE");
-        await this.harness.abort({ session: t.sessionId });
-        t.runOpen = false;
-        continue;
+        if(retained){Object.assign(t,retained);notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮时间上限。");}
+        else if(!t.goal||!nextSegment(t,"segment_deadline")&&t.status!=="paused")failResearch(this.state,t,"ACTIVE_DEADLINE");
+        this.save();continue;
       }
       if (!t.modelAdmitted && t.modelPrompt) {
         await this.harness.submit(t.modelPrompt, {
@@ -1067,6 +1086,13 @@ export class PersonalAgent extends DurableObject<Env> {
       t.modelPrompt = undefined;
       if (terminal(t)) continue;
       if(this.state.cloudMemory?.invalidatedTurns?.includes(t.id)){t.status="waiting_user";t.error="CONTEXT_CHANGED";this.save();continue;}
+      if(t.pauseRequested){
+        if(result.status==="done"&&!t.researchWaiting&&t.workflow){
+          try{const outcome=advanceWorkflow(t.workflow,this.workflowContext(t),result.text??"");if(outcome.answer)t.answer=outcome.answer;
+          if(outcome.status==="completed"){t.status="completed";t.pauseRequested=false;checkpoint(t,"completed");this.save();continue;}}catch{}
+        }
+        t.status="paused";checkpoint(t,"user_pause");this.save();continue;
+      }
       if (t.researchWaiting) {
         // Pi's terminated/unanswered outcome is not business completion.
         t.status = this.state.operations.some(
@@ -1083,8 +1109,12 @@ export class PersonalAgent extends DurableObject<Env> {
               t.status="queued";this.save();continue;
             }
             t.answer=outcome.answer;
-            if(beginMemory(t.workflow,outcome,t.calls,t.researchEvidence??[])){t.status="queued";this.save();continue;}
-            t.status=outcome.status;
+            if(outcome.status==="waiting_user"&&t.goal&&t.workflow.execution?.state!=="clarification"&&t.workflow.execution?.stop_reason!=="no_execution_progress"&&t.workflow.execution?.remaining_needs.length&&(segmentUsage(t).calls>=6||segmentUsage(t).tools>=10||segmentUsage(t).activeMs>=180000)){
+              if(nextSegment(t,"segment_budget")){this.save();continue;}
+              if(t.status==="paused"){this.save();continue;}
+            }
+            if(beginMemory(t.workflow,outcome,segmentUsage(t).calls,t.researchEvidence??[])){t.status="queued";this.save();continue;}
+            t.status=outcome.status;checkpoint(t,outcome.status);
             const conversation=this.state.conversations!.find(c=>c.id===t.conversationId)!;
             if(!t.workflow.translation){
               const service=this.memoryService(conversation.projectId);
@@ -1131,7 +1161,7 @@ export class PersonalAgent extends DurableObject<Env> {
       attachment.catalogReady &&
       !this.state.operations.some((o) => o.state === "sent")
     ) {
-      const op = this.state.operations.find(
+      const op = orderedTasks(this.state).filter(t=>!t.pauseRequested).flatMap(t=>this.state.operations.filter(o=>o.taskId===t.id)).find(
         (o) =>
           o.state === "pending" &&
           this.state.tasks.some(
@@ -1164,9 +1194,9 @@ export class PersonalAgent extends DurableObject<Env> {
       )
     )
       return;
-    const t = this.state.tasks.find(
+    const t = orderedTasks(this.state).find(
       (t) =>
-        t.engine === "durable" &&
+        !t.pauseRequested&&t.engine === "durable" &&
         (t.status === "queued" ||
           (t.status === "waiting_device" && !t.sessionId && dev)) &&
         !this.state.tasks.some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
@@ -1194,7 +1224,9 @@ export class PersonalAgent extends DurableObject<Env> {
       return;
     }
     const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
-    if (budget.calls >= 6 || budget.activeMs >= 180000) {
+    if (taskAllowance(budget).calls<=0 || taskAllowance(budget).activeMs<=0) {
+      if(!t.workflow?.memory&&t.goal&&nextSegment(t,"segment_budget")){this.save();return;}
+      if(t.status==="paused"){this.save();return;}
       const retained=t.workflow&&skipMemory(t.workflow,"budget_exhausted");
       if(retained){Object.assign(t,retained);notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮预算上限。");this.save();}else failResearch(this.state, t, "MODEL_BUDGET");
       return;
@@ -1206,9 +1238,9 @@ export class PersonalAgent extends DurableObject<Env> {
         if(conversation) conversation.sessionId=t.sessionId;
         this.save();
       }
-      if (terminal(t)) return;
+      if (terminal(t)||t.pauseRequested) return;
       const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
-      if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:workflowTools(t.workflow,t.calls).length ? null : [],instructions:workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
+      if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:workflowTools(t.workflow,segmentUsage(t).calls).length ? null : [],instructions:workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
       const context=t.workflow?this.workflowContext(t):undefined;
       if(context){
         const recalled=(await this.memoryService(context.conversation.projectId).recall(t.input,context.conversation.scope)).items;context.memories=recalled;

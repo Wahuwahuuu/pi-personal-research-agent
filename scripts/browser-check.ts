@@ -1,6 +1,6 @@
 import { chromium, expect } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, cp } from "node:fs/promises";
 import { resolve } from "node:path";
 import assert from "node:assert/strict";
 const root = process.cwd(),
@@ -15,7 +15,8 @@ const config = JSON.parse(
   (await readFile("wrangler.jsonc", "utf8")).replace(/,\s*([}\]])/g, "$1"),
 );
 config.main = resolve("src/worker.ts");
-config.assets.directory = resolve("dist/web");
+config.assets.directory = resolve(directory, "assets");
+await cp(resolve("dist/web"), config.assets.directory, { recursive: true });
 config.vars = {
   ...config.vars,
   ADMIN_TOKEN: admin,
@@ -302,10 +303,23 @@ try {
   );
   await screenshot("memory-correction-mobile");
   await page.setViewportSize({ width: 1440, height: 900 });
-  let budgetFailed = false;
+  await page.evaluate(() => {
+    (window as any).__budgetRetryClicked = false;
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (
+          (event.target as HTMLElement)
+            .closest("button")
+            ?.textContent?.trim() === "重试"
+        )
+          (window as any).__budgetRetryClicked = true;
+      },
+      true,
+    );
+  });
   await page.route("**/api/budget", async (route) => {
-    if (!budgetFailed) {
-      budgetFailed = true;
+    if (!(await page.evaluate(() => (window as any).__budgetRetryClicked))) {
       await route.fulfill({
         status: 503,
         contentType: "application/json",
@@ -314,6 +328,20 @@ try {
     } else await route.continue();
   });
   await route("settings/budget");
+  await page.evaluate(() => {
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (
+          (event.target as HTMLElement)
+            .closest("button")
+            ?.textContent?.trim() === "重试"
+        )
+          (window as any).__budgetRetryClicked = true;
+      },
+      true,
+    );
+  });
   await expect(page.getByRole("alert")).toBeVisible();
   await page.getByRole("button", { name: "重试", exact: true }).click();
   await expect(page.locator(".budget-summary")).toBeVisible();
@@ -444,10 +472,13 @@ try {
   await screenshot("chat-desktop-dark");
   await stop(node);
   await until(async () => !(await api("overview")).deviceOnline);
-  await api("tasks", "POST", {
-    kind: "auto",
-    input: "请继续检索论文原文",
-    requestId: crypto.randomUUID(),
+  await route("chat");
+  await page.getByLabel("作为长期研究目标，最多分四段推进").check();
+  await page.getByLabel("消息", { exact: true }).fill("请继续检索论文原文");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await until(async () => {
+    const t = (await api("tasks?limit=1")).items[0];
+    return t?.input === "请继续检索论文原文" && t.status === "waiting_device";
   });
   await route("tasks");
   await expect(
@@ -456,18 +487,40 @@ try {
       .filter({ hasText: "等待你的电脑上线" })
       .first(),
   ).toBeVisible();
-  await page
+  const longRow = page
     .locator(".activity-row")
-    .filter({ hasText: "请继续检索论文原文" })
-    .getByRole("button", { name: "取消任务", exact: true })
-    .click();
+    .filter({ hasText: "请继续检索论文原文" });
+  await longRow.getByRole("button", { name: "暂停任务", exact: true }).click();
+  await expect(longRow.getByText("已暂停", { exact: true })).toBeVisible();
+  await longRow.getByRole("button", { name: "调整方向", exact: true }).click();
+  await page
+    .getByLabel("补充当前要求", { exact: true })
+    .fill("只比较研究方法，暂不讨论实验结果。");
+  await page.getByRole("button", { name: "保存调整", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "调整任务方向" }),
+  ).not.toBeVisible();
+  await longRow.getByRole("combobox").selectOption("2");
+  await longRow.locator(".goal-checkpoints summary").click();
+  await longRow.getByText("已补充的要求", { exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await screenshot("task-paused-mobile");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await screenshot("task-paused-desktop");
+  await longRow.getByRole("button", { name: "继续执行", exact: true }).click();
+  await expect(
+    longRow.getByText("等待你的电脑上线", { exact: true }),
+  ).toBeVisible();
+  await longRow.getByRole("button", { name: "取消任务", exact: true }).click();
   await expect(
     page
       .locator(".activity-row")
       .filter({ hasText: "请继续检索论文原文" })
       .getByText("已取消", { exact: true }),
   ).toBeVisible();
-  checks.push("offline work pauses and cancellation persists through UI");
+  checks.push(
+    "long-goal creation, pause, direction amendment, priority and offline resume preserve real progress on desktop and mobile; cancellation persists",
+  );
   await route("settings/account");
   await page.getByRole("button", { name: "退出登录", exact: true }).click();
   await expect(
