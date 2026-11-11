@@ -1,3 +1,4 @@
+import { DatabaseSync } from "node:sqlite";
 import WebSocket from "ws";
 import { nodeCatalog, catalogPages } from "../local/catalog.ts";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -434,9 +435,27 @@ try {
     "cancelled",
   );
   checks.push("offline cancellation durable");
+  const removedOps=(await api("state")).operations.filter((o:any)=>o.taskId===research.id).map((o:any)=>o.id);
+  await api("conversations/"+research.conversationId,"DELETE");
+  await until(async()=> (await api("deletions/"+research.conversationId)).status==="cloud_complete");
+  const purgeNode=child(["local/node.ts",config],{...process.env,PRA_DEVICE_TOKEN:pair.token});
+  await until(async()=> (await api("deletions/"+research.conversationId)).status==="completed");
+  const localDb=new DatabaseSync(resolve(directory,"node/node.sqlite"),{readOnly:true});
+  for(const id of removedOps){assert.equal(localDb.prepare("SELECT id FROM outbox WHERE id=?").all(id).length,0);assert.equal(localDb.prepare("SELECT id FROM deleted_operations WHERE id=?").all(id).length,1);}
+  localDb.close();
+  checks.push("offline deletion waited for node reconnect and purged real outbox with persistent replay tombstones");
   await api("device/revoke", "POST", {});
   await until(async () => !(await api("state")).deviceOnline);
   checks.push("device revocation immediately enforced");
+  const removed=await api("tasks","POST",{input:"DELETE_CONVERSATION_CANARY",kind:"chat",requestId:"delete-conversation"});
+  await until(async()=> (await api("state")).tasks.find((t:any)=>t.id===removed.id)?.status==="completed");
+  await api("conversations/"+removed.conversationId,"DELETE");
+  await until(async()=> (await api("deletions/"+removed.conversationId)).status==="completed");
+  assert.ok(!(await api("state")).conversations.some((c:any)=>c.id===removed.conversationId));
+  assert.ok(!(await api("state")).tasks.some((t:any)=>t.id===removed.id));
+  const afterDelete=await api("tasks","POST",{input:"new chat after deletion",kind:"chat",requestId:"after-delete"});
+  await until(async()=> (await api("state")).tasks.find((t:any)=>t.id===afterDelete.id)?.status==="completed");
+  checks.push("conversation deletion removed application and Pi session while subsequent chat reopened the same host runtime");
   // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
   for (const p of [...children].reverse()) await stopChild(p);
   let scanned = 0;

@@ -1,3 +1,4 @@
+import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
 import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
 import { StateRepository, type StateStorage } from "./state-store.ts";
 import {answerPreview} from "./model-response.ts";
@@ -84,6 +85,7 @@ export class PersonalAgent extends DurableObject<Env> {
   state: State;
   repository: StateRepository;
   budgetLedger: BudgetLedger;
+  deletions: DeletionStore;
   database: StateStorage;
   private busy = false;
   private runtime?: Harness;
@@ -101,6 +103,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.repository = new StateRepository(this.database);
     this.state = this.repository.load();
     this.budgetLedger = new BudgetLedger(this.database);
+    this.deletions = new DeletionStore(this.database);
     if(env.MODEL_MODE!=="mock")this.budgetLedger.importLegacy(this.state.usage);
     this.budgetLedger.recoverInterrupted();
     if(this.state.usage.reservedInput||this.state.usage.reservedOutput){
@@ -376,6 +379,17 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (path === "/api/conversations" && r.method === "GET") return json(this.state.conversations ?? []);
     const conversationMatch=path.match(/^\/api\/conversations\/([^/]+)$/);
+    if(conversationMatch && r.method==="DELETE") {
+      const id=conversationMatch[1];
+      const deletion=this.database.transactionSync(()=>{const d=this.deletions.request(this.state,id);this.save();return d;});
+      for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});
+      if(deletion.session_id)this.ctx.waitUntil(this.harness.abort({session:deletion.session_id}).catch(()=>{}));
+      await this.maintenance.arm();return json(deletion,deletion.status==="completed"?200:202);
+    }
+    const deletionMatch=path.match(/^\/api\/deletions\/([^/]+)$/);
+    if(deletionMatch&&r.method==="GET") {
+      const deletion=this.deletions.get(deletionMatch[1]);if(!deletion)throw new Problem("NOT_FOUND",404);return json(deletion);
+    }
     if(conversationMatch && r.method==="PATCH"){
       const c=this.state.conversations?.find(c=>c.id===conversationMatch[1]);
       if(!c)throw new Problem("NOT_FOUND",404);
@@ -395,6 +409,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const b = await this.body(r);
       const prior = this.state.tasks.find(t => t.requestId === b.requestId);
       const conversationId = typeof b.conversationId === "string" ? text(b.conversationId,128) : prior?.conversationId ?? crypto.randomUUID();
+      if(this.deletions.get(conversationId))throw new Problem("CONVERSATION_DELETED",410);
       this.state.conversations ??= [];
       let conversation = this.state.conversations.find(c => c.id === conversationId);
       if (b.conversationId && !conversation) throw new Problem("UNKNOWN_CONVERSATION",404);
@@ -679,8 +694,14 @@ export class PersonalAgent extends DurableObject<Env> {
         a.catalogReady = true;
         delete a.upload;
         ws.serializeAttachment(a);
+        this.sendPurges(ws);
         this.send(ws, { type: "catalog_ack", indexVersion: c.indexVersion });
+      } else if(m.type==="purged") {
+        if(typeof m.deletionId!=="string"||!Array.isArray(m.operationIds))throw new Problem("INVALID_PURGE_ACK");
+        this.deletions.localDone(m.deletionId,m.operationIds);this.sendPurges(ws);
       } else if (m.type === "result") {
+        if(this.deletions.deletedOperation(m.operationId)){this.send(ws,{type:"ack",operationId:m.operationId,status:"discarded"});this.sendPurges(ws);return;}
+
         const op = this.state.operations.find((o) => o.id === m.operationId);
         const task = op && getTask(this.state, op.taskId);
         if (
@@ -912,6 +933,7 @@ export class PersonalAgent extends DurableObject<Env> {
       } else failResearch(this.state, t, t.modelFailure ?? result.reason ?? "MODEL_FAILED");
       this.save();
     }
+    if(this.deletions.pending().length)return;
     const dev = this.device(),
       attachment = dev?.deserializeAttachment();
     // Results are dispatched serially, independently of model work. Existing operation IDs survive reconnection.
@@ -1042,12 +1064,36 @@ export class PersonalAgent extends DurableObject<Env> {
       else throw e; // Saved admission intent remains replayable.
     }
   }
+  sendPurges(ws:WebSocket) {
+    for(const d of this.deletions.localPending())this.send(ws,{type:"purge_operations",deletionId:d.id,operationIds:this.deletions.operationIds(d.id)});
+  }
+  async processDeletion() {
+    const d=this.deletions.pending()[0];if(!d)return false;
+    if(this.state.tasks.some(t=>t.runOpen||t.status==="running"))return true;
+    if(d.session_id&&(await this.harness.pending({session:d.session_id})).length)return true;
+    await this.ctx.blockConcurrencyWhile(async()=>{
+      try {
+        await this.harness.dispose();this.runtime=undefined;
+        this.database.transactionSync(()=>{
+          if(d.session_id)deletePiConversation(this.database,d.session_id);
+          deleteConversationState(this.state,d.id);this.save();this.deletions.cloudDone(d.id);
+        });
+      } catch(error) {
+        this.state=this.repository.load();
+        this.deletions.fail(d.id,error instanceof Problem?error.code:"DELETION_FAILED");
+      }
+    });
+    for(const ws of this.ctx.getWebSockets("device"))this.sendPurges(ws);
+    this.publish();
+    return true;
+  }
   async tick(): Promise<number | undefined> {
     if (this.busy) return Date.now() + 1000;
     this.busy = true;
     try {
       expire(this.state);
       await this.tickResearch();
+      if(await this.processDeletion())return Date.now()+1000;
       const running = this.state.tasks.find(
         (t) =>
           t.engine !== "durable" && t.status === "running" && t.modelOperation,

@@ -107,7 +107,7 @@ await new Promise<void>((ok, no) => {
 });
 const db = new DatabaseSync(join(resolve(config.dataDir), "node.sqlite"));
 db.exec(
-  "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,frame TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY);",
+  "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,frame TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS deleted_operations(id TEXT PRIMARY KEY);",
 );
 if (config.python)
   config.python.scientificCacheDir = resolve(
@@ -182,6 +182,7 @@ function send(data: unknown) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
 }
 function frame(id: string, data: unknown) {
+  if(db.prepare("SELECT id FROM deleted_operations WHERE id=?").get(id))return;
   const encoded = JSON.stringify(data);
   db.prepare(
     "INSERT INTO outbox(id,frame) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET frame=excluded.frame,acked=0",
@@ -206,6 +207,7 @@ function desktop(id: string) {
   }
 }
 async function execute(op: Operation) {
+  if(op&&db.prepare("SELECT id FROM deleted_operations WHERE id=?").get(op.id))return;
   const old = db.prepare("SELECT frame FROM outbox WHERE id=?").get(op.id) as
     { frame: string } | undefined;
   if (old) {
@@ -330,6 +332,12 @@ function connect() {
               send({ type: "ready" });
           })
           .catch(() => ws.terminate());
+      } else if(m.type==="purge_operations") {
+        if(typeof m.deletionId!=="string"||!Array.isArray(m.operationIds)||m.operationIds.length>200||m.operationIds.some((id:unknown)=>typeof id!=="string"||id.length>512))throw Error("INVALID_PURGE");
+        db.exec("BEGIN IMMEDIATE");
+        try {for(const id of m.operationIds){db.prepare("INSERT OR IGNORE INTO deleted_operations VALUES(?)").run(id);db.prepare("DELETE FROM outbox WHERE id=?").run(id);}db.exec("COMMIT");}catch(e){db.exec("ROLLBACK");throw e;}
+        if(active&&m.operationIds.includes(active.id))active.abort.abort();
+        send({type:"purged",deletionId:m.deletionId,operationIds:m.operationIds});
       } else if (m.type === "ack")
         db.prepare("UPDATE outbox SET acked=1 WHERE id=?").run(m.operationId);
       else if (m.type === "operation") void execute(m.operation);
