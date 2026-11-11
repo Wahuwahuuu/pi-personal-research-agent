@@ -64,3 +64,10 @@ scripts/cloud-redeploy.ts
 scripts/final-check.ts
 scripts/arxiv-smoke.ts
 scripts/soak.ts
+
+# Local-only design and browser review material.
+.impeccable/
+/PRODUCT.md
+/DESIGN.md
+playwright-report/
+test-results/

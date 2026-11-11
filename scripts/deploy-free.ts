@@ -28,6 +28,7 @@ const cli = (args: string[], input?: string) =>
       input,
     },
   );
+execFileSync(process.execPath, ["node_modules/vite/bin/vite.js","build"],{windowsHide:true,stdio:"inherit"});
 const who = JSON.parse(cli(["whoami", "--json"]));
 if (!who.loggedIn || who.accounts.length !== 1)
   throw new Error("ONE_AUTHENTICATED_ACCOUNT_REQUIRED");

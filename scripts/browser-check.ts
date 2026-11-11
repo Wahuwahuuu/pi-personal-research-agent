@@ -1,0 +1,443 @@
+import { chromium, expect } from "@playwright/test";
+import { spawn, type ChildProcess } from "node:child_process";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import assert from "node:assert/strict";
+const root = process.cwd(),
+  base = "http://localhost:8812",
+  directory = resolve(".local/browser", crypto.randomUUID()),
+  shots = resolve(".impeccable/review");
+await mkdir(directory, { recursive: true });
+await mkdir(shots, { recursive: true });
+await mkdir("docs/validation", { recursive: true });
+const admin = crypto.randomUUID() + crypto.randomUUID();
+const config = JSON.parse(
+  (await readFile("wrangler.jsonc", "utf8")).replace(/,\s*([}\]])/g, "$1"),
+);
+config.main = resolve("src/worker.ts");
+config.assets.directory = resolve("dist/web");
+config.vars = {
+  ...config.vars,
+  ADMIN_TOKEN: admin,
+  OWNER_ID: "browser-" + crypto.randomUUID(),
+  MODEL_MODE: "mock",
+};
+const configFile = resolve(directory, "wrangler.json");
+await writeFile(configFile, JSON.stringify(config));
+const children: ChildProcess[] = [],
+  errors: string[] = [],
+  checks: string[] = [];
+let log = "";
+function child(args: string[], env: NodeJS.ProcessEnv = process.env) {
+  const c = spawn(process.execPath, args, {
+    cwd: root,
+    env: { ...env, WRANGLER_SEND_METRICS: "false" },
+    windowsHide: true,
+    stdio: "pipe",
+  });
+  children.push(c);
+  c.stdout?.on("data", (d) => (log += d));
+  c.stderr?.on("data", (d) => (log += d));
+  return c;
+}
+async function stop(c: ChildProcess) {
+  if (!c.pid || c.exitCode !== null) return;
+  if (process.platform === "win32")
+    await new Promise<void>((done) => {
+      const k = spawn("taskkill", ["/PID", String(c.pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      k.on("close", () => done());
+      k.on("error", () => done());
+    });
+  else c.kill();
+}
+async function until(fn: () => Promise<boolean>, ms = 45000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    if (await fn().catch(() => false)) return;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw new Error("BROWSER_POLL_TIMEOUT");
+}
+const browser = await chromium.launch({ channel: "msedge", headless: true }),
+  context = await browser.newContext({
+    viewport: { width: 1440, height: 900 },
+    colorScheme: "light",
+  }),
+  page = await context.newPage();
+page.on("pageerror", (e) => errors.push(e.message));
+async function api(path: string, method = "GET", body?: any) {
+  const r = await context.request.fetch(base + "/api/" + path, {
+    method,
+    data: body,
+  });
+  assert.equal(r.ok(), true, path + " " + r.status() + " " + (await r.text()));
+  return r.json();
+}
+async function route(hash: string) {
+  await page.goto(base + "/#" + hash);
+}
+async function screenshot(name: string) {
+  await page.screenshot({
+    path: resolve(shots, name + ".png"),
+    fullPage: false,
+  });
+  assert.equal(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+    true,
+    "horizontal overflow " + name,
+  );
+}
+try {
+  child([
+    "node_modules/wrangler/bin/wrangler.js",
+    "dev",
+    "--local",
+    "--ip",
+    "127.0.0.1",
+    "--port",
+    "8812",
+    "--config",
+    configFile,
+    "--persist-to",
+    resolve(directory, "worker"),
+  ]);
+  await until(async () => {
+    const r = await fetch(base);
+    return r.ok;
+  }, 60000);
+  await page.goto(base);
+  await expect(
+    page.getByRole("button", { name: "使用通行密钥登录" }),
+  ).toBeVisible();
+  await screenshot("auth-desktop");
+  await page.getByText("首次初始化", { exact: true }).click();
+  await page.getByLabel("初始化凭证", { exact: true }).fill(admin);
+  await page.getByRole("button", { name: "进入并设置账户" }).click();
+  await expect(
+    page.getByRole("heading", { name: "先建立你的研究工作区" }),
+  ).toBeVisible();
+  const cdp = await context.newCDPSession(page);
+  await cdp.send("WebAuthn.enable");
+  await cdp.send("WebAuthn.addVirtualAuthenticator", {
+    options: {
+      protocol: "ctap2",
+      transport: "internal",
+      hasResidentKey: true,
+      hasUserVerification: true,
+      isUserVerified: true,
+      automaticPresenceSimulation: true,
+    },
+  });
+  await page.getByRole("button", { name: "创建我的通行密钥" }).click();
+  await expect(
+    page.getByRole("heading", { name: "保存你的恢复码" }),
+  ).toBeVisible({ timeout: 20000 });
+  await page.getByLabel("我已妥善保存").check();
+  await page.getByRole("button", { name: "继续", exact: true }).click();
+  await page.getByLabel("助手名称", { exact: true }).fill("Aster");
+  await page
+    .getByLabel("研究方向", { exact: true })
+    .fill("检索增强生成中的长期记忆与证据可靠性");
+  await page.getByRole("button", { name: "保存并开始讨论" }).click();
+  await expect(
+    page.getByRole("heading", { name: "今天从哪里开始？" }),
+  ).toBeVisible();
+  await screenshot("chat-empty-desktop");
+  checks.push(
+    "browser WebAuthn virtual authenticator enrolls through real origin-checked backend and onboarding persists",
+  );
+  await page
+    .getByLabel("消息", { exact: true })
+    .fill("你好，介绍你能怎样协助我的研究");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await until(async () => {
+    const s = await api("overview");
+    return s.tasks[0]?.status === "completed";
+  });
+  await expect(page.locator(".assistant-message .markdown")).not.toBeEmpty();
+  const chat = (await api("overview")).conversations.items[0];
+  await page.getByLabel("消息", { exact: true }).fill("请继续刚才的讨论");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await until(async () => {
+    const s = await api("tasks?limit=10");
+    return (
+      s.items.length === 2 &&
+      s.items.every((t: any) => t.status === "completed")
+    );
+  });
+  assert.equal((await api("conversations?limit=30")).items.length, 1);
+  checks.push(
+    "natural multi-turn chat reuses one conversation while local node is offline",
+  );
+  await page.getByRole("button", { name: "保存为研究成果" }).first().click();
+  await expect(page.locator(".artifact-page")).toBeVisible();
+  await page.getByRole("button", { name: "编辑", exact: true }).click();
+  await page
+    .getByLabel("Markdown 正文", { exact: true })
+    .fill(
+      "## 研究记录\n\n已整理讨论内容。\n\n| 方法 | 结果 |\n| --- | --- |\n| 样例 | 待验证 |\n\n公式：$E=mc^2$",
+    );
+  await page.getByRole("button", { name: "保存新版本" }).click();
+  await expect(page.locator(".katex")).toBeVisible();
+  await expect(page.locator(".markdown table")).toBeVisible();
+  await screenshot("artifact-desktop");
+  checks.push(
+    "artifact editing renders safe Markdown, table and formula; version and exports come from backend",
+  );
+  await route("projects");
+  await page.getByRole("button", { name: "新建项目", exact: true }).click();
+  await page.getByLabel("项目名称", { exact: true }).fill("长期记忆与证据");
+  await page
+    .getByLabel("研究目标", { exact: true })
+    .fill("比较证据约束与可纠正记忆，保留尚未解决的问题。");
+  await page.getByRole("button", { name: "创建项目", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "长期记忆与证据", exact: true }),
+  ).toBeVisible();
+  await screenshot("project-desktop");
+  checks.push("project creation and goal use persisted application objects");
+  await route("conversations");
+  await page
+    .locator(".conversation-row")
+    .filter({ hasText: chat.title })
+    .getByRole("button", { name: "归档", exact: true })
+    .click();
+  await page.getByLabel("已归档", { exact: true }).check();
+  await expect(
+    page.locator(".conversation-row").filter({ hasText: chat.title }),
+  ).toBeVisible();
+  await page
+    .locator(".conversation-row")
+    .filter({ hasText: chat.title })
+    .getByRole("button", { name: "恢复", exact: true })
+    .click();
+  checks.push("archived conversations remain searchable and can be restored");
+  for (let i = 0; i < 52; i++)
+    await api("projects", "POST", {
+      title: "Pagination fixture " + i,
+      requestId: crypto.randomUUID(),
+    });
+  await route("projects");
+  await expect(
+    page.getByRole("button", { name: "下一页", exact: true }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "下一页", exact: true }).click();
+  await expect(page.getByText("第 2 页", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "上一页", exact: true }).click();
+  checks.push("project history is accessible through real server pagination");
+  await route("chat/" + chat.id);
+  await page.getByLabel("会话操作", { exact: true }).click();
+  await page.getByRole("button", { name: "重命名", exact: true }).click();
+  let refused = false;
+  await page.route("**/api/conversations/" + chat.id, async (route) => {
+    if (route.request().method() === "PATCH" && !refused) {
+      refused = true;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "TEST_TRANSIENT" }),
+      });
+    } else await route.continue();
+  });
+  const rename = page.getByRole("dialog", { name: "重命名会话", exact: true });
+  await rename.getByLabel("会话名称").fill("可恢复的讨论");
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(rename.getByRole("alert")).toBeVisible();
+  await screenshot("modal-retry-desktop");
+  await rename.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(rename).not.toBeVisible();
+  await page.unroute("**/api/conversations/" + chat.id);
+  checks.push(
+    "modal failure stays accessible inside named dialog and retry succeeds",
+  );
+  await route("memory");
+  await page
+    .getByLabel("明确告诉我需要记住什么")
+    .fill("讨论研究时优先提供可核对的原文引用。");
+  await page.getByRole("button", { name: "保存记忆", exact: true }).click();
+  await expect(
+    page
+      .locator(".memory-row")
+      .filter({ hasText: "讨论研究时优先提供可核对的原文引用。" }),
+  ).toBeVisible();
+  checks.push(
+    "explicit memory is visible with correction and deletion controls",
+  );
+  for (let i = 0; i < 15; i++)
+    await api("memories", "POST", { content: "长列表纠正验证 " + i });
+  await route("memory");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page
+    .locator(".memory-row")
+    .last()
+    .getByRole("button", { name: "纠正", exact: true })
+    .click();
+  await expect(page.getByLabel("纠正这条记忆", { exact: true })).toBeFocused();
+  await expect(
+    page.getByLabel("纠正这条记忆", { exact: true }),
+  ).toBeInViewport();
+  await screenshot("memory-correction-mobile");
+  await page.setViewportSize({ width: 1440, height: 900 });
+  let budgetFailed = false;
+  await page.route("**/api/budget", async (route) => {
+    if (!budgetFailed) {
+      budgetFailed = true;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "TEST_TRANSIENT" }),
+      });
+    } else await route.continue();
+  });
+  await route("settings/budget");
+  await expect(page.getByRole("alert")).toBeVisible();
+  await page.getByRole("button", { name: "重试", exact: true }).click();
+  await expect(page.locator(".budget-summary")).toBeVisible();
+  await page.unroute("**/api/budget");
+  checks.push(
+    "long-list memory correction scrolls and focuses; settings request errors offer direct recovery",
+  );
+  await api("settings", "PATCH", {
+    requestId: crypto.randomUUID(),
+    notifications: false,
+  });
+  const pair = await api("device/pair", "POST", {
+      label: "Browser fixture node",
+      requestId: crypto.randomUUID(),
+    }),
+    nodeFile = resolve(directory, "node.json");
+  await writeFile(
+    nodeFile,
+    JSON.stringify({
+      endpoint: base,
+      dataDir: resolve(directory, "node"),
+      port: 48740,
+      fixture: true,
+    }),
+  );
+  const node = child(["local/node.ts", nodeFile], {
+    ...process.env,
+    PRA_DEVICE_TOKEN: pair.token,
+  });
+  await until(async () => (await api("overview")).deviceOnline);
+  await route("chat");
+  await page
+    .getByLabel("消息", { exact: true })
+    .fill("请深入阅读论文中的研究方法，并提供原文证据。");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await until(
+    async () => (await api("tasks?limit=1")).items[0]?.status === "completed",
+  );
+  await expect(page.locator(".citation").first()).toBeVisible();
+  await page.locator(".citation").first().click();
+  await expect(
+    page.getByRole("complementary", { name: "原文与证据" }),
+  ).toBeVisible();
+  await screenshot("chat-evidence-desktop");
+  await page.getByRole("button", { name: "关闭证据面板" }).click();
+  await page.getByRole("button", { name: /任务进度/ }).click();
+  await expect(
+    page.getByRole("heading", { name: "研究进度与依据" }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  checks.push(
+    "real Pi tool execution renders citation evidence and reused task progress without inactive controls",
+  );
+  await page.setViewportSize({ width: 390, height: 844 });
+  await screenshot("chat-mobile");
+  await page.locator(".citation").first().click();
+  await screenshot("evidence-mobile");
+  await page.getByRole("button", { name: "关闭证据面板" }).click();
+  await page.getByRole("button", { name: "打开导航" }).click();
+  await expect(page.locator("dialog[open] .mobile-navigation")).toBeVisible();
+  await page
+    .locator(".mobile-navigation")
+    .getByRole("button", { name: "设置", exact: true })
+    .click();
+  await page.getByRole("button", { name: "预算", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "模型调用预算" }),
+  ).toBeVisible();
+  await expect(page.locator(".budget-summary")).toBeVisible();
+  await screenshot("budget-mobile");
+  await page.getByRole("button", { name: "个人设置", exact: true }).click();
+  await page.getByLabel("外观", { exact: true }).selectOption("dark");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await screenshot("settings-mobile-dark");
+  checks.push(
+    "390px mobile navigation, full-screen evidence and budget/settings retain real actions without horizontal overflow",
+  );
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await route("chat/" + chat.id);
+  await expect(page.locator(".user-message").first()).toBeVisible();
+  await screenshot("chat-desktop-dark");
+  await stop(node);
+  await until(async () => !(await api("overview")).deviceOnline);
+  await api("tasks", "POST", {
+    kind: "auto",
+    input: "请继续检索论文原文",
+    requestId: crypto.randomUUID(),
+  });
+  await route("tasks");
+  await expect(
+    page
+      .locator(".activity-row")
+      .filter({ hasText: "等待你的电脑上线" })
+      .first(),
+  ).toBeVisible();
+  await page
+    .locator(".activity-row")
+    .filter({ hasText: "请继续检索论文原文" })
+    .getByRole("button", { name: "取消任务", exact: true })
+    .click();
+  await expect(
+    page
+      .locator(".activity-row")
+      .filter({ hasText: "请继续检索论文原文" })
+      .getByText("已取消", { exact: true }),
+  ).toBeVisible();
+  checks.push("offline work pauses and cancellation persists through UI");
+  await route("settings/account");
+  await page.getByRole("button", { name: "退出登录", exact: true }).click();
+  await expect(
+    page.getByRole("button", { name: "使用通行密钥登录" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "使用通行密钥登录" }).click();
+  await expect(
+    page.getByRole("button", { name: "开始新讨论", exact: true }).first(),
+  ).toBeVisible({ timeout: 20000 });
+  checks.push("browser passkey sign-in works after logout");
+  assert.deepEqual(errors, [], "unhandled browser errors");
+  const report = {
+    kind: "local-browser-product-flows",
+    timestamp: new Date().toISOString(),
+    checks,
+    browser: "installed Microsoft Edge, virtual WebAuthn authenticator",
+    viewports: ["1440x900", "390x844"],
+    paidCalls: 0,
+    cloudDeployment: false,
+  };
+  await writeFile(
+    "docs/validation/browser-product.json",
+    JSON.stringify(report, null, 2),
+  );
+  console.log(JSON.stringify(report, null, 2));
+} catch (e) {
+  await page
+    .screenshot({ path: resolve(shots, "failure.png") })
+    .catch(() => {});
+  console.error({
+    message: e instanceof Error ? e.message : String(e),
+    browserErrors: errors,
+    serverError: log.match(/Error: [^\r\n]*/g)?.slice(-3),
+  });
+  process.exitCode = 1;
+} finally {
+  await browser.close();
+  for (const c of children.reverse()) await stop(c);
+}

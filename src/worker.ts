@@ -927,7 +927,7 @@ export class PersonalAgent extends DurableObject<Env> {
           if (!terminal(t)) t.status = "waiting_device";
         }
         this.save();
-        for (const n of this.state.notices.filter((n) => !n.read))
+        for (const n of this.workspace.settings().notifications?this.state.notices.filter((n) => !n.read):[])
           this.send(ws, { type: "notice", notice: n });
       } else throw new Problem("UNKNOWN_FRAME");
       await this.maintenance.arm();
@@ -1426,7 +1426,7 @@ export class PersonalAgent extends DurableObject<Env> {
       this.save();
       this.publish();
       for (const ws of this.ctx.getWebSockets("device"))
-        for (const n of this.state.notices.filter((n) => !n.read))
+        for (const n of this.workspace.settings().notifications?this.state.notices.filter((n) => !n.read):[])
           this.send(ws, { type: "notice", notice: n });
       const times = [
         ...this.state.operations
