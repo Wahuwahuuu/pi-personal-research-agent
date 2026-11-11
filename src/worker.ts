@@ -1,3 +1,4 @@
+import {ResearchBatches} from "./research-batches.ts";
 import {LibraryJobs} from "./library-jobs.ts";
 import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts";
 import {DeviceIndexes} from "./device-indexes.ts";
@@ -48,8 +49,6 @@ import {
   settle,
   memory,
   notice,
-  startBatch,
-  commitPage,
   nextShanghaiMorning,
   text,
   Problem,
@@ -100,6 +99,7 @@ export class PersonalAgent extends DurableObject<Env> {
   deletions: DeletionStore;
   deviceIndexes: DeviceIndexes;
   libraryJobs: LibraryJobs;
+  researchBatches: ResearchBatches;
   workspace:Workspace;
   artifacts:Artifacts;
   memoryIndex:MemoryIndex;
@@ -128,6 +128,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.deletions = new DeletionStore(this.database);
     this.deviceIndexes = new DeviceIndexes(this.database);
     this.libraryJobs = new LibraryJobs(this.database);
+    this.researchBatches = new ResearchBatches(this.database);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_billing_outbox(id TEXT PRIMARY KEY,usage TEXT NOT NULL)");
     if(env.MODEL_MODE!=="mock")this.budgetLedger.importLegacy(this.state.usage);
     this.budgetLedger.recoverInterrupted();
@@ -624,28 +625,35 @@ export class PersonalAgent extends DurableObject<Env> {
       return json({ ok: true });
     }
     if (path === "/api/plans" && r.method === "POST") {
-      const b = await this.body(r);
-      const p = {
-        id: crypto.randomUUID(),
-        query: text(b.query, 300),
-        enabled: true,
-        cursor: Date.now() - 7 * 86400000,
-        next: Date.now(),
-      };
-      this.state.plans.push(p);
-      this.save();
-      await this.maintenance.arm();
-      return json(p, 201);
+      const b=await this.body(r),projectId=this.workspace.getProject(typeof b.projectId==="string"?b.projectId:"default").id;
+      const before=this.state.plans.slice();
+      let result:import("./domain.ts").Plan;
+      try{result=this.workspace.once(b.requestId,"plan:create",b,()=>{
+        if(this.state.plans.length>=30)throw new Problem("PLAN_CAPACITY",429);
+        if(b.enabled!==undefined&&typeof b.enabled!=="boolean"||b.autoProcess!==undefined&&typeof b.autoProcess!=="boolean")throw new Problem("INVALID_SETTING");
+        if(b.maxPapers!==undefined&&(!Number.isInteger(b.maxPapers)||Number(b.maxPapers)<1||Number(b.maxPapers)>3))throw new Problem("INVALID_PLAN_LIMIT");
+        const now=Date.now(),p={id:crypto.randomUUID(),projectId,query:text(b.query,300),objective:text(b.objective??b.query,2000),enabled:b.enabled!==false,autoProcess:b.autoProcess===true,maxPapers:Number(b.maxPapers??3),revision:1,cursor:now,next:now};
+        this.state.plans.push(p);this.save();return p;
+      });}catch(e){this.state.plans=before;this.repository.load();throw e;}
+      await this.maintenance.arm();this.publish();return json(result,201);
     }
     if (path.match(/^\/api\/plans\/[^/]+$/) && r.method === "PATCH") {
-      const p = this.state.plans.find((p) => p.id === path.split("/").at(-1));
-      if (!p) throw new Problem("NOT_FOUND", 404);
-      const b = await this.body(r);
-      if (typeof b.enabled !== "boolean") throw new Problem("INVALID_ENABLED");
-      p.enabled = b.enabled;
-      this.save();
-      await this.maintenance.arm();
-      return json(p);
+      const p=this.state.plans.find(p=>p.id===path.split("/").at(-1));if(!p)throw new Problem("NOT_FOUND",404);
+      const b=await this.body(r),before=structuredClone(p);
+      try{
+        const value=this.workspace.once(b.requestId,"plan:"+p.id,b,()=>{
+          if(b.enabled!==undefined){if(typeof b.enabled!=="boolean")throw new Problem("INVALID_ENABLED");p.enabled=b.enabled;}
+          const changed=(b.query!==undefined&&b.query!==p.query)||(b.objective!==undefined&&b.objective!==p.objective);
+          if(changed&&p.batch)throw new Problem("PLAN_CHECK_IN_PROGRESS",409);
+          if(b.query!==undefined)p.query=text(b.query,300);
+          if(b.objective!==undefined)p.objective=text(b.objective,2000);
+          if(b.autoProcess!==undefined){if(typeof b.autoProcess!=="boolean")throw new Problem("INVALID_SETTING");p.autoProcess=b.autoProcess;}
+          if(b.maxPapers!==undefined){if(!Number.isInteger(b.maxPapers)||Number(b.maxPapers)<1||Number(b.maxPapers)>3)throw new Problem("INVALID_PLAN_LIMIT");p.maxPapers=Number(b.maxPapers);}
+          if(changed){p.revision=(p.revision??1)+1;p.cursor=Date.now();p.next=Date.now();}
+          this.save();return p;
+        });
+        await this.maintenance.arm();this.publish();return json(value);
+      }catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,before);this.repository.load();throw e;}
     }
     if (path.match(/^\/api\/notices\/[^/]+$/) && r.method === "POST") {
       const id = decodeURIComponent(path.split("/").at(-1)!);
@@ -659,6 +667,12 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   async workspaceRoute(r:Request,path:string):Promise<Response|undefined>{
     const p=new URL(r.url).searchParams;
+    if(path==="/api/research-batches"&&r.method==="GET")return json(this.researchBatches.page(p.get("plan")??undefined,Number(p.get("after")??0),Number(p.get("limit")??20)));
+    const batchPath=path.match(/^\/api\/research-batches\/([^/]+)(\/candidates)?$/);
+    if(batchPath&&r.method==="GET"){
+      const batch=this.researchBatches.get(decodeURIComponent(batchPath[1]));
+      return json(batchPath[2]?this.researchBatches.candidates(batch.id,Number(p.get("after")??0),Number(p.get("limit")??100)):{...batch,counts:this.researchBatches.counts(batch.id)});
+    }
     if(path==="/api/imports"){
       if(r.method==="GET")return json(this.libraryJobs.page(p.get("project")??undefined,Number(p.get("after")??0),Number(p.get("limit")??30)));
       if(r.method==="POST"){
@@ -731,6 +745,9 @@ export class PersonalAgent extends DurableObject<Env> {
         const result=this.workspace.once(b.requestId,"project:delete:"+id,{},()=>{
           const conversations=(this.state.conversations??[]).filter(c=>c.projectId===id);
           this.workspace.deleteProject(id);
+          for(const plan of this.state.plans.filter(p=>(p.projectId??"default")===id)){this.researchBatches.removePlan(plan.id);this.workspace.forgetEntity(plan.id);}
+          this.state.plans=this.state.plans.filter(p=>(p.projectId??"default")!==id);
+
           const removedImports=this.libraryJobs.removeProject(id);this.state.notices=this.state.notices.filter(n=>!removedImports.some(job=>n.id==="import:"+job));
           for(const c of conversations)this.deletions.request(this.state,c.id);
           this.save();return {id,deletions:conversations.map(c=>c.id)};
@@ -1573,17 +1590,22 @@ export class PersonalAgent extends DurableObject<Env> {
         }
       }
       const p = this.state.plans.find((p) => p.enabled && p.next <= Date.now());
-      if (p) {
-        const b = startBatch(p);
-        this.save();
-        try {
-          const page = await discover(p.query, b.from, b.until, b.offset);
-          if (p.enabled) {
-            commitPage(this.state, p, page.rows, page.complete);
-            if (p.batch) p.next = Date.now() + 3000;
+      if(p){
+        const prior=structuredClone(p);
+        let b:ReturnType<ResearchBatches["start"]>;
+        try{b=this.database.transactionSync(()=>{const batch=this.researchBatches.start(p);this.save();return batch;});}
+        catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,prior);this.repository.load();throw e;}
+        try{
+          const page=await discover(b.query,b.from,b.until,b.offset);
+          if(p.enabled&&this.state.plans.includes(p)){
+            const previous=structuredClone(p);
+            try{this.database.transactionSync(()=>{this.researchBatches.commit(p,b.id,b.offset,page.rows,page.complete);this.save();});}
+            catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,previous);this.repository.load();throw e;}
           }
-        } catch {
-          p.next = Date.now() + 15 * 60000;
+        }catch(error){
+          if(this.state.plans.includes(p)){
+            this.researchBatches.sourceFailure(p,b.id,error instanceof Problem?error.code:"SOURCE_UNAVAILABLE");this.save();
+          }
         }
       }
       this.save();

@@ -1,3 +1,4 @@
+import {verifyPlanRecords} from "./plan-integration.ts";
 import {freezeWorker} from "./freeze-worker.ts";
 import {verifyLibraryQueue} from "./library-integration.ts";
 import { verifyIdentity } from "./auth-integration.ts";
@@ -76,14 +77,14 @@ async function until<T>(
   throw new Error("POLL_TIMEOUT");
 }
 let cookie = "";
-async function api(path: string, method = "GET", body?: unknown) {
+async function api(path: string, method = "GET", body?: unknown, expected?:number) {
   const r = await fetch(base + "/api/" + path, {
     method,
     headers: { Cookie: cookie, "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
   });
   const value = (await r.json()) as any;
-  assert.ok(r.ok, JSON.stringify(value));
+  if(expected!==undefined)assert.equal(r.status,expected,JSON.stringify(value));else assert.ok(r.ok, JSON.stringify(value));
   return value;
 }
 const checks: string[] = [];
@@ -511,6 +512,7 @@ try {
   await new Promise(r=>setTimeout(r,1000));assert.equal((await api("tasks/"+automaticResearch.id)).calls,autoCalls);
   await api("tasks/"+automaticResearch.id+"/cancel","POST",{});
   checks.push("automatic intent uses existing NLU: ordinary conversation finishes offline and paper work pauses without repeated model calls");
+  checks.push(...await verifyPlanRecords(api));
   const project=await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"});
   assert.equal((await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"})).id,project.id);
   await api("projects/"+project.id,"PATCH",{requestId:"project-edit",pinned:true});

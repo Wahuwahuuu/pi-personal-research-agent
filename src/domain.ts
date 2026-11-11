@@ -74,6 +74,8 @@ export interface Notice {
 }
 export interface Plan {
   id: string;
+  projectId?: string; objective?: string; autoProcess?: boolean; maxPapers?: number; revision?: number;
+  sourceError?: string; latestBatchId?: string; lastSuccess?: number;
   query: string;
   enabled: boolean;
   cursor: number;
