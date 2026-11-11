@@ -72,3 +72,34 @@ test("private full text is resolved only for a registered paper and verified by 
   await assert.rejects(f.manager.pdf("new","local-paper"),/LIBRARY_OBJECT_CHANGED/);
  }finally{await f.cleanup();}
 });
+
+test("an explicit first-run library answers empty searches without spawning a Python model",async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"pra-empty-")),root=join(dir,"empty-library");
+ const manager=new SnapshotManager({executable:join(dir,"not-installed-python.exe"),models:join(dir,"models"),bootstrap:true,indexVersion:"library-empty-v1"},join(dir,"node"),root);
+ try{
+  assert.equal(await manager.refresh(),false);
+  const runtime=await manager.ready();assert.equal(runtime.bridge,undefined);assert.deepEqual(runtime.catalog.papers,[]);
+  const value=await manager.execute("library-empty-v1","search_papers",{query:"first research",limit:3},AbortSignal.timeout(1000));
+  assert.deepEqual((value.result as any).papers,[]);
+  await assert.rejects(manager.pdf("library-empty-v1","unknown"),/UNKNOWN_PAPER/);
+ }finally{manager.stop();await rm(dir,{recursive:true,force:true});}
+});
+test("empty library switches only after a verified publication and retains the original empty snapshot",async()=>{
+ const f=await fixture();
+ const manager=new SnapshotManager({executable:process.execPath,bootstrap:true,indexVersion:"library-empty-v1",device:"cpu"},join(f.dir,"fresh-node"),f.root);
+ try{
+  assert.equal((await manager.runtime("library-empty-v1")).bridge,undefined);
+  await manager.refresh();assert.equal(manager.activeVersion,"new");
+  assert.equal((await manager.runtime("new")).catalog.papers.length,1);
+  assert.deepEqual((await manager.runtime("library-empty-v1")).catalog.papers,[]);
+  assert.deepEqual(manager.retained().sort(),["library-empty-v1","new"]);
+ }finally{manager.stop();await f.cleanup();}
+});
+test("missing legacy configuration never silently falls back to empty, and conflicting bootstrap is rejected",async()=>{
+ const f=await fixture();try{
+  const missing=new SnapshotManager({executable:process.execPath,indexVersion:"old"},join(f.dir,"missing"));
+  await assert.rejects(missing.runtime("old"),/VERIFIED_INDEX_REQUIRED/);
+  const conflict=new SnapshotManager({...f.manager.base,bootstrap:true},join(f.dir,"conflict"));
+  await assert.rejects(conflict.runtime("original"),/INVALID_EMPTY_LIBRARY_CONFIG/);
+ }finally{await f.cleanup();}
+});

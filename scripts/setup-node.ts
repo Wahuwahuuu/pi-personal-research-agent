@@ -43,5 +43,5 @@ config.endpoint = deployment.url;
 if (process.env.HTTPS_PROXY) config.proxy = process.env.HTTPS_PROXY;
 await writeFile(".local/node.json", JSON.stringify(config, null, 2));
 console.log(
-  "Local node paired. Edit Python paths and indexVersion in .local/node.json before starting. Device credential DPAPI-protected; node not started.",
+  "Local node paired. Configure Python, models and libraryRoot in .local/node.json before starting; the default starts with an empty library. Device credential DPAPI-protected; node not started.",
 );

@@ -17,6 +17,7 @@ export type Conversation = Pick<
   | "archived"
 >;
 export interface Page<T> {
+  pendingCount?: number;
   items: T[];
   nextCursor: string | number | null;
 }

@@ -6,12 +6,10 @@
   "fixture": false,
   "python": {
     "executable": "C:/path/to/Python312/python.exe",
-    "corpus": "C:/path/to/corpus",
-    "index": "C:/path/to/index",
     "models": "C:/path/to/models",
-    "profile": "rrf_rerank",
     "device": "cuda",
-    "indexVersion": "YOUR_INDEX_VERSION"
+    "bootstrap": true,
+    "indexVersion": "library-empty-v1"
   },
   "libraryRoot": "C:/path/to/personal-research-library",
   "libraryPython": "C:/path/to/Python312/python.exe"

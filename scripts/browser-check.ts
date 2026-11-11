@@ -120,12 +120,13 @@ async function verifyImportBrowser(){
   await page.reload();await expect(page.locator(".import-row").filter({hasText:"入库流程软件测试"})).toBeVisible();
   checks.push("arXiv import registration, offline persistence, cancellation and retry work through real DO on desktop and mobile");
   const token=(await api("device/pair","POST",{requestId:crypto.randomUUID(),label:"Browser import state"})).token;
-  const catalog=await nodeCatalog(undefined,true),pages=catalogPages(catalog);
+  const catalog=await nodeCatalog({executable:"unused",bootstrap:true,indexVersion:"library-empty-v1"},false),pages=catalogPages(catalog);
   const device=new WebSocket(base.replace("http","ws")+"/api/device/connect",{headers:{Authorization:"Bearer "+token}});
   device.on("error",()=>{});
+  const protocolErrors:string[]=[];
   const send=(value:unknown)=>device.send(JSON.stringify(value));
   device.on("message",raw=>{
-   const m=JSON.parse(raw.toString());
+   const m=JSON.parse(raw.toString());if(m.type==="error")protocolErrors.push(m.code);
    if(m.type==="hello_ack"){send({type:"catalog_begin",pages:pages.length});pages.forEach((value,page)=>send({type:"catalog_page",page,value}));send({type:"catalog_end"});}
    if(m.type==="catalog_ack")send({type:"availability",ready:false,phase:"indexing"});
    if(m.type==="library_import")send({type:"library_result",id:m.id,generation:m.generation,phase:"indexing"});
@@ -143,6 +144,23 @@ async function verifyImportBrowser(){
    await route("settings/devices");
    await expect(page.getByText("本机已连接，正在建立论文索引；检索任务会在完成后继续。",{exact:true})).toBeVisible();
    checks.push("connected but indexing node remains visibly connected across header, library and device settings; no false reconnect prompt");
+   send({type:"ready",phase:"empty"});
+   await until(async()=>(await api("overview")).deviceState.phase==="empty").catch(async()=>{throw Error("EMPTY_READY_FAILED "+JSON.stringify({errors:protocolErrors,state:(await api("overview")).deviceState}));});
+   await route("papers");
+   await expect(page.getByRole("heading",{name:"首篇论文正在入库"})).toBeVisible();
+   await page.setViewportSize({width:1440,height:900});await screenshot("imports-first-processing-desktop");
+   await page.setViewportSize({width:390,height:844});await screenshot("imports-first-processing-mobile");
+   await importRow.getByRole("button",{name:"取消入库",exact:true}).click();
+   await expect(page.getByRole("heading",{name:"添加你的第一篇论文"})).toBeVisible();
+   await expect(page.getByRole("button",{name:"设置本地节点",exact:true})).not.toBeVisible();
+   await expect(page.locator(".topbar-status")).toContainText("本机已连接");
+   await page.setViewportSize({width:1440,height:900});await screenshot("imports-empty-desktop");
+   await page.setViewportSize({width:390,height:844});await screenshot("imports-empty-mobile");
+   await api("settings","PATCH",{requestId:crypto.randomUUID(),theme:"dark"});
+   await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
+   await screenshot("imports-empty-mobile-dark");
+   checks.push("first-run empty library stays connected and directs users to import without claiming loaded retrieval models");
+
   }finally{device.terminate();}
 
 

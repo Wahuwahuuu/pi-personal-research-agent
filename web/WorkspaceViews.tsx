@@ -379,7 +379,8 @@ export function Library({
       projectId ? "projects/" + projectId : undefined,
       revision,
     );
-  const [query, setQuery] = useState(""),
+  const [pendingImports,setPendingImports]=useState<number>(),
+    [query, setQuery] = useState(""),
     [selected, setSelected] = useState<string[]>([]);
   useEffect(() => {
     setSelected(project.value?.paperIds ?? []);
@@ -407,7 +408,7 @@ export function Library({
           </button>
         )}
       </div>
-      <LibraryImports projectId={projectId} data={data} revision={revision} run={run} refresh={refresh}/>
+      <LibraryImports projectId={projectId} data={data} revision={revision} run={run} refresh={refresh} onPendingChange={setPendingImports}/>
       {projectId && (
         <div className="selection-bar">
           <span>已选 {selected.length} 篇</span>
@@ -445,9 +446,9 @@ export function Library({
         <Loading />
       ) : !list.length ? (
         <Empty
-          title={query ? "未找到匹配的论文" : "论文目录还未连接"}
+          title={query ? "未找到匹配的论文" : pendingImports?"首篇论文正在入库":deviceView(data).connected?(pendingImports===0?"添加你的第一篇论文":"论文库暂无可阅读的论文"):"论文目录还未连接"}
           action={
-            !query ? (
+            !query&&!deviceView(data).connected ? (
               <button onClick={() => navigate("settings", "devices")}>
                 设置本地节点
               </button>
@@ -456,7 +457,7 @@ export function Library({
         >
           {query
             ? "试试标题中的其他关键词。"
-            : "连接本地节点后，已有索引会出现在这里。完整论文保留在本机。"}
+            : pendingImports?"入库待办已经保存。可在上方查看处理进度，完成后论文会出现在这里。":deviceView(data).connected?"从上方添加 arXiv，或在本机托盘选择文本 PDF。建立索引后，就可以开始阅读。":"连接本地节点后，已有索引会出现在这里。完整论文保留在本机。"}
         </Empty>
       ) : (
         <div className="paper-list">

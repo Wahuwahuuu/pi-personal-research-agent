@@ -8,7 +8,7 @@ import {createLocalReading} from "../packages/research/local-reading.ts";
 import type {ResearchCatalog} from "../src/research-catalog.ts";
 import type {Tool} from "../src/domain.ts";
 import type {IndexDescriptor} from "./library-client.ts";
-type Runtime={config:PythonConfig;catalog:ResearchCatalog;bridge:PythonBridge;reading:Awaited<ReturnType<typeof createLocalReading>>};
+type Runtime={config:PythonConfig;catalog:ResearchCatalog;bridge?:PythonBridge;reading:Awaited<ReturnType<typeof createLocalReading>>};
 /** All tasks select a registered immutable version; only one version's models are resident at once. */
 export class SnapshotManager {
  base:PythonConfig;
@@ -51,7 +51,7 @@ export class SnapshotManager {
    try{
     const index=await this.owned(descriptor.index),corpus=await this.owned(descriptor.corpus);
     if(createHash("sha256").update(await readFile(join(index,"index-manifest.json"))).digest("hex")!==descriptor.manifest_sha)throw Error("INDEX_MANIFEST_CHANGED");
-    candidates.set(row.version,{...this.base,worker:undefined,index,corpus,indexVersion:row.version});
+    candidates.set(row.version,{...this.base,bootstrap:false,worker:undefined,index,corpus,indexVersion:row.version});
    }catch(e){if(row.version===pointer.version)throw e;} // Missing historical snapshots are excluded, so the host reports unavailability.
   }
   const config=candidates.get(pointer.version)!;
@@ -66,23 +66,23 @@ export class SnapshotManager {
   const config=this.configs.get(version);
   if(!config)throw Error("INDEX_UNAVAILABLE");
   const cached=this.runtimes.get(version);if(cached)return cached;
-  const catalog=await nodeCatalog(config),bridge=new PythonBridge({...config,scientificCacheDir:join(this.dataDir,".cache/scientific-reading")});
-  const reading=await createLocalReading({root:this.dataDir,indexVersion:version,papers:catalog.papers,evidence:catalog.evidence,worker:{
+  const catalog=await nodeCatalog(config),bridge=config.bootstrap?undefined:new PythonBridge({...config,scientificCacheDir:join(this.dataDir,".cache/scientific-reading")});
+  const reading=await createLocalReading({root:this.dataDir,indexVersion:version,papers:catalog.papers,evidence:catalog.evidence,worker:bridge?{
    request:(tool,params,signal)=>bridge.request(tool,{...params},signal??AbortSignal.timeout(180000)),
    readScientificSources:(params,signal)=>bridge.readScientificSources(params,signal)
-  }});
+  }:{request:async(tool)=>tool==="search_papers"?{backend:"empty",index_version:version,papers:[]}:{backend:"empty",index_version:version,chunks:[]}}});
   const runtime={config,catalog,bridge,reading};this.runtimes.set(version,runtime);
-  while(this.runtimes.size>2){const key=[...this.runtimes.keys()].find(key=>key!==version&&this.runtimes.get(key)!==this.selected);if(!key)break;this.runtimes.get(key)!.bridge.stop();this.runtimes.delete(key);}
+  while(this.runtimes.size>2){const key=[...this.runtimes.keys()].find(key=>key!==version&&this.runtimes.get(key)!==this.selected);if(!key)break;this.runtimes.get(key)!.bridge?.stop();this.runtimes.delete(key);}
   return runtime;
  }
  async activate(version:string,signal?:AbortSignal){
   signal?.throwIfAborted();
   const next=await this.runtime(version);
   signal?.throwIfAborted();
-  if(this.selected!==next){await this.selected?.bridge.close();this.selected=next;}
+  if(this.selected!==next){await this.selected?.bridge?.close();this.selected=next;}
   signal?.throwIfAborted();
-  const abort=()=>next.bridge.stop();signal?.addEventListener("abort",abort,{once:true});
-  try{await next.bridge.ready();signal?.throwIfAborted();return next;}finally{signal?.removeEventListener("abort",abort);}
+  const abort=()=>next.bridge?.stop();signal?.addEventListener("abort",abort,{once:true});
+  try{await next.bridge?.ready();signal?.throwIfAborted();return next;}finally{signal?.removeEventListener("abort",abort);}
  }
  async ready(){
   if(this.busy)throw Error("RETRIEVER_BUSY");
@@ -96,7 +96,7 @@ export class SnapshotManager {
  }
  async maintain<T>(work:()=>Promise<T>){
   if(this.busy)throw Error("RETRIEVER_BUSY");
-  this.busy=true;await this.selected?.bridge.close();this.selected=undefined;
+  this.busy=true;await this.selected?.bridge?.close();this.selected=undefined;
   try{return await work();}finally{this.busy=false;}
  }
  async pdf(version:string,paper:string){
@@ -115,5 +115,5 @@ export class SnapshotManager {
   }
   return runtime.reading.pdf(paper);
  }
- stop(){for(const runtime of this.runtimes.values())runtime.bridge.stop();this.selected=undefined;}
+ stop(){for(const runtime of this.runtimes.values())runtime.bridge?.stop();this.selected=undefined;}
 }

@@ -323,7 +323,7 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   deviceState(){
     const ws=this.connectedDevice(),a=ws?.deserializeAttachment();
-    return{connected:!!ws,ready:!!a?.ready,phase:a?.ready?"ready":ws?(a?.phase??"loading"):"offline",canImport:!!a?.capabilities?.includes("library-v1")};
+    return{connected:!!ws,ready:!!a?.ready,phase:a?.ready?(a.phase==="empty"?"empty":"ready"):ws?(a?.phase??"loading"):"offline",canImport:!!a?.capabilities?.includes("library-v1")};
   }
   dispatchImports(){
     const ws=this.connectedDevice("library-v1");if(!ws)return;
@@ -1033,7 +1033,7 @@ export class PersonalAgent extends DurableObject<Env> {
         if (!a.indexVersion) throw new Problem("HELLO_REQUIRED");
         if (this.env.RESEARCH_ENGINE === "durable" && !a.catalogReady)
           throw new Problem("CATALOG_REQUIRED");
-        a.ready = true;delete a.phase;
+        a.ready = true;if(m.phase==="empty")a.phase="empty";else delete a.phase;
         ws.serializeAttachment(a);
         for (const op of this.state.operations.filter(
           (o) => o.state === "sent",

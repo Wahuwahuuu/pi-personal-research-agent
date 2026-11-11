@@ -31,7 +31,11 @@ export async function nodeCatalog(
         },
       ],
     });
-  if (!config?.index) throw Error("VERIFIED_INDEX_REQUIRED");
+  if(config?.bootstrap===true){
+    if(config.index||config.corpus||config.indexVersion!=="library-empty-v1")throw Error("INVALID_EMPTY_LIBRARY_CONFIG");
+    return validateCatalog({indexVersion:config.indexVersion,papers:[],evidence:[]});
+  }
+  if (!config?.index||!config.corpus) throw Error("VERIFIED_INDEX_REQUIRED");
   const c = await loadCorpusIndex(config.corpus, config.index, config.device);
   if (c.indexVersion !== config.indexVersion) throw Error("INDEX_CHANGED");
   return validateCatalog({

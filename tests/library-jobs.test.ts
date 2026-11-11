@@ -270,3 +270,16 @@ test("revocation cannot leave a cancelled import waiting forever for an invalid 
     f.db.close();
   }
 });
+
+test("pending import count spans hidden pages and respects project and cancellation boundaries",()=>{
+ const f=setup();try{
+  const active=f.jobs.create("active",{projectId:"a",arxivId:"2401.00001v1"},1);
+  const other=f.jobs.create("other",{projectId:"b",arxivId:"2401.00002v1"},2);
+  const recent=f.jobs.create("recent",{projectId:"a",arxivId:"2401.00003v1"},3);
+  f.jobs.action(recent.id,"cancel","cancel-recent");
+  const page=f.jobs.page("a",0,1);assert.equal(page.items[0].id,recent.id);assert.equal(page.pendingCount,1);
+  assert.equal(f.jobs.page(undefined,0,1).pendingCount,2);
+  f.jobs.action(active.id,"cancel","cancel-active");assert.equal(f.jobs.page("a").pendingCount,0);
+  assert.equal(f.jobs.page("b").pendingCount,1);assert.equal(f.jobs.page("b").items[0].id,other.id);
+ }finally{f.db.close();}
+});

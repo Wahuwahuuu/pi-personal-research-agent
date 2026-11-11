@@ -147,6 +147,7 @@ export class LibraryJobs {
       )
       .toArray();
     return {
+      pendingCount: this.db.sql.exec<{n:number}>("SELECT COUNT(*) AS n FROM pra_library_jobs WHERE status IN ('queued','sent','processing')"+(projectId?" AND project_id=?":""),...(projectId?[projectId]:[])).toArray()[0].n,
       items: r.slice(0, limit).map((v) => this.public(this.parse(v))),
       nextCursor: r.length > limit ? after + limit : null,
     };

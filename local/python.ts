@@ -10,7 +10,8 @@ import type { Tool } from "../src/domain.ts";
 export interface PythonConfig {
   executable: string;
   worker?: string;
-  corpus: string;
+  corpus?: string;
+  bootstrap?: boolean;
   index?: string;
   models?: string;
   profile?: string;
@@ -20,12 +21,13 @@ export interface PythonConfig {
 }
 /** Restricted facade over AsterCite's existing JSONL transport. Model loading is readiness, not tool execution. */
 export class PythonBridge {
-  config: PythonConfig & {worker:string};
+  config: PythonConfig & {worker:string;corpus:string};
   private client?: PythonWorkerClient;
   private pending = false;
   private closing:Promise<void>=Promise.resolve();
   constructor(config: PythonConfig) {
-    this.config = {...config,worker:config.worker ?? fileURLToPath(new URL("../packages/retrieval/retriever/worker.py",import.meta.url))};
+    if(!config.corpus||config.bootstrap)throw Error("EXISTING_CORPUS_REQUIRED");
+    this.config = {...config,corpus:config.corpus,worker:config.worker ?? fileURLToPath(new URL("../packages/retrieval/retriever/worker.py",import.meta.url))};
     for (const p of [
       config.executable,
       config.worker,

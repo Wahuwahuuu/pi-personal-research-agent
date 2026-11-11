@@ -365,7 +365,7 @@ async function announceReady(){
  preparing=true;
  try{
   await snapshots?.ready();
-  if(socket===ws&&ws.readyState===WebSocket.OPEN&&!paused&&!building&&!active){announcedReady=true;send({type:"ready"});}
+  if(socket===ws&&ws.readyState===WebSocket.OPEN&&!paused&&!building&&!active){announcedReady=true;send({type:"ready",phase:catalog.papers.length?"ready":"empty"});}
  }catch{lastLocalError="MODEL_LOADING_FAILED";ws.terminate();}
  finally{preparing=false;}
 }
@@ -409,7 +409,7 @@ localHandler=async(req,res)=>{
  try{
   if(req.method==="GET"&&path==="/local/status"){
    if(library&&building)importJobs=await library.jobs();
-   reply({connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?"ready":"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
+   reply({connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
   }
   if(req.method==="GET"&&path==="/local/library"){
    const params=new URL(req.url!,"http://127.0.0.1").searchParams;

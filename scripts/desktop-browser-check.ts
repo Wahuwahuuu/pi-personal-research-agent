@@ -7,7 +7,8 @@ const folder=resolve(".impeccable/review");await mkdir(folder,{recursive:true});
 const failures:string[]=[],checks:string[]=[];
 page.on("pageerror",e=>failures.push(e.message));
 await page.addInitScript(()=>{
- const state:any={ok:true,connected:true,ready:true,paused:false,phase:"ready",indexVersion:"synthetic-library-v2",libraryEnabled:true,imports:[]};
+ const state:any={ok:true,connected:true,ready:true,paused:false,phase:"empty",indexVersion:"synthetic-library-v2",libraryEnabled:true,imports:[]};
+ (window as any).__desktopState=state;
  const calls:any[]=[];(window as any).__desktopCalls=calls;
  const ok=(value:any)=>({ok:true,value});
  (window as any).pywebview={api:{
@@ -24,7 +25,11 @@ await page.addInitScript(()=>{
 });
 try{
  await page.goto("file:///"+resolve("local/desktop/panel.html").replaceAll("\\","/"));
+ await expect(page.getByRole("heading",{name:"等待导入第一篇论文"})).toBeVisible();
+ await page.screenshot({path:resolve(folder,"desktop-empty-light.png"),fullPage:true});
+ await page.evaluate(()=>(window as any).__desktopState.phase="ready");
  await expect(page.getByRole("heading",{name:"本机已就绪"})).toBeVisible();
+ checks.push("explicit empty-library phase offers first import without a false model-loaded claim");
  await page.getByRole("button",{name:"暂停处理",exact:true}).click();
  await expect(page.getByRole("heading",{name:"本机处理已暂停"})).toBeVisible();
  await page.getByRole("button",{name:"恢复处理",exact:true}).click();

@@ -46,7 +46,7 @@ node scripts/deploy-free.ts
 
 ## 本地节点
 
-可运行 `node scripts/setup-node.ts` 自动配对由本仓库部署的 Worker，生成 `.local/node.json`。也可复制 `local/node.example.json` 后在网页配对，运行 `scripts/store-secret.ps1` 保存设备凭证。启动前必须将 Python、论文库、模型、索引路径和 `YOUR_INDEX_VERSION` 占位值替换为本机实际配置；CPU/CUDA 身份必须与索引原构建一致。已有本机配置不会被自动覆盖。
+可运行 `node scripts/setup-node.ts` 自动配对由本仓库部署的 Worker，生成 `.local/node.json`。也可复制 `local/node.example.json` 后在网页配对，运行 `scripts/store-secret.ps1` 保存设备凭证。默认模板使用显式空论文库：配置 Python、模型和 libraryRoot 路径后即可启动，首次导入后才建立索引并加载检索模型。已有索引可使用 local/node-existing-index.example.json，填入论文库、索引路径和 YOUR_INDEX_VERSION；CPU/CUDA 身份必须与原构建一致。缺失的已有索引不会静默改成空库，已有本机配置也不会自动覆盖。
 
 ```powershell
 node local/node.ts .local/node.json

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { mutate, errorText } from "./api.ts";
 import { Field, Loading, Pager, date } from "./components.tsx";
 import { usePaged, type Run } from "./hooks.ts";
@@ -20,12 +20,14 @@ export function LibraryImports({
   revision,
   run,
   refresh,
+  onPendingChange,
 }: {
   projectId?: string;
   data: Overview;
   revision: number;
   run: Run;
   refresh: () => void;
+  onPendingChange?: (count:number|undefined) => void;
 }) {
   const jobs = usePaged<Omit<LibraryJob, "deviceHash">>(
     "imports?limit=5" +
@@ -37,6 +39,7 @@ export function LibraryImports({
     [title, setTitle] = useState(""),
     [busy, setBusy] = useState(false),
     [message, setMessage] = useState("");
+  useEffect(()=>{onPendingChange?.(jobs.value?.pendingCount);},[onPendingChange,jobs.value?.pendingCount,projectId]);
   const connected = data.deviceState?.connected ?? data.deviceOnline;
   const state = (job: LibraryJob | Omit<LibraryJob, "deviceHash">) => {
     if (job.cancelPending) return "已取消，等待本机确认";

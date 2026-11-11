@@ -9,6 +9,13 @@ export function deviceView(
       label: "本机离线",
       detail: "本机尚未连接，检索任务会等待",
     };
+  if (data?.deviceState?.phase === "empty")
+    return {
+      connected: true,
+      label: "本机已连接",
+      detail:
+        "论文库还是空的。添加第一篇论文后，本机会建立索引并加载检索模型。",
+    };
   if (data?.deviceState?.ready ?? data?.deviceOnline)
     return {
       connected: true,
