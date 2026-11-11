@@ -182,6 +182,12 @@ try {
   assert.equal(researchDone.tools, 2);
   assert.equal(researchDone.resumeSeq, 4);
   assert.match(researchDone.answer, /cite:fixture-chunk/);
+  const savedArtifact=await api("artifacts","POST",{requestId:"artifact-save",taskId:research.id,kind:"reading",title:"Research record"});
+  assert.equal(savedArtifact.sources[0].chunk_id,"fixture-chunk");
+  const editedArtifact=await api("artifacts/"+savedArtifact.id,"PATCH",{requestId:"artifact-edit",version:1,content:"User-edited result [cite:fixture-chunk]"});
+  assert.equal(editedArtifact.version,2);assert.equal((await api("artifacts/"+savedArtifact.id+"?version=1")).content,researchDone.answer);
+  const exported=await fetch(base+"/api/artifacts/"+savedArtifact.id+"/export?format=md",{headers:{Cookie:cookie}});assert.ok((await exported.text()).includes("Evidence."));
+  checks.push("research artifacts preserve versioned original evidence, reject destructive edits and export source-bearing content");
   checks.push(
     "real DO registered research tools; preparation and three model runs reused one session across two validated observations",
   );
@@ -445,6 +451,7 @@ try {
   for(const id of removedOps){assert.equal(localDb.prepare("SELECT id FROM outbox WHERE id=?").all(id).length,0);assert.equal(localDb.prepare("SELECT id FROM deleted_operations WHERE id=?").all(id).length,1);}
   localDb.close();
   checks.push("offline deletion waited for node reconnect and purged real outbox with persistent replay tombstones");
+  assert.equal((await fetch(base+"/api/artifacts/"+savedArtifact.id,{headers:{Cookie:cookie}})).status,404);
   await api("device/revoke", "POST", {});
   await until(async () => !(await api("state")).deviceOnline);
   checks.push("device revocation immediately enforced");

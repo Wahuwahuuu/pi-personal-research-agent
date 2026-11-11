@@ -1,3 +1,4 @@
+import {Artifacts,exportArtifact} from "./artifacts.ts";
 import {Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
 import { IdentityRegistry } from "./identity.ts";
 export { IdentityRegistry };
@@ -91,6 +92,7 @@ export class PersonalAgent extends DurableObject<Env> {
   budgetLedger: BudgetLedger;
   deletions: DeletionStore;
   workspace:Workspace;
+  artifacts:Artifacts;
   database: StateStorage;
   private busy = false;
   private ownerId: string;
@@ -111,6 +113,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.repository = new StateRepository(this.database);
     this.state = this.repository.load();
     this.workspace=new Workspace(this.database);this.workspace.migrate(this.state);
+    this.artifacts=new Artifacts(this.database);
     this.budgetLedger = new BudgetLedger(this.database);
     this.deletions = new DeletionStore(this.database);
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_billing_outbox(id TEXT PRIMARY KEY,usage TEXT NOT NULL)");
@@ -385,7 +388,7 @@ export class PersonalAgent extends DurableObject<Env> {
     if (path === "/api/papers" && r.method === "GET") {
       const version =
         new URL(r.url).searchParams.get("indexVersion") ??
-        this.device()?.deserializeAttachment().indexVersion;
+        this.device()?.deserializeAttachment().indexVersion??this.ctx.storage.sql.exec<{version:string}>("SELECT version FROM pra_catalog ORDER BY rowid DESC LIMIT 1").toArray()[0]?.version;
       if (!version) return json([]);
       const c = this.catalog(version),
         port = this.device()?.deserializeAttachment().readerPort;
@@ -610,6 +613,36 @@ export class PersonalAgent extends DurableObject<Env> {
       memoryCount:this.state.cloudMemory!.entries.length,deviceOnline:!!this.device(),cursor:this.repository.cursor(),
       model:{id:this.env.MODEL_MODE==="mock"?MODEL.id:this.env.MODEL_ID,mode:this.env.MODEL_MODE,thinking:"off"}
     });
+    if(path==="/api/artifacts"){
+      if(r.method==="GET")return json(this.artifacts.list(p.get("project")??undefined,Number(p.get("after")??0),Number(p.get("limit")??30)));
+      if(r.method==="POST"){
+        const b=await this.body(r),t=getTask(this.state,text(b.taskId,128));
+        if(!t.answer||!["completed","waiting_user"].includes(t.status))throw new Problem("RESULT_NOT_READY",409);
+        const c=this.state.conversations?.find(c=>c.id===t.conversationId);if(!c)throw new Problem("NOT_FOUND",404);
+        const artifact=this.workspace.once(b.requestId,"artifact:create",b,()=>this.artifacts.create({projectId:c.projectId,conversationId:c.id,taskId:t.id,
+          kind:b.kind as any??"reading",title:text(b.title??t.input.slice(0,120),150),partial:t.status!=="completed"},t.answer!,t.researchEvidence??[]));
+        this.publish();return json(artifact,201);
+      }
+    }
+    const artifact=path.match(/^\/api\/artifacts\/([^/]+)(?:\/(versions|export))?$/);
+    if(artifact){
+      const id=artifact[1];
+      if(r.method==="GET"){
+        if(artifact[2]==="versions")return json(this.artifacts.versions(id));
+        const value=this.artifacts.get(id,p.has("version")?Number(p.get("version")):undefined);
+        if(artifact[2]==="export"){
+          const t=this.state.tasks.find(t=>t.id===value.taskId),papers=t?.researchIndex?this.catalog(t.researchIndex).papers:[];
+          const output=exportArtifact(value,p.get("format")??"md",papers);
+          return new Response(output.content,{headers:{"Content-Type":output.type,"Content-Disposition":'attachment; filename="research.'+output.extension+'"',"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
+        }
+        return json(value);
+      }
+      if(!artifact[2]&&r.method==="PATCH"){
+        const b=await this.body(r),value=this.workspace.once(b.requestId,"artifact:"+id,b,()=>this.artifacts.revise(id,Number(b.version),text(b.content,12000),typeof b.title==="string"?text(b.title,150):undefined));
+        this.publish();return json(value);
+      }
+      if(!artifact[2]&&r.method==="DELETE"){const b=await this.body(r);const value=this.workspace.once(b.requestId,"artifact:delete:"+id,{},()=>{this.artifacts.delete(id);this.workspace.forgetEntity(id);return{ok:true};});this.publish();return json(value);}
+    }
     if(path==="/api/settings"){
       if(r.method==="GET")return json(this.workspace.settings());
       if(r.method==="PATCH"){const b=await this.body(r);const result=this.workspace.once(b.requestId,"settings",b,()=>this.workspace.updateSettings(b));this.publish();return json(result);}
@@ -1194,6 +1227,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.database.transactionSync(()=>{
           if(d.session_id)deletePiConversation(this.database,d.session_id);
           this.workspace.forgetEntity(d.id);
+          for(const id of this.artifacts.deleteConversation(d.id))this.workspace.forgetEntity(id);
           deleteConversationState(this.state,d.id);this.save();this.deletions.cloudDone(d.id);
         });
       } catch(error) {
