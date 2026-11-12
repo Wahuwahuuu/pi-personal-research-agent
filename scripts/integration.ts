@@ -129,7 +129,7 @@ try {
   );
   checks.push("cross-origin request rejected");
   assert.equal((await fetch(base+"/api/deployment")).status,401);
-  const deployed=await api("deployment");assert.equal(deployed.release.appStateSchema,2);assert.equal(deployed.release.piStorageSchema,2);
+  const deployed=await api("deployment");assert.equal(deployed.release.appStateSchema,3);assert.equal(deployed.release.piStorageSchema,2);
   assert.equal(deployed.release.nodeProtocol,1);assert.equal((await api("state")).usage.requests,0);
   checks.push("authenticated lightweight deployment metadata reports a pinned compatibility contract without initializing model work");
   const futureChanges=await api("changes?after="+Number.MAX_SAFE_INTEGER);

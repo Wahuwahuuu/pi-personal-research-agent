@@ -21,8 +21,8 @@ test("release contract pins installed application schema and runtime dependency 
 test("a release is compatible only when its complete declared read-write contract matches",()=>{
  const reordered=Object.fromEntries(Object.entries(RELEASE_CONTRACT).reverse());
  assert.doesNotThrow(()=>assertReleaseCompatible(RELEASE_CONTRACT,reordered));
- for(const key of ["appStateSchema","piStorageSchema","nodeProtocol","nodeConfiguration"]){
-  assert.throws(()=>assertReleaseCompatible(RELEASE_CONTRACT,{...RELEASE_CONTRACT,[key]:3}),/INCOMPATIBLE/);
+ for(const key of ["appStateSchema","piStorageSchema","nodeProtocol","nodeConfiguration"] as const){
+  assert.throws(()=>assertReleaseCompatible(RELEASE_CONTRACT,{...RELEASE_CONTRACT,[key]:RELEASE_CONTRACT[key]+1}),/INCOMPATIBLE/);
  }
  assert.throws(()=>assertReleaseCompatible(RELEASE_CONTRACT,{...RELEASE_CONTRACT,family:"other-family"}),/INCOMPATIBLE/);
  assert.throws(()=>assertReleaseCompatible(RELEASE_CONTRACT,{...RELEASE_CONTRACT,runtime:{...RELEASE_CONTRACT.runtime,piDurable:"2.0.0"}}),/INCOMPATIBLE/);

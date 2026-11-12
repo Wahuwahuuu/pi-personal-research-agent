@@ -325,8 +325,8 @@ export class PersonalAgent extends DurableObject<Env> {
         this.ctx.abort("PRA_CHECKPOINT_RESTORE");return;
       }
       await this.harness.dispose();this.runtime=undefined;
-      this.state=applyRecovery(this.database,job.guard,job.id,this.env.BUILD_ID??"development");
-      this.repository.load();this.memoryIndex=new MemoryIndex(this.database);this.catalogCache.clear();
+      applyRecovery(this.database,job.guard,job.id,this.env.BUILD_ID??"development");
+      this.state=this.repository.load();this.memoryIndex=new MemoryIndex(this.database);this.catalogCache.clear();
       await this.identityRegistry().finishRecovery(this.ownerId,job.id);
       this.recoveryBlocked=false;
     }catch(error){
@@ -1505,7 +1505,7 @@ export class PersonalAgent extends DurableObject<Env> {
       attachment.catalogReady &&
       !this.state.operations.some((o) => o.state === "sent")
     ) {
-      const op = orderedTasks(this.state).filter(t=>!t.pauseRequested&&this.proactive.allowed(t)&&(t.error!==SCOPED_RESEARCH_UPDATE||attachment.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY))&&(t.origin!=="schedule"||!this.resources.blocked)).flatMap(t=>this.state.operations.filter(o=>o.taskId===t.id)).find(
+      const op = orderedTasks(this.state,true).filter(t=>!t.pauseRequested&&this.proactive.allowed(t)&&(t.error!==SCOPED_RESEARCH_UPDATE||attachment.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY))&&(t.origin!=="schedule"||!this.resources.blocked)).flatMap(t=>this.state.operations.filter(o=>o.taskId===t.id)).find(
         (o) =>
           o.state === "pending" &&
           this.state.tasks.some(
@@ -1541,7 +1541,7 @@ export class PersonalAgent extends DurableObject<Env> {
       )
     )
       return;
-    const t = orderedTasks(this.state).filter(t=>!t.conversationId||!this.deletions.blocksConversation(t.conversationId)).find(
+    const t = orderedTasks(this.state,true).filter(t=>!t.conversationId||!this.deletions.blocksConversation(t.conversationId)).find(
       (t) =>
         !t.pauseRequested&&this.proactive.allowed(t)&&(t.origin!=="schedule"||!this.resources.blocked)&&t.proactive?.stage!=="imports"&&t.engine === "durable" &&
         (t.status === "queued" ||

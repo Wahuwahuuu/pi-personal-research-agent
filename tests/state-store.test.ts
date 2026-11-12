@@ -1,9 +1,11 @@
+import {ProactiveResearch} from "../src/proactive-research.ts";
+import {orderedTasks} from "../src/task-control.ts";
 import {resolveConversationControl,recordConversationControl} from "../src/conversation-control.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { StateRepository, type StateStorage } from "../src/state-store.ts";
-import {conversationPage} from "../src/workspace.ts";
+import {conversationPage,taskPage,taskSummary} from "../src/workspace.ts";
 import { initialState, submit } from "../src/domain.ts";
 function fixture() {
   const db = new DatabaseSync(":memory:");
@@ -122,7 +124,7 @@ test("cold history replacement and failed transaction preserve unloaded partitio
 test("schema one history counts migrate atomically without rewriting legacy message positions",()=>{
  const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(2,3);store.save(s);
  f.db.exec("UPDATE pra_app_schema SET version=1; DROP TABLE pra_history_counts; UPDATE pra_data_messages SET position=position+1000 WHERE parent='c1'");
- const cold=new StateRepository(f.storage),loaded=cold.load();assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,2);
+ const cold=new StateRepository(f.storage),loaded=cold.load();assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,3);
  assert.equal(cold.historyCount(loaded.conversations![1]),3);assert.equal(loaded.conversations![1].history[0].turn_id,"t0");
  assert.equal(cold.save(loaded).writes,0);loaded.conversations![1].history.push({turn_id:"new",user_text:"q",final_answer:"a"});
  assert.equal(cold.save(loaded).writes,1);
@@ -194,4 +196,68 @@ test("old contiguous entity positions do not migrate eagerly and rebalance only 
  assert.equal(cold.save(loaded).writes,0);
  loaded.tasks.splice(2,0,{...template,id:"second",requestId:"second"});
  assert.equal(cold.save(loaded).writes,1);f.db.close();
+});
+
+const payloadReads=(f:ReturnType<typeof fixture>,name:"tasks"|"operations")=>f.queries.filter(q=>new RegExp("^SELECT (?:id,parent,position,value|\\*) FROM pra_data_"+name).test(q.sql)).reduce((sum,q)=>sum+q.rows,0);
+test("1000 archived tasks and operations stay unhydrated until a page or individual result is read",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();
+ for(let i=0;i<1000;i++){
+   const t=submit(s,"question "+i+" "+"q".repeat(2000),"lazy-"+i,"research",i);t.status="completed";t.answer="answer "+i+" "+"a".repeat(8000);
+   t.conversationId="c";s.operations.push({id:"op-"+i,taskId:t.id,tool:"retrieve_chunks",indexVersion:"v",state:"done",deadline:0,params:{query:"q"},result:{evidence:"e".repeat(8000)}});
+ }
+ store.save(s);
+ const cold=new StateRepository(f.storage);f.queries.length=0;const loaded=cold.load();
+ assert.equal(payloadReads(f,"tasks"),0);assert.equal(payloadReads(f,"operations"),0);
+ assert.equal(loaded.tasks.filter(t=>t.status==="completed").length,1000);assert.equal(orderedTasks(loaded,true).length,0);
+ const proactive=new ProactiveResearch({state:()=>loaded,batches:{pending:()=>[]}} as any);proactive.tick();assert.equal(proactive.nextBudgetWake(),undefined);
+ assert.equal(cold.save(loaded).writes,0);
+ assert.equal(payloadReads(f,"tasks"),0);assert.equal(payloadReads(f,"operations"),0);
+ const page=taskPage(loaded,{limit:10});const summaries=page.items.map(taskSummary);
+ assert.equal(summaries.length,10);assert.equal(summaries[0].input,s.tasks[999].input);
+ assert.equal(payloadReads(f,"tasks"),10);assert.equal(payloadReads(f,"operations"),0);
+ assert.equal((loaded.operations[0].result as any).evidence,"e".repeat(8000));assert.equal(payloadReads(f,"operations"),1);
+ assert.equal(cold.save(loaded).writes,0);
+ assert.equal(payloadReads(f,"tasks"),10);assert.equal(payloadReads(f,"operations"),1);
+ f.db.close();
+});
+test("lazy task and operation mutations preserve untouched payloads and failed-commit retry",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();
+ const t=submit(s,"retained question","lazy-mutate","research");t.workflow={progress:"before",nested:{value:1}} as any;t.answer="retained answer";
+ s.operations.push({id:"op",taskId:t.id,tool:"search_papers",indexVersion:"v",state:"done",deadline:0,params:{query:"retained query"},result:{nested:{value:1}}});
+ store.save(s);const cold=new StateRepository(f.storage),loaded=cold.load();f.queries.length=0;
+ loaded.tasks[0].status="cancelled";assert.equal(payloadReads(f,"tasks"),1);assert.equal(payloadReads(f,"operations"),0);
+ f.setFail(true);assert.throws(()=>cold.save(loaded),/INJECTED/);f.setFail(false);
+ assert.equal(cold.save(loaded).writes,1);
+ (loaded.tasks[0].workflow as any).nested.value=2;(loaded.operations[0].result as any).nested.value=2;
+ assert.equal(cold.save(loaded).writes,2);assert.equal(cold.save(loaded).writes,0);
+ const reopened=new StateRepository(f.storage).load();
+ assert.equal(reopened.tasks[0].status,"cancelled");assert.equal(reopened.tasks[0].input,"retained question");assert.equal(reopened.tasks[0].answer,"retained answer");
+ assert.equal((reopened.tasks[0].workflow as any).nested.value,2);assert.equal((reopened.operations[0].result as any).nested.value,2);assert.equal(reopened.operations[0].params.query,"retained query");
+ f.db.close();
+});
+test("removing unhydrated tasks and results deletes their text without reading unrelated bodies",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();
+ for(let i=0;i<5;i++){const t=submit(s,"remove "+i,"remove-"+i,"chat");s.operations.push({id:"op"+i,taskId:t.id,tool:"search_papers",indexVersion:"v",state:"done",deadline:0,params:{query:"q"},result:{value:"delete me"}});}
+ store.save(s);const cold=new StateRepository(f.storage),loaded=cold.load();f.queries.length=0;
+ const id=loaded.tasks[2].id;loaded.tasks=loaded.tasks.filter(t=>t.id!==id);loaded.operations=loaded.operations.filter(o=>o.taskId!==id);
+ assert.equal(cold.save(loaded).writes,2);assert.equal(payloadReads(f,"tasks"),0);assert.equal(payloadReads(f,"operations"),0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM pra_data_tasks WHERE id=?").get(id)!.n,0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM pra_data_operations WHERE parent=?").get(id)!.n,0);
+ assert.equal(cold.save(loaded).writes,0);f.db.close();
+});
+test("schema two header migration preserves exact bodies and rolls back a failed migration",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();
+ submit(s,"original source","migration","research");store.save(s);
+ const original=f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks").all();
+ f.db.exec("UPDATE pra_app_schema SET version=2; ALTER TABLE pra_data_tasks DROP COLUMN header; ALTER TABLE pra_data_operations DROP COLUMN header");
+ let fail=true;
+ const wrapped:StateStorage={...f.storage,sql:{exec<T>(q:string,...b:any[]){if(fail&&q.startsWith("UPDATE pra_data_tasks SET header="))throw Error("MIGRATION_INTERRUPTED");return f.storage.sql.exec<T>(q,...b);}}};
+ assert.throws(()=>new StateRepository(wrapped),/MIGRATION_INTERRUPTED/);
+ assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,2);
+ assert.ok(!f.db.prepare("PRAGMA table_info(pra_data_tasks)").all().some(c=>c.name==="header"));
+ assert.deepEqual(f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks").all(),original);
+ fail=false;const cold=new StateRepository(wrapped),loaded=cold.load();
+ assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,3);
+ assert.equal(loaded.tasks[0].input,"original source");assert.equal(cold.save(loaded).writes,0);
+ assert.deepEqual(f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks").all(),original);f.db.close();
 });

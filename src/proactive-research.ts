@@ -94,7 +94,7 @@ export class ProactiveResearch {
   }
   syncPauses(now = Date.now()) {
     const s = this.ports.state();
-    for (const t of s.tasks.filter((t) => t.proactive && !closed(t))) {
+    for (const t of s.tasks.filter((t) => !closed(t) && t.proactive)) {
       if (!this.allowed(t)) {
         if (!t.pauseRequested) {
           pauseTask(t);
@@ -221,8 +221,8 @@ export class ProactiveResearch {
       .state()
       .tasks.filter(
         (t) =>
-          t.proactive &&
           t.status === "waiting_user" &&
+          t.proactive &&
           !t.pauseRequested &&
           this.allowed(t) &&
           settledForControl(this.ports.state(), t),
@@ -236,8 +236,8 @@ export class ProactiveResearch {
     const s = this.ports.state();
     for (const t of s.tasks) {
       if (
-        !t.proactive ||
         t.status !== "waiting_user" ||
+        !t.proactive ||
         t.pauseRequested ||
         !this.allowed(t) ||
         !settledForControl(s, t)
@@ -279,8 +279,8 @@ export class ProactiveResearch {
         if (
           s.tasks.some(
             (t) =>
-              t.proactive &&
               !closed(t) &&
+              t.proactive &&
               this.ports.batches.get(t.proactive.batchId).planId === b.planId,
           )
         )

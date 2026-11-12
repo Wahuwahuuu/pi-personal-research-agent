@@ -189,8 +189,8 @@ export function taskOrder(a: Task, b: Task) {
     a.id.localeCompare(b.id)
   );
 }
-export function orderedTasks(s: State) {
-  return [...s.tasks].sort(taskOrder);
+export function orderedTasks(s: State,activeOnly=false) {
+  return s.tasks.filter(t=>!activeOnly||!["completed","failed","cancelled"].includes(t.status)).sort(taskOrder);
 }
 
 

@@ -1,3 +1,4 @@
+import {entityHeader,isLazyCollection,lazyEntity,type LazyEntity,type LazyCollection} from "./lazy-entity.ts";
 import { stableEntityPositions } from "./row-order.ts";
 import { appendChanges, changeCursor, readChanges } from "./change-feed.ts";
 import { initialState, Problem, type State } from "./domain.ts";
@@ -21,6 +22,7 @@ const validCollection = (name: string): name is Collection => collections.includ
  * Historical state hydration is intentionally separate from paginated client reads. */
 export class StateRepository {
   private cached = new Map<string, string>();
+  private entities = new WeakMap<object,LazyEntity>();
   private positions = new Map<Collection, Map<string, number>>();
   private storage: StateStorage;
   private histories = new Map<string, HistoryPartition>();
@@ -32,11 +34,18 @@ export class StateRepository {
     storage.transactionSync(() => {
       storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_app_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL)");
       const version = storage.sql.exec<{ version: number }>("SELECT version FROM pra_app_schema WHERE id=1").toArray()[0]?.version ?? 0;
-      if (version > 2) throw new Problem("UNKNOWN_STATE_SCHEMA", 503);
+      if (version > 3) throw new Problem("UNKNOWN_STATE_SCHEMA", 503);
       storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_meta (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
       for (const name of collections) {
         storage.sql.exec("CREATE TABLE IF NOT EXISTS " + table(name) + " (id TEXT PRIMARY KEY, parent TEXT NOT NULL, position INTEGER NOT NULL, value TEXT NOT NULL)");
         storage.sql.exec("CREATE INDEX IF NOT EXISTS " + table(name) + "_parent ON " + table(name) + "(parent,id)");
+      }
+      for(const name of ["tasks","operations"] as const){
+        const columns=storage.sql.exec<{name:string}>("PRAGMA table_info("+table(name)+")").toArray();
+        if(!columns.some(c=>c.name==="header")){
+          if(version>=3)throw new Problem("INVALID_ENTITY_HEADER",503);
+          storage.sql.exec("ALTER TABLE "+table(name)+" ADD COLUMN header TEXT");
+        }
       }
       storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_history_counts (conversation_id TEXT PRIMARY KEY, turns INTEGER NOT NULL CHECK(turns>=0))");
       storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_messages_position ON pra_data_messages(parent,position,id)");
@@ -65,23 +74,41 @@ export class StateRepository {
         storage.sql.exec("INSERT OR REPLACE INTO pra_history_counts SELECT c.id,COUNT(m.id) FROM pra_data_conversations c LEFT JOIN pra_data_messages m ON m.parent=c.id GROUP BY c.id");
         storage.sql.exec("UPDATE pra_app_schema SET version=2 WHERE id=1");
       }
+      if(version<3){
+        for(const name of ["tasks","operations"] as const){
+          let after="";
+          for(;;){
+            const rows=storage.sql.exec<Row>("SELECT id,parent,position,value FROM "+table(name)+" WHERE id>? ORDER BY id LIMIT 200",after).toArray();
+            if(!rows.length)break;
+            for(const row of rows)storage.sql.exec("UPDATE "+table(name)+" SET header=? WHERE id=?",serial(entityHeader(name,parse(row.value))),row.id);
+            after=rows.at(-1)!.id;
+          }
+        }
+        storage.sql.exec("UPDATE pra_app_schema SET version=3 WHERE id=1");
+      }
     });
   }
   private put(name: Collection, row: Row) {
+    if(isLazyCollection(name)){
+      this.storage.sql.exec("INSERT INTO "+table(name)+"(id,parent,position,value,header) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent=excluded.parent,position=excluded.position,value=excluded.value,header=excluded.header",row.id,row.parent,row.position,row.value,serial(entityHeader(name,parse(row.value))));
+      return;
+    }
     this.storage.sql.exec("INSERT INTO " + table(name) + "(id,parent,position,value) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET parent=excluded.parent,position=excluded.position,value=excluded.value",
       row.id, row.parent, row.position, row.value);
   }
   private split(state: State) {
     const meta = new Map<string, string>(), rows = new Map<Collection, Row[]>(), untouched = new Set<string>(), counts = new Map<string,number>();
     const rest: Record<string, any> = { ...state };
-    const add = (name: Collection, values: any[], idOf = (v: any) => String(v.id), parentOf = (v: any) => String(v.conversationId ?? v.taskId ?? ""), positionOf?: (v:any,position:number)=>number) => {
+    const add = (name: Collection, values: any[], idOf = (v: any) => String(v.id), parentOf = (v: any) => String(name==="tasks"?(v.conversationId??""):name==="operations"?(v.taskId??""):(v.conversationId??v.taskId??"")), positionOf?: (v:any,position:number)=>number) => {
       const ids = new Set<string>(), identities = values.map(idOf);
       const positions = positionOf ? undefined : stableEntityPositions(identities, this.positions.get(name) ?? new Map());
       rows.set(name, values.map((v, position) => {
         const id = identities[position];
         if (!id || ids.has(id)) throw new Problem("DUPLICATE_STATE_ID", 409);
         ids.add(id);
-        return { id, parent: parentOf(v), position:positionOf?.(v,position)??positions![position], value: serial(v) };
+        const savedPosition=positionOf?.(v,position)??positions![position],entity=isLazyCollection(name)?this.entities.get(v):undefined;
+        if(entity&&!entity.loaded&&entity.position!==savedPosition)entity.load();
+        return { id, parent: parentOf(v), position:savedPosition, value:entity&&!entity.loaded?"":serial(v) };
       }));
     };
     for (const name of ["tasks", "operations", "memories", "notices", "plans"] as const) { add(name, state[name]); delete rest[name]; }
@@ -135,11 +162,28 @@ export class StateRepository {
     });
     return conversation;
   }
+  private attachEntity(name:LazyCollection,row:{id:string;parent:string;position:number;header:string}){
+    const header=parse<Record<string,any>>(row.header);
+    if(!header||header.id!==row.id)throw new Problem("INVALID_ENTITY_HEADER",503);
+    const entity=lazyEntity(name,header,row.position,()=>{
+      const stored=this.storage.sql.exec<Row>("SELECT id,parent,position,value FROM "+table(name)+" WHERE id=?",row.id).toArray()[0];
+      if(!stored)throw new Problem("ENTITY_UNAVAILABLE",503);
+      // Cache the original persisted bytes before exposing a mutable payload.
+      this.cached.set(name+":"+row.id,serial(stored));
+      return parse<Record<string,any>>(stored.value);
+    });
+    this.entities.set(entity.proxy,entity);return entity.proxy;
+  }
   private read(lazy=false): State {
     const state: any = initialState();
     for (const row of this.storage.sql.exec<{ id: string; value: string }>("SELECT id,value FROM pra_meta").toArray()) state[row.id] = parse(row.value);
     const all = (name: Collection) => {
-      const rows = this.storage.sql.exec<Row>("SELECT * FROM " + table(name) + " ORDER BY position,id").toArray();
+      if(lazy&&isLazyCollection(name)){
+        const rows=this.storage.sql.exec<{id:string;parent:string;position:number;header:string}>("SELECT id,parent,position,header FROM "+table(name)+" ORDER BY position,id").toArray();
+        this.positions.set(name,new Map(rows.map(row=>[row.id,row.position])));
+        return rows.map(row=>this.attachEntity(name,row));
+      }
+      const rows = this.storage.sql.exec<Row>("SELECT id,parent,position,value FROM " + table(name) + " ORDER BY position,id").toArray();
       if (name !== "messages") this.positions.set(name, new Map(rows.map(row => [row.id, row.position])));
       return rows.map(row => parse<any>(row.value));
     };
@@ -159,7 +203,7 @@ export class StateRepository {
     return state;
   }
   load(): State {
-    this.histories.clear();this.cached.clear();this.messageParents.clear();this.positions.clear();
+    this.entities=new WeakMap();this.histories.clear();this.cached.clear();this.messageParents.clear();this.positions.clear();
     this.historyCounts=new Map(this.storage.sql.exec<{conversation_id:string;turns:number}>("SELECT conversation_id,turns FROM pra_history_counts").toArray().map(r=>[r.conversation_id,r.turns]));
     const state = this.read(true);
     this.knownConversations=new Set((state.conversations??[]).map(c=>c.id));
@@ -192,6 +236,7 @@ export class StateRepository {
         changes.push({ entity: "meta", id: key });
       }
       for (const [name, rows] of split.rows) for (const row of rows) if (this.cached.get(name + ":" + row.id) !== serial(row)) {
+        if(!row.value)throw new Problem("UNLOADED_ENTITY_WRITE",503);
         this.put(name, row); changes.push({ entity: name, id: row.id });
       }
       for (const key of this.cached.keys()) if (!next.has(key)&&!deletedMessages.has(key)) {

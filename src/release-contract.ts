@@ -12,8 +12,8 @@ export interface ReleaseContract {
  * Bump family for incompatible persistence, deletion, billing or recovery changes. */
 export const RELEASE_CONTRACT: ReleaseContract = Object.freeze({
   format: 1,
-  family: "pra-v1-state2-pi2-20261113",
-  appStateSchema: 2,
+  family: "pra-v1-state3-pi2-20261113",
+  appStateSchema: 3,
   piStorageSchema: 2,
   nodeProtocol: 1,
   nodeConfiguration: 1,
