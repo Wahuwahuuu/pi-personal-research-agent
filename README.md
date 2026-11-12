@@ -176,3 +176,5 @@ npx wrangler dev --var RESEARCH_ENGINE:durable
 恢复前将当前删除标记、修订记忆、设备权限、导入队列和计费数据暂存到独立身份对象；保护记录超过 750 KB 时拒绝开始，不丢弃记录。时间回退后先重放这些保护规则，再开放访问；旧任务请求、已删除会话及成果不会通过本入口重建。完成后清除临时保护正文，保留恢复状态。失败时维持访问门禁；GET /api/recovery 仍可查看状态。未完任务取消并保留已有部分结果，关注计划暂停，原 Pi 会话重新从应用历史建立；不会自动重做恢复点之后的工作。
 
 检查点依赖平台的有限保留窗口，不是永久离线备份。此协议不覆盖绕过应用入口的控制台整库回退、身份对象同时回退或平台备份物理清除。既有历史中未记录的删除请求标识无法补造。平台机制见 [Cloudflare PITR 文档](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)。
+
+鉴权诊断接口 GET /api/recovery/schema 返回当前构建、存储结构指纹和表/索引定义，仅用于排查版本兼容性；不返回行数据、恢复书签或凭证，不接受任意 SQL。

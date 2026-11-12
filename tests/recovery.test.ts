@@ -18,7 +18,7 @@ import {ResearchBatches} from "../src/research-batches.ts";
 import {ReaderRequests} from "../src/reader-requests.ts";
 import {MemoryIndex} from "../src/memory-index.ts";
 import {BudgetLedger} from "../src/budget.ts";
-import {captureRecovery,applyRecovery,initRecovery,recoverySchema} from "../src/recovery-data.ts";
+import {captureRecovery,applyRecovery,initRecovery,recoverySchema,recoverySchemaDetails} from "../src/recovery-data.ts";
 import {RecoveryStore,RECOVERY_LIMIT} from "../src/recovery-store.ts";
 function port(db:DatabaseSync):StateStorage{let depth=0;return{sql:{exec<T>(q:string,...b:any[]){const s=db.prepare(q);const rows=(s.columns().length?s.all(...b):(s.run(...b),[])) as T[];return{toArray:()=>rows};}},transactionSync<T>(f:()=>T){if(depth)return f();db.exec("BEGIN");depth++;try{const r=f();db.exec("COMMIT");return r;}catch(e){db.exec("ROLLBACK");throw e;}finally{depth--;}}};}
 function setup(db:DatabaseSync){
@@ -142,5 +142,18 @@ test("current evidence-backed memory correction survives while old dependent ans
   assert.equal(restored.conversations?.[0].history[0].final_answer,"");
   assert.equal(restored.tasks[0].answer,undefined);assert.equal(restored.tasks[0].input,"Independent question");
   assert.equal(new MemoryIndex(f.storage).recall("corrected",[],"default")[0]?.content,"User corrected conclusion");
+ }finally{db.close();}
+});
+
+test("recovery diagnostics expose definitions and a signature without row contents",()=>{
+ const db=new DatabaseSync(":memory:");
+ try{
+  const f=setup(db);db.prepare("UPDATE pra_auth SET hash=?").run("private-row-canary");
+  const report=recoverySchemaDetails(f.storage);
+  assert.equal(report.fingerprint,recoverySchema(f.storage));
+  assert.ok(report.objects.some(o=>o.name==="pra_auth"));
+  assert.ok(!JSON.stringify(report).includes("private-row-canary"));
+  const before=report.fingerprint;db.exec("CREATE TABLE pra_unknown_schema(value TEXT)");
+  assert.notEqual(recoverySchema(f.storage),before);
  }finally{db.close();}
 });

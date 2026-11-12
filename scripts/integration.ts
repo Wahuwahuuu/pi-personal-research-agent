@@ -140,6 +140,11 @@ try {
   });
   assert.match(done.answer, /模拟模型/);
   assert.equal(done.engine,"durable");
+  const schemaProfile=await api("recovery/schema");
+  assert.equal(schemaProfile.build,"development");
+  assert.match(schemaProfile.fingerprint,/^[a-f0-9]{64}$/);
+  assert.ok(schemaProfile.objects.some((o:any)=>o.name==="pi_conversations"));
+  assert.ok(!JSON.stringify(schemaProfile).includes(admin));
   const checkpointBody={requestId:"local-checkpoint-metadata",label:"Local bookmark metadata"};
   const checkpointFirst=await api("recovery/checkpoints","POST",checkpointBody);
   const checkpointAgain=await api("recovery/checkpoints","POST",checkpointBody);

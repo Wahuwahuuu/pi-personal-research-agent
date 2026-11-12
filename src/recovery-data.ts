@@ -24,10 +24,11 @@ export interface RecoveryGuard {
  counters:{id:string;requestId:string;calls:number;tools:number;activeMs:number}[];
  mutations:{id:string;operation:string;input:string;created:number}[];
 }
-export function recoverySchema(db:StateStorage){
- const rows=db.sql.exec("SELECT type,name,sql FROM sqlite_master WHERE (name GLOB 'pra_*' OR name GLOB 'pi_*') AND name NOT GLOB 'pra_recovery_*' ORDER BY type,name").toArray();
- return createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+export function recoverySchemaDetails(db:StateStorage){
+ const objects=db.sql.exec<{type:string;name:string;sql:string|null}>("SELECT type,name,sql FROM sqlite_master WHERE (name GLOB 'pra_*' OR name GLOB 'pi_*') AND name NOT GLOB 'pra_recovery_*' ORDER BY type,name").toArray();
+ return {fingerprint:createHash("sha256").update(JSON.stringify(objects)).digest("hex"),objects};
 }
+export function recoverySchema(db:StateStorage){return recoverySchemaDetails(db).fingerprint;}
 export function initRecovery(db:StateStorage){
  db.sql.exec("CREATE TABLE IF NOT EXISTS pra_recovery_state(id INTEGER PRIMARY KEY CHECK(id=1),intent TEXT,applied TEXT)");
  db.sql.exec("CREATE TABLE IF NOT EXISTS pra_recovery_requests(id TEXT PRIMARY KEY)");

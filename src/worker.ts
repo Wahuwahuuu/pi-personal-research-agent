@@ -1,5 +1,5 @@
 import type {RecoveryJob} from "./recovery-store.ts";
-import {initRecovery,captureRecovery,applyRecovery,recoverySchema} from "./recovery-data.ts";
+import {initRecovery,captureRecovery,applyRecovery,recoverySchema,recoverySchemaDetails} from "./recovery-data.ts";
 import { DevicePairings } from "./device-pairings.ts";
 import type {Chunk} from "../packages/research/core.ts";
 import {ReaderRequests,readerView} from "./reader-requests.ts";
@@ -523,6 +523,7 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (!(await this.authorized(r, "user")))
       throw new Problem("UNAUTHORIZED", 401);
+    if(path==="/api/recovery/schema"&&r.method==="GET")return json({build:this.env.BUILD_ID??"development",...recoverySchemaDetails(this.database)});
     if(path==="/api/recovery/checkpoints"&&r.method==="POST")return this.checkpointRequest(r);
     if(path==="/api/recovery/restore"&&r.method==="POST")return this.checkpointRequest(r,true);
     const workspaceResponse=await this.workspaceRoute(r,path);if(workspaceResponse)return workspaceResponse;
