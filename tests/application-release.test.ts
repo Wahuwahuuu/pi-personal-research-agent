@@ -15,6 +15,7 @@ async function fixture(t:any){
   "package.json":'{"type":"module","dependencies":{"example":"1.0.0"}}',"package-lock.json":'{"lockfileVersion":3}',
   "local/node.ts":"export {};","local/application-contract.ts":"export const contract="+JSON.stringify(APPLICATION_CONTRACT),
   "local/desktop/main.py":"pass","local/check-runtime.py":"pass",
+  "packages/research/package.json":'{"type":"module"}',"packages/research/package-lock.json":'{"lockfileVersion":3}',
   "src/domain.ts":"export {};","packages/research/core.ts":"export {};","local/catalog.ts":"export {};",
   "packages/retrieval/uv.lock":"version = 1","packages/retrieval/pyproject.toml":"[project]",
   "local/test_sample.py":"assert True","tests/test.ts":"private test fixture",
@@ -43,7 +44,8 @@ test("application preparation freezes committed product files and installed depe
  assert.ok(!release.manifest.files.some(v=>/private|docs\/|tests\/|test_sample/.test(v.path)));
  assert.ok(f.calls[0].args.includes("--ignore-scripts"));assert.ok(f.calls[0].args.includes("--omit=dev"));
  assert.equal(f.calls[0].env.PIPAPER_API_KEY,undefined);
- assert.equal(f.calls[1].args[0],"--input-type=module");
+ assert.equal(f.calls[1].cwd,join(release.directory,"packages/research"));
+ assert.equal(f.calls[2].args[0],"--input-type=module");
  assert.equal((await verifyApplicationRelease(f.root,release.directory)).digest,release.digest);
 });
 test("changed or additional source and dependency files invalidate a previously ready release",async t=>{

@@ -76,7 +76,7 @@ export async function prepareApplicationRelease(controls:ApplicationReleaseContr
    git(["status","--porcelain","--untracked-files=normal"]).toString().trim())throw Error("COMMITTED_BUILD_REQUIRED");};
  clean();
  const paths=git(["ls-tree","-r","--name-only","-z",build]).toString("utf8").split("\0").filter(p=>p&&allowed(p));
- for(const required of ["local/node.ts","local/application-contract.ts","local/desktop/main.py","local/check-runtime.py","package.json","package-lock.json","packages/retrieval/uv.lock","packages/retrieval/pyproject.toml"])
+ for(const required of ["local/node.ts","local/application-contract.ts","local/desktop/main.py","local/check-runtime.py","package.json","package-lock.json","packages/research/package.json","packages/research/package-lock.json","packages/retrieval/uv.lock","packages/retrieval/pyproject.toml"])
   if(!paths.includes(required))throw Error("LOCAL_RELEASE_SOURCE_MISSING");
  const local=join(root,".local");await mkdir(local,{recursive:true});await owned(root,local);
  const parent=join(local,"node-releases");await mkdir(parent,{recursive:true});await owned(local,parent);
@@ -89,7 +89,8 @@ export async function prepareApplicationRelease(controls:ApplicationReleaseContr
   }
   const npmCli=controls.npmCli??join(dirname(process.execPath),"node_modules/npm/bin/npm-cli.js");
   const env={...workerEnvironment(),HTTPS_PROXY:process.env.HTTPS_PROXY,HTTP_PROXY:process.env.HTTP_PROXY};
-  await run({executable:process.execPath,args:[npmCli,"ci","--omit=dev","--ignore-scripts","--no-audit","--no-fund"],cwd:directory,env,timeout:300000});
+  for(const cwd of [directory,join(directory,"packages/research")])
+    await run({executable:process.execPath,args:[npmCli,"ci","--omit=dev","--ignore-scripts","--no-audit","--no-fund"],cwd,env,timeout:300000});
   // Imports execute the real installed dependencies without opening a node, file library or cloud session.
   await run({executable:process.execPath,args:["--input-type=module","-e",
    'await import("ws");await import("https-proxy-agent");await import("./packages/research/core.ts");await import("./local/catalog.ts");'],
