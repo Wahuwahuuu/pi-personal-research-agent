@@ -103,3 +103,17 @@ test("persistence failures from cancellation hooks are not swallowed as user-sta
   const s=fixture();task(s);
   assert.throws(()=>recordConversationControl(s,"c","取消当前研究","cancel",resolveConversationControl(s,"c","取消当前研究")!,{cancel:()=>{throw new Error("PERSIST_FAILURE");}}),/PERSIST_FAILURE/);
 });
+
+test("explicit status query verbs produce persisted zero-model receipts in empty and active conversations",()=>{
+ for(const input of ["查看任务进度","请帮我查看当前任务的进度。","看看这项工作的进展","查询进度","看一下研究进展","看下当前研究的进度","查一下任务进度"]){
+  const s=fixture();let r=control(s,input);
+  assert.equal(r.control?.action,"status");assert.equal(r.calls,0);assert.equal(s.conversations![0].history.length,1);
+  const t=task(s);t.status="waiting_device";r=control(s,input);
+  assert.equal(r.control?.targetId,t.id);assert.match(r.answer!,/等待你的电脑/);assert.equal(r.calls,0);
+  assert.equal(s.conversations![0].history.length,2);
+ }
+});
+test("status query verbs do not hijack quoted commands, negations or substantive questions",()=>{
+ for(const input of ["不要查看任务进度","不能查询进度","解释查看任务进度的实现","“查看任务进度”","查看任务进度如何影响算法性能","查看任务进度并取消任务","查询进展有什么方法","查一下任务进度的统计定义","查看所有项目的任务进度"])
+  assert.equal(parseControlIntent(input),undefined,input);
+});

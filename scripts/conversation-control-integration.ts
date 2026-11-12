@@ -32,7 +32,7 @@ export async function verifyConversationControls(api:API) {
   const afterResume=await until(b.id,"waiting_device");
   assert.equal(resumed.control.targetId,b.id);
   assert.deepEqual([afterResume.calls,afterResume.tools,afterResume.activeMs],[beforeResume.calls,beforeResume.tools,beforeResume.activeMs]);
-  const status=await command("现在做到哪了");
+  const status=await command("查看任务进度");
   assert.equal(status.control.targetId,b.id);assert.match(status.answer,/等待你的电脑/);
   await command("取消这个任务");
   const state=await api("state");

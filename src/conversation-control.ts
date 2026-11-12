@@ -20,7 +20,8 @@ export function parseControlIntent(input: string): ControlIntent | undefined {
   if (input.length > 80) return;
   const s = trimCommand(input).replace(/\s+/gu, "");
   if (/^(?:现在)?(?:做到哪(?:里)?了|进展如何|进度如何|进度怎么样了?)$/.test(s) ||
-      new RegExp("^(?:" + reference + ")?(?:的)?(?:进度|进展|做到哪(?:里)?了|怎么样了|进展如何|进度如何|进度怎么样了?)$").test(s))
+      new RegExp("^(?:" + reference + ")?(?:的)?(?:进度|进展|做到哪(?:里)?了|怎么样了|进展如何|进度如何|进度怎么样了?)$").test(s) ||
+      new RegExp("^(?:查看|查询|看一下|看看|看下|查一下)(?:" + reference + ")?(?:的)?(?:进度|进展)$").test(s))
     return { action: "status" };
   if (s === "停一下") return { action: "pause" };
   const selection = new RegExp("^" + ordinal + "(?:" + noun + ")?$").exec(s);
