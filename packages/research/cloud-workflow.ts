@@ -1,3 +1,4 @@
+import {projectToolOutcomes,type ToolOutcomeOperation} from "./tool-outcomes.ts";
 import {projectRecentDialogue,type ContextWindow} from "./context-window.ts";
 import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest} from "./memory.ts";
 import {stageObject} from "./internal/agent/p2-stages.ts";
@@ -33,7 +34,7 @@ export interface WorkflowContext {
   conversation:ResearchConversation; memories:readonly {content:string}[];
   project?:{id:string;title:string;goal:string};researchDirection?:string;
   goal?:{segment:number;maximum:number;calls:number;tools:number;activeMs:number;remaining:string[]};
-  operations:readonly {tool:string;params:Record<string,unknown>;state:string}[];
+  operations:readonly ToolOutcomeOperation[];
 }
 export function workflowInstruction(w:ResearchWorkflow):string{
  const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION;
@@ -106,7 +107,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   summary.context_rule="Only conversation_only is included as recent discussion. Some fields are explicitly truncated. Other archived turns are not visible here; ask for missing context rather than claiming to remember it.";
   const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{...w.contextWindow,archived_turns:c.conversation.history.length},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:memories,memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
-  if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:w.visibleSourceIds??[]});
+  if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,...projectToolOutcomes(c.operations),visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);
   if(w.phase==="comparison"){
     const evidence=boundedItems(m?.window(18000)??[],18000);w.visibleSourceIds=evidence.map(e=>e.chunk_id);
