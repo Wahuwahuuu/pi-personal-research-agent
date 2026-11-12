@@ -1,3 +1,4 @@
+import {appendChanges} from "./change-feed.ts";
 import {createHash} from "node:crypto";
 import {arxivVersion} from "../packages/research/source-links.ts";
 import type {StateStorage} from "./state-store.ts";
@@ -17,7 +18,7 @@ export class Artifacts {
   this.purgeDeleted();
 
  }
- private changed(id:string,deleted=false){this.db.sql.exec("INSERT INTO pra_changes(created,value) VALUES(?,?)",Date.now(),JSON.stringify([{entity:"artifacts",id,...(deleted?{deleted:true}:{})}]));}
+ private changed(id:string,deleted=false){appendChanges(this.db,[{entity:"artifacts",id,...(deleted?{deleted:true as const}:{})}]);}
  deleted(id:string){return this.db.sql.exec("SELECT id FROM pra_artifact_tombstones WHERE id=?",id).toArray().length>0;}
  /** Only application restores which preserve the live tombstones can use this reconciliation. */
  purgeDeleted(){

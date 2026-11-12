@@ -1,3 +1,4 @@
+import {appendChanges} from "./change-feed.ts";
 import { Problem, text } from "./domain.ts";
 import type { StateStorage } from "./state-store.ts";
 import { arxivVersion } from "../packages/research/source-links.ts";
@@ -56,12 +57,7 @@ export class LibraryJobs {
     );
   }
   private changed(ids: string[]) {
-    if (ids.length)
-      this.db.sql.exec(
-        "INSERT INTO pra_changes(created,value) VALUES(?,?)",
-        Date.now(),
-        JSON.stringify(ids.map((id) => ({ entity: "imports", id }))),
-      );
+    if (ids.length) appendChanges(this.db, ids.map(id => ({entity:"imports",id})));
   }
   private parse(r: any): LibraryJob {
     return {

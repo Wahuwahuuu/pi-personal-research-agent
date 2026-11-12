@@ -1,3 +1,4 @@
+import {appendChanges} from "./change-feed.ts";
 import {createHash} from "node:crypto";
 import {Problem,type State} from "./domain.ts";
 import {StateRepository,type StateStorage} from "./state-store.ts";
@@ -120,8 +121,7 @@ export function applyRecovery(db:StateStorage,guard:RecoveryGuard,id:string,buil
   db.sql.exec("DELETE FROM pra_memory_fts");db.sql.exec("DELETE FROM pra_memory_index");
   db.sql.exec("DELETE FROM pra_memory_revisions WHERE id NOT IN (SELECT value FROM json_each(?))",JSON.stringify((s.cloudMemory?.entries??[]).map(m=>m.id)));
   new MemoryIndex(db).sync(s.cloudMemory?.entries??[]);
-  const last=db.sql.exec<{seq:number}>("SELECT COALESCE(MAX(seq),0) AS seq FROM pra_changes").toArray()[0].seq;
-  db.sql.exec("INSERT INTO pra_changes(seq,created,value) VALUES(?,?,?)",Math.max(last,guard.cursor)+1,Date.now(),JSON.stringify([{entity:"recovery",id}]));
+  appendChanges(db,[{entity:"recovery",id}],guard.cursor);
   db.sql.exec("INSERT INTO pra_recovery_state VALUES(1,NULL,?) ON CONFLICT(id) DO UPDATE SET intent=NULL,applied=excluded.applied",id);
   return s;
  });

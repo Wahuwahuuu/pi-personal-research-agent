@@ -128,6 +128,11 @@ try {
     403,
   );
   checks.push("cross-origin request rejected");
+  const futureChanges=await api("changes?after="+Number.MAX_SAFE_INTEGER);
+  assert.equal(futureChanges.resetRequired,true);assert.equal(futureChanges.reason,"cursor_ahead");assert.deepEqual(futureChanges.events,[]);
+  assert.equal(futureChanges.cursor,futureChanges.latest);
+  const currentChanges=await api("changes?after="+futureChanges.cursor);assert.equal(currentChanges.resetRequired,false);
+  checks.push("expired change cursors explicitly request authoritative resynchronization through the authenticated Worker");
   const coldCheckpoint=await api("recovery/checkpoints","POST",{requestId:"cold-checkpoint",label:"Before first model"});
   const coldSchema=await api("recovery/schema");
   assert.ok(coldSchema.objects.some((o:any)=>o.name==="pi_conversations"));

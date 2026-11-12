@@ -1,3 +1,4 @@
+import {appendChanges} from "./change-feed.ts";
 import {
   Problem,
   text,
@@ -96,17 +97,7 @@ export class ResearchBatches {
     );
   }
   private changed(id: string, deleted = false) {
-    this.db.sql.exec(
-      "INSERT INTO pra_changes(created,value) VALUES(?,?)",
-      Date.now(),
-      JSON.stringify([
-        {
-          entity: "research_batches",
-          id,
-          ...(deleted ? { deleted: true } : {}),
-        },
-      ]),
-    );
+    appendChanges(this.db, [{entity:"research_batches",id,...(deleted?{deleted:true as const}:{})}]);
   }
   get(id: string): ResearchBatch {
     const result = read<ResearchBatch>(

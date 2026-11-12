@@ -287,6 +287,8 @@ function Workspace({
         if (done) return;
         delay = 1000;
         setConnection("online");
+        // Reload authoritative pages even for resetRequired or an empty delta.
+        // A cursor outside the retained event window cannot be replayed safely.
         void api("changes?after=" + cursor.current + "&limit=100")
           .then(changed)
           .catch(changed);

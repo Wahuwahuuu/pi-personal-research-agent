@@ -1,3 +1,4 @@
+import {verifyChangeFeedBrowser} from "./change-feed-browser.ts";
 import {verifyContextWindowBrowser} from "./context-window-browser.ts";
 import {verifyConversationControlBrowser} from "./conversation-control-browser.ts";
 import {verifyRecoveryBrowser} from "./recovery-browser.ts";
@@ -197,7 +198,11 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
-  if(process.env.PRA_BROWSER_SCOPE==="context"){
+  if(process.env.PRA_BROWSER_SCOPE==="changes"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    checks.push(...await verifyChangeFeedBrowser(base,page,api,screenshot));
+  }else if(process.env.PRA_BROWSER_SCOPE==="context"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...(await verifyContextWindowBrowser(base,page,api,screenshot)).checks);
@@ -650,13 +655,13 @@ try {
     timestamp: new Date().toISOString(),
     checks,
     deviceFixture:["reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??""),nativeWindowObserved:false,
-    browser: ["context","controls","imports","reader","deletions","recovery"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
+    browser: ["changes","context","controls","imports","reader","deletions","recovery"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
     viewports: ["1440x900", "390x844"],
     paidCalls: 0,
     cloudDeployment: false,
   };
   await writeFile(
-    process.env.PRA_BROWSER_SCOPE==="context"?"docs/validation/browser-context.json":process.env.PRA_BROWSER_SCOPE==="controls"?"docs/validation/browser-controls.json":process.env.PRA_BROWSER_SCOPE==="recovery"?"docs/validation/browser-recovery.json":process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
+    process.env.PRA_BROWSER_SCOPE==="changes"?"docs/validation/browser-changes.json":process.env.PRA_BROWSER_SCOPE==="context"?"docs/validation/browser-context.json":process.env.PRA_BROWSER_SCOPE==="controls"?"docs/validation/browser-controls.json":process.env.PRA_BROWSER_SCOPE==="recovery"?"docs/validation/browser-recovery.json":process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

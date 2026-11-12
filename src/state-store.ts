@@ -1,3 +1,4 @@
+import { appendChanges, changeCursor, readChanges } from "./change-feed.ts";
 import { initialState, Problem, type State } from "./domain.ts";
 
 export interface SqlRows<T = Record<string, unknown>> { toArray(): T[] }
@@ -193,7 +194,7 @@ export class StateRepository {
         changes.push({ entity: name, id, deleted: true });
       }
       // Invalidation events contain identifiers only, never prompts or copies of deleted content.
-      if (changes.length) this.storage.sql.exec("INSERT INTO pra_changes(created,value) VALUES(?,?)", Date.now(), serial(changes));
+      if (changes.length) appendChanges(this.storage, changes);
     });
     // Never advance the cache if the transaction failed.
     this.cached = next;
@@ -204,12 +205,8 @@ export class StateRepository {
     this.knownConversations=conversationIds;
     return { writes: changes.length, cursor: this.cursor() };
   }
-  cursor() { return this.storage.sql.exec<{ seq: number }>("SELECT COALESCE(MAX(seq),0) AS seq FROM pra_changes").toArray()[0].seq; }
-  changes(after = 0, limit = 100) {
-    if (!Number.isSafeInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Problem("INVALID_CURSOR");
-    const rows = this.storage.sql.exec<{ seq: number; created: number; value: string }>("SELECT seq,created,value FROM pra_changes WHERE seq>? ORDER BY seq LIMIT ?", after, limit).toArray();
-    return { events: rows.map(({ value, ...r }) => ({ ...r, changes: parse(value) })), cursor: rows.at(-1)?.seq ?? after, latest: this.cursor() };
-  }
+  cursor() { return changeCursor(this.storage); }
+  changes(after = 0, limit = 100) { return readChanges(this.storage, after, limit); }
   page(name: string, after = "", limit = 50, parent?: string) {
     if (!validCollection(name) || !Number.isInteger(limit) || limit < 1 || limit > 100 || after.length > 1024) throw new Problem("INVALID_PAGE");
     const rows = this.storage.sql.exec<Row>("SELECT * FROM " + table(name) + " WHERE id>?" + (parent !== undefined ? " AND parent=?" : "") + " ORDER BY id LIMIT ?",
