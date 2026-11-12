@@ -7,18 +7,26 @@ export async function discover(
   offset: number,
   fetcher: typeof fetch = fetch,
 ) {
-  const stamp = (n: number) =>
-    new Date(n).toISOString().replace(/[-:T]/g, "").slice(0, 12);
+  if (
+    !Number.isFinite(from) ||
+    !Number.isFinite(until) ||
+    from < 0 ||
+    until < from ||
+    !Number.isInteger(offset) ||
+    offset < 0
+  )
+    throw new Problem("INVALID_DISCOVERY_WINDOW");
+  if (offset >= 30000) throw new Problem("SOURCE_WINDOW_LIMIT", 503);
   const url = new URL("https://export.arxiv.org/api/query");
   // Query text cannot inject arXiv boolean/date operators.
   const words = query.match(/[\p{L}\p{N}_-]+/gu)?.slice(0, 20);
   if (!words?.length) throw new Problem("INVALID_QUERY");
   url.searchParams.set(
     "search_query",
-    `(${words.map((w) => `all:${w}`).join(" AND ")}) AND lastUpdatedDate:[${stamp(from)} TO ${stamp(until)}]`,
+    words.map((w) => "all:" + w).join(" AND "),
   );
   url.searchParams.set("sortBy", "lastUpdatedDate");
-  url.searchParams.set("sortOrder", "ascending");
+  url.searchParams.set("sortOrder", "descending");
   url.searchParams.set("start", String(offset));
   url.searchParams.set("max_results", "200");
   const response = await fetcher(url, {
@@ -30,7 +38,19 @@ export async function discover(
   if (!response.ok) throw new Problem("SOURCE_UNAVAILABLE", 503);
   const xml = await response.text();
   if (xml.length > 2000000) throw new Problem("SOURCE_TOO_LARGE", 502);
-  return parseFeed(xml, offset);
+  const page = parseFeed(xml, offset),
+    dates = page.rows.map((p) => Date.parse(p.updated));
+  if (page.rows.length > 200 || dates.some((d, i) => i > 0 && d > dates[i - 1]))
+    throw new Problem("SOURCE_ORDER_INVALID", 503);
+  const complete = page.complete || dates.some((d) => d < from);
+  const nextOffset = offset + page.rows.length;
+  if (!complete && nextOffset >= 30000)
+    throw new Problem("SOURCE_WINDOW_LIMIT", 503);
+  return {
+    rows: page.rows.filter((_, i) => dates[i] >= from && dates[i] <= until),
+    complete,
+    nextOffset,
+  };
 }
 export function parseFeed(xml: string, offset = 0) {
   if (/<!DOCTYPE|<!ENTITY/i.test(xml)) throw new Problem("UNSAFE_XML");

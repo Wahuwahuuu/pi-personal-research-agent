@@ -28,6 +28,7 @@ export interface ResearchBatch {
   from: number;
   until: number;
   offset: number;
+  sourceProtocol?: "arxiv-updated-desc-v1";
   discovered: number;
   status: BatchStatus;
   created: number;
@@ -148,7 +149,22 @@ export class ResearchBatches {
         )
         .toArray()[0],
     );
-    if (old) return old;
+    if (old) {
+      if (
+        old.status === "discovering" &&
+        old.sourceProtocol !== "arxiv-updated-desc-v1"
+      ) {
+        old.offset = 0;
+        old.sourceProtocol = "arxiv-updated-desc-v1";
+        old.updated = now;
+        checkpoint.offset = 0;
+        this.db.transactionSync(() => {
+          this.put(old);
+          this.changed(old.id);
+        });
+      }
+      return old;
+    }
     // An in-flight legacy metadata scan has no per-topic membership journal. Re-scan its bounded window.
     if (checkpoint.offset) {
       checkpoint.offset = 0;
@@ -166,6 +182,7 @@ export class ResearchBatches {
       from: checkpoint.from,
       until: checkpoint.until,
       offset: checkpoint.offset,
+      sourceProtocol: "arxiv-updated-desc-v1",
       discovered: 0,
       status: "discovering",
       created: now,
@@ -184,6 +201,7 @@ export class ResearchBatches {
     rows: Paper[],
     complete: boolean,
     now = Date.now(),
+    nextOffset = offset + rows.length,
   ) {
     const batch = this.get(batchId);
     if (
@@ -198,6 +216,10 @@ export class ResearchBatches {
       batch.status !== "discovering" ||
       offset !== batch.offset ||
       rows.length > 200 ||
+      !Number.isInteger(nextOffset) ||
+      nextOffset < offset + rows.length ||
+      nextOffset > offset + 200 ||
+      (!complete && nextOffset <= offset) ||
       !Number.isSafeInteger(offset) ||
       offset < 0
     )
@@ -260,7 +282,7 @@ export class ResearchBatches {
           );
           added++;
         }
-        batch.offset += rows.length;
+        batch.offset = nextOffset;
         batch.discovered += added;
         batch.updated = now;
         delete batch.error;

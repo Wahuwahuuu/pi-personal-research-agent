@@ -1635,7 +1635,7 @@ export class PersonalAgent extends DurableObject<Env> {
               const page=await discover(b.query,b.from,b.until,b.offset);
               if(p.enabled&&this.state.plans.includes(p)){
                 const previous=structuredClone(p);
-                try{this.database.transactionSync(()=>{this.researchBatches.commit(p,b.id,b.offset,page.rows,page.complete);this.save();});}
+                try{this.database.transactionSync(()=>{this.researchBatches.commit(p,b.id,b.offset,page.rows,page.complete,Date.now(),page.nextOffset);this.save();});}
                 catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,previous);this.repository.load();throw e;}
               }
             }catch(error){
