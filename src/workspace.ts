@@ -4,6 +4,10 @@ import {Problem,text,type State,type Task} from "./domain.ts";
 export interface Project {id:string;title:string;goal:string;paperIds:string[];pinned:boolean;archived:boolean;created:number;updated:number}
 export interface Settings {agentName:string;researchDirection:string;theme:"system"|"light"|"dark";notifications:boolean;onboarded:boolean;timezone:"Asia/Shanghai"}
 export const defaultSettings:Settings={agentName:"Aster",researchDirection:"",theme:"system",notifications:true,onboarded:false,timezone:"Asia/Shanghai"};
+function projectPaperIds(value:unknown):string[]{
+ if(!Array.isArray(value)||value.length>200||value.some((v:unknown)=>typeof v!=="string"||!v||v.length>256))throw new Problem("INVALID_PAPERS");
+ return [...new Set(value)] as string[];
+}
 export class Workspace {
  readonly db:StateStorage;
  constructor(db:StateStorage){
@@ -40,14 +44,14 @@ export class Workspace {
   return{items:rows.slice(0,limit).map(r=>this.project(r)),nextCursor:rows.length>limit?after+limit:null};
  }
  createProject(input:any){
-  const now=Date.now(),id=crypto.randomUUID(),title=text(input.title,100),goal=input.goal===undefined?"":text(input.goal,4000);
-  this.db.sql.exec("INSERT INTO pra_projects VALUES(?,?,?,'[]',0,0,?,?)",id,title,goal,now,now);return this.getProject(id);
+  const now=Date.now(),id=crypto.randomUUID(),title=text(input.title,100),goal=input.goal===undefined?"":text(input.goal,4000),paperIds=projectPaperIds(input.paperIds===undefined?[]:input.paperIds);
+  this.db.sql.exec("INSERT INTO pra_projects VALUES(?,?,?,?,0,0,?,?)",id,title,goal,JSON.stringify(paperIds),now,now);return this.getProject(id);
  }
  updateProject(id:string,input:any){
   const p=this.getProject(id);
   if(input.title!==undefined)p.title=text(input.title,100);
   if(input.goal!==undefined){if(typeof input.goal!=="string"||input.goal.length>4000)throw new Problem("INVALID_GOAL");p.goal=input.goal.trim();}
-  if(input.paperIds!==undefined){if(!Array.isArray(input.paperIds)||input.paperIds.length>200||input.paperIds.some((v:unknown)=>typeof v!=="string"||!v||v.length>256))throw new Problem("INVALID_PAPERS");p.paperIds=[...new Set(input.paperIds)] as string[];}
+  if(input.paperIds!==undefined)p.paperIds=projectPaperIds(input.paperIds);
   for(const key of ["pinned","archived"] as const)if(input[key]!==undefined){if(typeof input[key]!=="boolean")throw new Problem("INVALID_SETTING");p[key]=input[key];}
   p.updated=Date.now();this.db.sql.exec("UPDATE pra_projects SET title=?,goal=?,papers=?,pinned=?,archived=?,updated=? WHERE id=?",p.title,p.goal,JSON.stringify(p.paperIds),Number(p.pinned),Number(p.archived),p.updated,id);return p;
  }

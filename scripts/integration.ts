@@ -611,10 +611,12 @@ try {
   await api("tasks/"+automaticResearch.id+"/cancel","POST",{});
   checks.push("automatic intent uses existing NLU: ordinary conversation finishes offline and paper work pauses without repeated model calls");
   checks.push(...await verifyPlanRecords(api));
-  const project=await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"});
-  assert.equal((await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources"})).id,project.id);
+  const project=await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources",paperIds:["paper-a","paper-a","paper-b"]});
+  assert.equal((await api("projects","POST",{requestId:"project-create",title:"Synthetic project",goal:"Compare sources",paperIds:["paper-a","paper-a","paper-b"]})).id,project.id);
+  assert.deepEqual(project.paperIds,["paper-a","paper-b"]);
   await api("projects/"+project.id,"PATCH",{requestId:"project-edit",pinned:true});
   const newConversation=await api("conversations","POST",{requestId:"conversation-create",title:"Research notebook",projectId:project.id});
+  assert.deepEqual(newConversation.scope,["paper-a","paper-b"]);
   await api("conversations/"+newConversation.id,"PATCH",{archived:true,title:"Archived notebook"});
   assert.equal((await api("conversations?limit=10&archived=true&project="+project.id)).items[0].id,newConversation.id);
   await api("settings","PATCH",{requestId:"settings-update",agentName:"Synthetic Aster",theme:"dark",onboarded:true});

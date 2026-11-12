@@ -39,3 +39,18 @@ test("messages created in the same millisecond paginate without omission or dupl
  do{const p=taskPage(s,{before,limit:13});ids.push(...p.items.map(t=>t.id));before=p.nextCursor??undefined;}while(before);
  assert.equal(ids.length,100);assert.equal(new Set(ids).size,100);
 });
+
+test("project creation preserves the supplied paper scope before any conversation inherits it",()=>{
+ const {db,workspace:w}=setup();
+ const input={title:"Scoped research",paperIds:["paper-a","paper-a","paper-b"]};
+ const p=w.once("scoped-create","project:create",input,()=>w.createProject(input));
+ assert.deepEqual(p.paperIds,["paper-a","paper-b"]);
+ assert.deepEqual(new Workspace(w.db).getProject(p.id).paperIds,p.paperIds);
+ assert.deepEqual(w.once<typeof p>("scoped-create","project:create",input,()=>{throw Error("unexpected retry");}).paperIds,p.paperIds);
+ const count=db.prepare("SELECT COUNT(*) AS n FROM pra_projects").get()!.n;
+ for(const paperIds of [null,"paper-a",[""],["x".repeat(257)],Array(201).fill("a")]){
+  assert.throws(()=>w.createProject({title:"Invalid",paperIds}),/INVALID_PAPERS/);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_projects").get()!.n,count);
+ }
+ db.close();
+});
