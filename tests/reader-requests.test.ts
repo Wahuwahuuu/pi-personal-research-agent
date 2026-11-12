@@ -1,3 +1,5 @@
+import {DeletionStore} from "../src/deletion.ts";
+import {initialState} from "../src/domain.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -135,4 +137,42 @@ test("reader identities, page bounds and immutable idempotency payloads cannot b
   );
   db.close();
   localDb.close();
+});
+
+test("50 opened readers are purged idempotently, survive restart and need the original device's cleanup confirmation",()=>{
+ const {db,storage,r}=setup(),localDb=new DatabaseSync(":memory:");
+ let q=new ReaderQueue(localDb);const deletions=new DeletionStore(storage),state=initialState();
+ state.conversations=[{id:"c",title:"Source",projectId:"default",scope:[],created:0,history:[]}];
+ try{
+  const frames=Array.from({length:50},()=>r.create(crypto.randomUUID(),target,"original-device","Original"));
+  for(const f of frames){q.receive(f);assert.equal(q.claim()!.id,f.id);q.finish(f.id,true);q.ack(f.id);r.receive("original-device",f.id,"opened");}
+  deletions.request(state,"c");const ids=r.removeConversations(["c"],"c");deletions.cloudDone("c");
+  assert.equal(deletions.get("c")!.status,"cloud_complete");
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_reader_requests").get()!.n,0);
+  assert.equal(deletions.readers.pending("other-device","c").length,0);
+  assert.throws(()=>deletions.readersDone("c",ids,"other-device"),/READER_DEVICE_MISMATCH/);
+  for(let i=0;i<5;i++)q.purge("c",ids);
+  q=new ReaderQueue(localDb);
+  assert.equal(q.pendingPurges().length,50);assert.equal(q.purgeResults().length,0);assert.equal(q.results().length,0);
+  for(const f of frames){q.receive(f);q.finish(f.id,true);assert.throws(()=>r.create(f.id,target,"original-device","Original"),/READER_CANCELLED/);}
+  assert.equal(q.claim(),null);assert.equal(q.all().length,0);
+  for(const id of ids)q.purged(id);
+  q=new ReaderQueue(localDb);const receipt=q.purgeResults()[0];assert.equal(receipt.requestIds.length,50);
+  deletions.readersDone(receipt.deletionId,receipt.requestIds,"original-device");
+  assert.equal(deletions.get("c")!.status,"completed");q.ackPurges(receipt.requestIds);
+  assert.equal(q.purgeResults().length,0);
+  q.purge("c",ids);assert.equal(q.pendingPurges().length,0);assert.equal(q.purgeResults()[0].requestIds.length,50);
+  assert.ok(!JSON.stringify(db.prepare("SELECT * FROM pra_deleted_readers").all()).includes(target.paperId));
+ }finally{db.close();localDb.close();}
+});
+test("reader purge is atomic on conflicting deletion ids and never accepts a filename",()=>{
+ const db=new DatabaseSync(":memory:"),q=new ReaderQueue(db),a=crypto.randomUUID(),b=crypto.randomUUID();
+ try{
+  q.purge("first",[b]);
+  assert.throws(()=>q.purge("different",[a,b]),/READER_PURGE_CONFLICT/);
+  assert.deepEqual(q.pendingPurges(),[b]);
+  assert.throws(()=>q.purge("first",["../../private.pdf"]),/INVALID_READER_PURGE/);
+  assert.throws(()=>q.purged(a),/UNKNOWN_READER_PURGE/);
+  assert.equal(q.purgeResults().length,0);
+ }finally{db.close();}
 });

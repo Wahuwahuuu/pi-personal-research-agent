@@ -6,6 +6,7 @@ import json
 import os
 import threading
 from controller import Controller, LocalError, ROOT
+from readers import ReaderWindows
 
 def main():
     if os.name != "nt": raise SystemExit("WINDOWS_REQUIRED")
@@ -34,6 +35,7 @@ def main():
     view=None
     icon=None
     reader_files=set()
+    reader_windows=ReaderWindows(controller)
 
     def result(call):
         try:return {"ok":True,"value":call()}
@@ -121,20 +123,26 @@ def main():
                 (controller.data/"tray-open").unlink(missing_ok=True);view.show()
             state=controller.status()
             if state.get("ok"):
+                cleanup=result(controller.reader_purges)
+                for identifier in cleanup.get("value",[]):
+                    if reader_windows.purge(identifier):
+                        result(lambda identifier=identifier:controller.reader_purged(identifier))
                 request=result(controller.reader_poll)
                 item=request.get("value")
                 if item:
                     opened=False;path=None;reader=None
                     try:
-                        path=controller.reader_file(item["paperId"],item["indexVersion"])
+                        path=controller.reader_file(item["paperId"],item["indexVersion"],item["id"])
                         if controller.reader_valid(item["id"]):
                             reader_files.add(path)
                             reader=webview.create_window("论文全文 · Aster",url=path.as_uri()+"#page="+str(item["page"]),width=1050,height=800,min_size=(640,480),text_select=True)
+                            reader_windows.register(item["id"],reader)
                             def clear_reader(path=path):
                                 try:path.unlink(missing_ok=True);reader_files.discard(path)
                                 except OSError:pass
                             reader.events.closed+=clear_reader
                             opened=reader.events.shown.wait(10)
+                            if opened and not controller.reader_valid(item["id"]):opened=False
                             if not opened:reader.destroy()
                         else:path.unlink(missing_ok=True)
                     except Exception:pass

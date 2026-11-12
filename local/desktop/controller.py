@@ -50,6 +50,7 @@ class Controller:
         self._http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     def begin_tray(self):
         # Only called after acquiring the per-config mutex.
+        self.clean_reader_cache()
         self.control_directory.mkdir(parents=True,exist_ok=True)
         (self.control_directory/"stop").unlink(missing_ok=True)
         self._tray_instance = str(uuid.uuid4())
@@ -129,14 +130,47 @@ class Controller:
     def library(self, query="", offset=0):
         if not isinstance(query,str) or len(query)>200 or type(offset) is not int or not 0<=offset<=100000: raise LocalError("INVALID_LOCAL_REQUEST")
         return self.request("library?"+urllib.parse.urlencode({"q":query,"offset":offset}))
-    def reader_file(self, paper, version):
-        if not all(isinstance(v,str) and 0<len(v)<=256 for v in (paper,version)): raise LocalError("UNKNOWN_PAPER")
-        data = self.request("pdf?"+urllib.parse.urlencode({"paperId":paper,"indexVersion":version}),binary=True)
+    def reader_directory(self):
         directory = self.data/".cache"/"reader"
+        if not directory.resolve().is_relative_to(self.data.resolve()): raise LocalError("UNSAFE_READER_CACHE")
         directory.mkdir(parents=True,exist_ok=True)
-        with tempfile.NamedTemporaryFile(dir=directory,suffix=".pdf",delete=False) as file:
+        return directory
+    def reader_path(self, identifier):
+        if not isinstance(identifier,str) or not re.fullmatch(r"[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}",identifier):
+            raise LocalError("INVALID_READER_REQUEST")
+        directory=self.reader_directory()
+        path=directory/("request-"+hashlib.sha256(identifier.encode()).hexdigest()+".pdf")
+        if not path.resolve().is_relative_to(directory.resolve()): raise LocalError("UNSAFE_READER_CACHE")
+        return path
+    def clean_reader_cache(self):
+        directory=self.reader_directory()
+        for path in directory.glob("*.pdf"):
+            if not path.resolve().is_relative_to(directory.resolve()): raise LocalError("UNSAFE_READER_CACHE")
+            if path.is_file(): path.unlink()
+    def purge_reader(self, identifier):
+        self.reader_path(identifier).unlink(missing_ok=True)
+    def reader_file(self, paper, version, identifier=None):
+        if not all(isinstance(v,str) and 0<len(v)<=256 for v in (paper,version)): raise LocalError("UNKNOWN_PAPER")
+        target=self.reader_path(identifier) if identifier is not None else None
+        data = self.request("pdf?"+urllib.parse.urlencode({"paperId":paper,"indexVersion":version}),binary=True)
+        with tempfile.NamedTemporaryFile(dir=self.reader_directory(),suffix=".pdf",delete=False) as file:
             file.write(data)
-            return Path(file.name)
+            path=Path(file.name)
+        if target is not None:
+            try: path.replace(target)
+            except Exception:
+                path.unlink(missing_ok=True)
+                raise
+            return target
+        return path
+    def reader_purges(self):
+        ids=self.request("reader/purges",{}).get("requestIds")
+        if not isinstance(ids,list) or len(ids)>200: raise LocalError("INVALID_READER_PURGE")
+        for identifier in ids:self.reader_path(identifier)
+        return ids
+    def reader_purged(self,identifier):
+        self.reader_path(identifier)
+        return self.request("reader/purged",{"id":identifier})
     def reader_poll(self):
         item=self.request("reader/poll",{})
         if item is None:return None

@@ -170,7 +170,7 @@ function flushReaders(){
  if(!catalogAcknowledged||socket?.readyState!==WebSocket.OPEN)return;
  const ready=readerReady();
  if(ready!==readerReadySent){send({type:"reader_status",ready});readerReadySent=ready;}
- for(const result of readerQueue.results())send(result);
+ for(const result of [...readerQueue.results(),...readerQueue.purgeResults()])send(result);
 }
 const cloudImports=library?new CloudImports(db,library,send,id=>{if(activeImport===id)importAbort?.abort();}):undefined;
 async function flushImports(force=false){
@@ -299,7 +299,7 @@ function connect() {
       indexVersion,
       retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
-      capabilities: ["reader-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
+      capabilities: ["reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
       readerPort: config.port ?? 48731,
     });
   });
@@ -328,6 +328,10 @@ function connect() {
       } else if(m.type==="reader_open"){
         if(!catalogAcknowledged)throw Error("HELLO_REQUIRED");
         readerQueue.receive(m);flushReaders();
+      } else if(m.type==="reader_purge"){
+        readerQueue.purge(m.deletionId,m.requestIds);flushReaders();
+      } else if(m.type==="reader_purge_ack"){
+        readerQueue.ackPurges(m.requestIds);
       } else if(m.type==="reader_cancel"){
         readerQueue.cancel(m.id);flushReaders();
       } else if(m.type==="reader_ack"){
@@ -459,6 +463,11 @@ localHandler=async(req,res)=>{
    else if(value.action==="shutdown"){await requestStop(configPath,config.dataDir);reply({accepted:true,instanceId:controlKey(configPath)});setTimeout(stop,25);return true;}
    else throw Error("ACTION_DENIED");
    reply({accepted:true});return true;
+  }
+  if(path==="/local/reader/purges"){reply({requestIds:readerQueue.pendingPurges()});return true;}
+  if(path==="/local/reader/purged"){
+    if(typeof value.id!=="string")throw Error("INVALID_READER_PURGE");
+    readerQueue.purged(value.id);flushReaders();reply({accepted:true});return true;
   }
   if(path==="/local/reader/poll"){
    readerHeartbeat=Date.now();flushReaders();

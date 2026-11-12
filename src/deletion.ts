@@ -1,3 +1,4 @@
+import {ReaderPurges} from "./reader-purges.ts";
 import {deletionImpact,emptyImpact,removeConversationContent,invalidateDeletedSources,type DeletionImpact} from "./deletion-lineage.ts";
 import { Problem, cancel, type State } from "./domain.ts";
 import type { StateStorage } from "./state-store.ts";
@@ -8,8 +9,10 @@ export interface Deletion {
 }
 export class DeletionStore {
   storage:StateStorage;
+  readers:ReaderPurges;
   constructor(storage:StateStorage) {
     this.storage=storage;
+    this.readers=new ReaderPurges(storage);
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deletions(id TEXT PRIMARY KEY,session_id TEXT,status TEXT NOT NULL,created INTEGER NOT NULL,error TEXT,local_pending INTEGER NOT NULL)");
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deleted_operations(id TEXT PRIMARY KEY,deletion_id TEXT NOT NULL,purged INTEGER NOT NULL DEFAULT 0)");
     storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_deleted_operations_deletion ON pra_deleted_operations(deletion_id)");
@@ -48,15 +51,23 @@ export class DeletionStore {
     invalidateDeletedSources(state,id,impact);
     return impact;
   }
+  refreshLocal(id:string){
+    const pending=this.operationIds(id).length>0||this.readers.remaining(id);
+    this.storage.sql.exec("UPDATE pra_deletions SET local_pending=?,status=CASE WHEN status IN ('cloud_complete','completed') THEN ? ELSE status END WHERE id=?",Number(pending),pending?"cloud_complete":"completed",id);
+  }
   cloudDone(id:string) {
-    this.storage.sql.exec("UPDATE pra_deletions SET status=CASE WHEN local_pending=1 THEN 'cloud_complete' ELSE 'completed' END,error=NULL WHERE id=?",id);
+    this.storage.sql.exec("UPDATE pra_deletions SET status='cloud_complete',error=NULL WHERE id=?",id);
+    this.refreshLocal(id);
   }
   localDone(id:string,ids:string[]) {
     if(ids.length>200||ids.some(id=>typeof id!=="string"))throw new Problem("INVALID_PURGE_ACK");
     this.storage.transactionSync(()=>{
       for(const op of ids)this.storage.sql.exec("UPDATE pra_deleted_operations SET purged=1 WHERE id=? AND deletion_id=?",op,id);
-      if(!this.operationIds(id).length)this.storage.sql.exec("UPDATE pra_deletions SET local_pending=0,status='completed' WHERE id=? AND status='cloud_complete'",id);
+      this.refreshLocal(id);
     });
+  }
+  readersDone(id:string,ids:unknown,hash:string){
+    this.storage.transactionSync(()=>{this.readers.acknowledge(id,ids,hash);this.refreshLocal(id);});
   }
   fail(id:string,code:string) {this.storage.sql.exec("UPDATE pra_deletions SET status='failed',error=? WHERE id=?",code,id);}
 }

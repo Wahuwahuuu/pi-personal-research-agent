@@ -216,6 +216,17 @@ try {
   assert.equal(editedArtifact.version,2);assert.equal((await api("artifacts/"+savedArtifact.id+"?version=1")).content,researchDone.answer);
   const exported=await fetch(base+"/api/artifacts/"+savedArtifact.id+"/export?format=md",{headers:{Cookie:cookie}});assert.ok((await exported.text()).includes("Evidence."));
   checks.push("research artifacts preserve versioned original evidence, reject destructive edits and export source-bearing content");
+  const readerLocal=async(route:string,body:unknown={})=>{
+    const response=await fetch(localBase+"/local/reader/"+route,{method:"POST",headers:{Authorization:"Bearer "+localControl,"Content-Type":"application/json"},body:JSON.stringify(body)});
+    assert.ok(response.ok,"reader local protocol "+route);return await response.json() as any;
+  };
+  await readerLocal("poll");await until(async()=>(await api("reader/status?indexVersion=fixture-v1")).available);
+  const readerBody={requestId:crypto.randomUUID(),taskId:research.id,paperId:"fixture-paper",indexVersion:"fixture-v1",chunkId:"fixture-chunk"};
+  const readerReceipt=await api("reader/open","POST",readerBody);
+  await until(async()=>(await readerLocal("poll"))?.id===readerReceipt.id);
+  // This is a protocol fixture, not an assertion that a native PDF window was opened.
+  await readerLocal("result",{id:readerReceipt.id,opened:true});
+  await until(async()=>(await api("reader/"+readerReceipt.id)).status==="opened");
   const derivedTask=await api("tasks/"+pauseWaiting.id);
   const lineage=(await api("state")).cloudMemory.dependencies[derivedTask.id];
   assert.equal(lineage.lineageVersion,1);assert.ok(lineage.turns.includes(research.id));
@@ -494,12 +505,18 @@ try {
   const removedOps=(await api("state")).operations.filter((o:any)=>[research.id,derivedTask.id].includes(o.taskId)).map((o:any)=>o.id);
   await api("conversations/"+research.conversationId,"DELETE");
   await until(async()=> (await api("deletions/"+research.conversationId)).status==="cloud_complete");
-  const purgeNode=child(["local/node.ts",config],{...process.env,PRA_DEVICE_TOKEN:pair.token});
+  const purgeNode=child(["local/node.ts",config],{...process.env,PRA_DEVICE_TOKEN:pair.token,PRA_LOCAL_TOKEN:localControl});
+  await until(async()=>(await readerLocal("purges")).requestIds.includes(readerReceipt.id));
+  assert.equal((await api("deletions/"+research.conversationId)).status,"cloud_complete");
+  assert.equal((await fetch(base+"/api/reader/"+readerReceipt.id,{headers:{Cookie:cookie}})).status,410);
+  await readerLocal("purged",{id:readerReceipt.id});
+
   await until(async()=> (await api("deletions/"+research.conversationId)).status==="completed");
   const localDb=new DatabaseSync(resolve(directory,"node/node.sqlite"),{readOnly:true});
   for(const id of removedOps){assert.equal(localDb.prepare("SELECT id FROM outbox WHERE id=?").all(id).length,0);assert.equal(localDb.prepare("SELECT id FROM deleted_operations WHERE id=?").all(id).length,1);}
   localDb.close();
   checks.push("offline deletion waited for node reconnect and purged real outbox with persistent replay tombstones");
+  checks.push("real node reader-purge protocol holds deletion pending after tool-cache cleanup until a simulated desktop cleanup receipt arrives");
   assert.equal((await fetch(base+"/api/artifacts/"+savedArtifact.id,{headers:{Cookie:cookie}})).status,404);
   assert.equal((await fetch(base+"/api/artifacts/"+derivedArtifact.id,{headers:{Cookie:cookie}})).status,404);
   const redacted=await api("tasks/"+derivedTask.id);assert.equal(redacted.error,"CONTEXT_SOURCE_DELETED");assert.equal(redacted.answer,undefined);assert.equal(redacted.calls,derivedTask.calls);assert.equal(redacted.workflow,undefined);

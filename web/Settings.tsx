@@ -513,7 +513,7 @@ export function SettingsView({
           </button>
           <h3 className="section-heading">删除记录</h3>
           <p>
-            在会话菜单中选择“删除会话”，会清理关联的在线会话和成果。本地待清理结果将在节点上线后处理。
+            在会话菜单中选择“删除会话”，会清理关联的在线会话和成果。本地结果和关联阅读器缓存将在原节点上线后清理；确认前会保留待清理状态。
           </p>
           <button onClick={() => navigate("chat")}>管理会话</button>
           <details className="diagnostics">

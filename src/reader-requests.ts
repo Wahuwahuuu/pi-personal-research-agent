@@ -1,3 +1,4 @@
+import {ReaderPurges} from "./reader-purges.ts";
 import { Problem, text } from "./domain.ts";
 import type { StateStorage } from "./state-store.ts";
 export interface ReaderTarget {
@@ -19,8 +20,10 @@ export const READER_TTL = 90000;
 /** A short user-initiated action; receipt of a socket message never implies an opened window. */
 export class ReaderRequests {
   readonly db: StateStorage;
+  readonly purges: ReaderPurges;
   constructor(db: StateStorage) {
     this.db = db;
+    this.purges = new ReaderPurges(db);
     db.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_reader_requests(id TEXT PRIMARY KEY,device_hash TEXT NOT NULL,expires INTEGER NOT NULL,value TEXT NOT NULL)",
     );
@@ -38,6 +41,7 @@ export class ReaderRequests {
     );
   }
   get(id: string, now = Date.now()) {
+    if(this.purges.get(id))throw new Problem("READER_CANCELLED",410);
     const row = this.db.sql
       .exec<{ value: string }>(
         "SELECT value FROM pra_reader_requests WHERE id=?",
@@ -61,6 +65,7 @@ export class ReaderRequests {
     now = Date.now(),
   ) {
     if (!/^[a-f0-9-]{36}$/i.test(id)) throw new Problem("INVALID_REQUEST_ID");
+    if(this.purges.get(id))throw new Problem("READER_CANCELLED",410);
     text(target.paperId, 256);
     text(target.indexVersion, 256);
     if (
@@ -135,6 +140,14 @@ export class ReaderRequests {
           : "PDF_UNAVAILABLE";
     this.put(r);
     return r;
+  }
+  removeConversations(conversations:readonly string[],deletionId:string){
+    const rows=this.db.sql.exec<{value:string}>("SELECT value FROM pra_reader_requests WHERE json_extract(value,'$.conversationId') IN (SELECT value FROM json_each(?))",JSON.stringify(conversations)).toArray();
+    return this.db.transactionSync(()=>{
+      const ids:string[]=[];
+      for(const row of rows){const r=JSON.parse(row.value) as ReaderRequest;this.purges.record(r.id,deletionId,r.deviceHash);this.db.sql.exec("DELETE FROM pra_reader_requests WHERE id=?",r.id);ids.push(r.id);}
+      return ids;
+    });
   }
   invalidate(filter: { hash?: string; conversationId?: string }) {
     const rows = this.db.sql

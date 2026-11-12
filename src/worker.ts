@@ -909,7 +909,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.capabilities = Array.isArray(m.capabilities)
           ? m.capabilities.filter((v: unknown) =>
-              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1"].includes(
+              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1", "reader-purge-v1"].includes(
                 String(v),
               ),
             )
@@ -1013,8 +1013,14 @@ export class PersonalAgent extends DurableObject<Env> {
         if(!a.catalogReady||!a.capabilities?.includes("reader-v1")||typeof m.ready!=="boolean")throw new Problem("READER_CAPABILITY_REQUIRED");
         a.readerReady=m.ready;ws.serializeAttachment(a);
         if(m.ready)this.dispatchReaders(ws);
+      } else if(m.type==="reader_purged"){
+        if(!a.capabilities?.includes("reader-purge-v1")||typeof m.deletionId!=="string")throw new Problem("INVALID_PURGE_ACK");
+        this.deletions.readersDone(m.deletionId,m.requestIds,a.hash);
+        this.send(ws,{type:"reader_purge_ack",requestIds:m.requestIds});this.sendPurges(ws);this.publish();
       } else if(m.type==="reader_result") {
         if(!a.catalogReady||!a.capabilities?.includes("reader-v1"))throw new Problem("READER_CAPABILITY_REQUIRED");
+        const removed=this.readerRequests.purges.get(m.id);
+        if(removed){if(removed.device_hash!==a.hash)throw new Problem("READER_DEVICE_MISMATCH",403);this.send(ws,{type:"reader_ack",id:m.id});this.sendPurges(ws);return;}
         this.readerRequests.receive(a.hash,text(m.id,128),m.status,m.error);
         this.send(ws,{type:"reader_ack",id:m.id});
       } else if(m.type==="library_result") {
@@ -1486,8 +1492,13 @@ export class PersonalAgent extends DurableObject<Env> {
     }
   }
   sendPurges(ws:WebSocket) {
-    for(const d of this.deletions.localPending())for(const id of this.readerRequests.invalidate({conversationId:d.id}))this.send(ws,{type:"reader_cancel",id});
-    for(const d of this.deletions.localPending())this.send(ws,{type:"purge_operations",deletionId:d.id,operationIds:this.deletions.operationIds(d.id)});
+    const a=ws.deserializeAttachment();
+    for(const d of this.deletions.localPending()){
+      const operations=this.deletions.operationIds(d.id);
+      if(operations.length)this.send(ws,{type:"purge_operations",deletionId:d.id,operationIds:operations});
+      const readers=this.deletions.readers.pending(a.hash,d.id);
+      if(readers.length&&a.capabilities?.includes("reader-purge-v1"))this.send(ws,{type:"reader_purge",deletionId:d.id,requestIds:readers});
+    }
   }
   async processDeletion() {
     const d=this.deletions.pending()[0];if(!d)return false;
@@ -1508,7 +1519,7 @@ export class PersonalAgent extends DurableObject<Env> {
           this.state.notices=this.state.notices.filter(n=>!n.artifactId||!artifacts.includes(n.artifactId));
           for(const task of this.state.tasks.filter(t=>impact.turns.includes(t.id)))this.proactive.cancel(task);
           for(const conversationId of impact.conversations){
-            readerCancellations.push(...this.readerRequests.invalidate({conversationId}));
+            readerCancellations.push(...this.readerRequests.removeConversations([conversationId],d.id));
             const batches=this.researchBatches.clearResearch(conversationId);
             this.state.notices=this.state.notices.filter(n=>!n.batchId||!batches.includes(n.batchId));
           }
