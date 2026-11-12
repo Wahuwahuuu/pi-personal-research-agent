@@ -167,4 +167,10 @@ npx wrangler dev --var RESEARCH_ENGINE:durable
 
 发布脚本要求干净的已提交源码，并在上传前校验现有部署身份。启用 Passkey 后优先读取匹配部署地址的本机设备凭证，通过只读接口检查，不会挤掉节点连接；也可通过环境变量 PRA_DEPLOY_DEVICE_TOKEN、PRA_DEPLOY_SESSION 或 DPAPI 文件 .local/deployment-session.secret 提供部署校验身份。初始化登录已关闭且没有有效凭证时会在上传前停止。上传使用独立构建快照；只有实际个人 Agent 返回对应构建标识后，才更新 .local/deployment.json。未通过的上传保留在 deployment-pending.json，不能视为已验证发布。
 
-删除研究成果会清除该成果的全部版本、关联通知和旧保存请求缓存，并留下不含正文的删除标记。自动任务重放不会重新生成已删成果；你仍可从原任务主动保存一份新成果。删除成果本身不删除原会话或论文。应用恢复必须保留当前删除标记；直接回退整库的完整备份恢复流程仍待实现。
+删除研究成果会清除该成果的全部版本、关联通知和旧保存请求缓存，并留下不含正文的删除标记。自动任务重放不会重新生成已删成果；你仍可从原任务主动保存一份新成果。删除成果本身不删除原会话或论文。恢复仅可通过下述检查点入口进行。
+
+恢复检查点接口使用 Cloudflare SQLite DO 的 PITR。POST /api/recovery/checkpoints 接收 requestId、label；GET /api/recovery 查看可用检查点和恢复状态；POST /api/recovery/restore 接收 requestId、checkpointId。仅接受本账户、29 天内、相同构建和存储结构的检查点，最多保留 30 个可用记录。模型或本机操作正在执行时返回 RECOVERY_BUSY，稍后用同一请求标识重试。
+
+恢复前将当前删除标记、修订记忆、设备权限、导入队列和计费数据暂存到独立身份对象；保护记录超过 750 KB 时拒绝开始，不丢弃记录。时间回退后先重放这些保护规则，再开放访问；旧任务请求、已删除会话及成果不会通过本入口重建。完成后清除临时保护正文，保留恢复状态。失败时维持访问门禁；GET /api/recovery 仍可查看状态。未完任务取消并保留已有部分结果，关注计划暂停，原 Pi 会话重新从应用历史建立；不会自动重做恢复点之后的工作。
+
+检查点依赖平台的有限保留窗口，不是永久离线备份。此协议不覆盖绕过应用入口的控制台整库回退、身份对象同时回退或平台备份物理清除。既有历史中未记录的删除请求标识无法补造。平台机制见 [Cloudflare PITR 文档](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)。

@@ -140,6 +140,13 @@ try {
   });
   assert.match(done.answer, /模拟模型/);
   assert.equal(done.engine,"durable");
+  const checkpointBody={requestId:"local-checkpoint-metadata",label:"Local bookmark metadata"};
+  const checkpointFirst=await api("recovery/checkpoints","POST",checkpointBody);
+  const checkpointAgain=await api("recovery/checkpoints","POST",checkpointBody);
+  assert.equal(checkpointAgain.id,checkpointFirst.id);
+  assert.equal((await api("recovery")).checkpoints[0].id,checkpointFirst.id);
+  assert.equal((await api("recovery")).jobs.length,0);
+  checks.push("bookmark metadata and idempotent checkpoint registration work locally; native PITR replay is not inferred");
   const followChat=await api("tasks","POST",{input:"continue cloud conversation",kind:"chat",conversationId:done.conversationId,requestId:"chat-follow"});
   const cloudFollow=await until(async()=>{const t=(await api("state")).tasks.find((t:any)=>t.id===followChat.id);return t.status==="completed"?t:false;});
   assert.equal(cloudFollow.sessionId,done.sessionId);assert.equal(cloudFollow.tools,0);
@@ -558,6 +565,9 @@ try {
   await until(async()=> (await api("deletions/"+removed.conversationId)).status==="completed");
   assert.ok(!(await api("state")).conversations.some((c:any)=>c.id===removed.conversationId));
   assert.ok(!(await api("state")).tasks.some((t:any)=>t.id===removed.id));
+  const deletedRequestReplay=await fetch(base+"/api/tasks",{method:"POST",headers:{Cookie:cookie,"Content-Type":"application/json"},body:JSON.stringify({input:"DELETE_CONVERSATION_CANARY",kind:"chat",requestId:"delete-conversation"})});
+  assert.equal(deletedRequestReplay.status,410);
+  checks.push("deleted task request cannot recreate a conversation even when its conversation identifier is omitted");
   const afterDelete=await api("tasks","POST",{input:"new chat after deletion",kind:"chat",requestId:"after-delete"});
   await until(async()=> (await api("state")).tasks.find((t:any)=>t.id===afterDelete.id)?.status==="completed");
   checks.push("conversation deletion removed application and Pi session while subsequent chat reopened the same host runtime");

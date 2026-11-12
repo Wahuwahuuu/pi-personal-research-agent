@@ -1,3 +1,4 @@
+import {RecoveryStore,type RecoveryCheckpoint} from "./recovery-store.ts";
 import { DiscoveryGate } from "./discovery-gate.ts";
 import {SharedBudget} from "./shared-budget.ts";
 import type {ModelUsage,BudgetLedger} from "./budget.ts";
@@ -15,12 +16,23 @@ export class IdentityRegistry extends DurableObject<Env> {
  store:IdentityStore;
  budget:SharedBudget;
  discovery:DiscoveryGate;
+ recovery:RecoveryStore;
  constructor(ctx:DurableObjectState,env:Env){
   super(ctx,env);
   let depth=0;
   const db:StateStorage={sql:{exec(query,...bindings){const rows=ctx.storage.sql.exec(query,...bindings);return{toArray:()=>rows.toArray() as any};}},transactionSync:fn=>{if(depth)return fn();return ctx.storage.transactionSync(()=>{depth++;try{return fn();}finally{depth--;}});}};
-  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);this.discovery=new DiscoveryGate(db);
+  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);this.discovery=new DiscoveryGate(db);this.recovery=new RecoveryStore(db);
  }
+ private recoveryAccount(owner:string){if(!this.store.account(owner))throw new Problem("UNKNOWN_ACCOUNT",404);}
+ async recoveryView(owner:string){this.recoveryAccount(owner);return this.recovery.view(owner);}
+ async recoveryCheckpoint(owner:string,id:string){this.recoveryAccount(owner);return this.recovery.checkpoint(owner,id);}
+ async recoveryCheckpointRequest(owner:string,id:string){this.recoveryAccount(owner);return this.recovery.byRequest(owner,id)??null;}
+ async addRecoveryCheckpoint(owner:string,c:RecoveryCheckpoint){this.recoveryAccount(owner);return this.recovery.add(owner,c);}
+ async pendingRecovery(owner:string){this.recoveryAccount(owner);const job=this.recovery.pending(owner);return job?JSON.stringify(job):null;}
+ async recoveryJob(owner:string,id:string){this.recoveryAccount(owner);const j=this.recovery.job(owner,id);return j?{id:j.id,checkpointId:j.checkpointId,status:j.status}:null;}
+ async prepareRecovery(owner:string,id:string,checkpointId:string,guard:string){this.recoveryAccount(owner);const j=this.recovery.prepare(owner,id,checkpointId,JSON.parse(guard));return{id:j.id,status:j.status};}
+ async finishRecovery(owner:string,id:string){this.recoveryAccount(owner);this.recovery.complete(owner,id);}
+ async failRecovery(owner:string,id:string,code:string){this.recoveryAccount(owner);this.recovery.fail(owner,id,code);}
  async claimDiscovery(owner:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");return this.discovery.claim(owner);}
  async releaseDiscovery(owner:string,token:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.discovery.release(owner,token);}
  async importBudget(owner:string,rows:any[]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.budget.import(owner,rows);}

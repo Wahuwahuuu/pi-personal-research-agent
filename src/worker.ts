@@ -1,3 +1,5 @@
+import type {RecoveryJob} from "./recovery-store.ts";
+import {initRecovery,captureRecovery,applyRecovery,recoverySchema} from "./recovery-data.ts";
 import { DevicePairings } from "./device-pairings.ts";
 import type {Chunk} from "../packages/research/core.ts";
 import {ReaderRequests,readerView} from "./reader-requests.ts";
@@ -115,6 +117,7 @@ export class PersonalAgent extends DurableObject<Env> {
   memoryIndex:MemoryIndex;
   database: StateStorage;
   private busy = false;
+  private recoveryBlocked=false;
   private ownerId: string;
   private budgetImported=false;
   private sharedBudgetSnapshot?:ReturnType<BudgetLedger["snapshot"]>;
@@ -130,6 +133,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if(transactionDepth)return fn();
       return ctx.storage.transactionSync(()=>{transactionDepth++;try{return fn();}finally{transactionDepth--;}});
     }};
+    initRecovery(this.database);
     this.repository = new StateRepository(this.database);
     this.state = this.repository.load();
     this.workspace=new Workspace(this.database);this.workspace.migrate(this.state);
@@ -181,6 +185,7 @@ export class PersonalAgent extends DurableObject<Env> {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
         const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
         const before = async () => {
+          if(this.recoveryBlocked)throw new Problem("RECOVERY_IN_PROGRESS",503);
           if(env.MODEL_MODE!=="mock")await this.syncBudget();
           const t=this.state.tasks.find(t=>t.status==="running"&&t.modelOperation);
           if(!t)throw new Error("NO_ACTIVE_TASK");
@@ -286,6 +291,79 @@ export class PersonalAgent extends DurableObject<Env> {
     ctx.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair("ping", "pong"),
     );
+    if(ctx.storage.sql.exec("SELECT user_id FROM pra_identity WHERE singleton=1").toArray().length){
+      this.recoveryBlocked=true;
+      ctx.blockConcurrencyWhile(async()=>{await this.recoverPending();});
+    }
+  }
+  async alarm(){if(this.recoveryBlocked){await this.recoverPending();return;}await this.lifecycle.alarm();}
+  private recoveryIdle(){
+    if(this.busy||this.state.tasks.some(t=>t.runOpen||t.status==="running")||this.state.operations.some(o=>o.state==="sent")||
+      this.database.sql.exec("SELECT id FROM pra_library_jobs WHERE status IN ('sent','processing') LIMIT 1").toArray().length)
+      throw new Problem("RECOVERY_BUSY",409);
+  }
+  private async recoverPending(){
+    let id:string|undefined;
+    try{
+      const encoded=await this.identityRegistry().pendingRecovery(this.ownerId);
+      const job:RecoveryJob|undefined=encoded?JSON.parse(encoded):undefined;
+      if(!job){this.recoveryBlocked=false;return;}
+      id=job.id;this.recoveryBlocked=true;
+      for(const ws of this.ctx.getWebSockets())ws.close(1012,"recovery");
+      const marker=this.database.sql.exec<{intent:string|null;applied:string|null}>("SELECT intent,applied FROM pra_recovery_state WHERE id=1").toArray()[0];
+      if(marker?.applied===job.id){await this.identityRegistry().finishRecovery(this.ownerId,job.id);this.recoveryBlocked=false;return;}
+      if(job.guard.build!==(this.env.BUILD_ID??"development"))throw new Problem("RECOVERY_BUILD_MISMATCH",503);
+      if(marker?.intent===job.id){
+        await this.ctx.storage.onNextSessionRestoreBookmark(job.checkpoint!.bookmark);
+        this.ctx.abort("PRA_CHECKPOINT_RESTORE");return;
+      }
+      await this.harness.dispose();this.runtime=undefined;
+      this.state=applyRecovery(this.database,job.guard,job.id,this.env.BUILD_ID??"development");
+      this.repository.load();this.memoryIndex=new MemoryIndex(this.database);this.catalogCache.clear();
+      await this.identityRegistry().finishRecovery(this.ownerId,job.id);
+      this.recoveryBlocked=false;
+    }catch(error){
+      this.recoveryBlocked=true;
+      if(id)try{await this.identityRegistry().failRecovery(this.ownerId,id,error instanceof Problem?error.code:"RECOVERY_FAILED");}catch{}
+    }
+  }
+  private async checkpointRequest(r:Request,restore=false){
+    const b=await this.body(r),requestId=text(b.requestId,128);
+    if(restore){
+      const checkpointId=text(b.checkpointId,128),registry=this.identityRegistry(),prior=await registry.recoveryJob(this.ownerId,requestId);
+      if(prior){if(prior.checkpointId!==checkpointId)throw new Problem("REQUEST_CONFLICT",409);return json({id:prior.id,status:prior.status},prior.status==="completed"?200:202);}
+      const c=await registry.recoveryCheckpoint(this.ownerId,checkpointId);
+      if(c.build!==(this.env.BUILD_ID??"development")||c.schema!==recoverySchema(this.database))throw new Problem("RECOVERY_SCHEMA_MISMATCH",409);
+      this.recoveryIdle();
+      return this.ctx.blockConcurrencyWhile(async()=>{
+        this.recoveryBlocked=true;
+        try{
+          this.recoveryIdle();await this.harness.dispose();this.runtime=undefined;
+          const guard=captureRecovery(this.database,this.state,this.env.BUILD_ID??"development");
+          this.database.sql.exec("INSERT INTO pra_recovery_state VALUES(1,?,NULL) ON CONFLICT(id) DO UPDATE SET intent=excluded.intent",requestId);
+          const result=await registry.prepareRecovery(this.ownerId,requestId,checkpointId,JSON.stringify(guard));
+          for(const ws of this.ctx.getWebSockets())ws.close(1012,"recovery");
+          await this.ctx.storage.setAlarm(Date.now()+500);
+          return json(result,202);
+        }catch(error){
+          // A lost RPC response may still have committed the guard. Keep the gate shut until checked.
+          try{if(!await registry.pendingRecovery(this.ownerId))this.recoveryBlocked=false;}catch{}
+          throw error;
+        }
+      });
+    }
+    const label=text(b.label??"Research checkpoint",80),registry=this.identityRegistry(),old=await registry.recoveryCheckpointRequest(this.ownerId,requestId);
+    if(old){if(old.label!==label)throw new Problem("REQUEST_CONFLICT",409);const{bookmark,schema,...view}=old;return json(view,201);}
+    this.recoveryIdle();
+    return this.ctx.blockConcurrencyWhile(async()=>{
+      this.recoveryBlocked=true;
+      try{
+        this.recoveryIdle();await this.harness.dispose();this.runtime=undefined;
+        let bookmark:string;try{bookmark=await this.ctx.storage.getCurrentBookmark();}catch{throw new Problem("CHECKPOINT_UNAVAILABLE",503);}
+        const c=await registry.addRecoveryCheckpoint(this.ownerId,{id:crypto.randomUUID(),requestId,label,bookmark,build:this.env.BUILD_ID??"development",schema:recoverySchema(this.database),created:Date.now()});
+        const{bookmark:_,schema,...view}=c;return json(view,201);
+      }finally{this.recoveryBlocked=false;}
+    });
   }
   memoryService(projectId?:string){
     const version=this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex&&t.researchIndex!=="cloud-only")?.researchIndex;
@@ -396,6 +474,7 @@ export class PersonalAgent extends DurableObject<Env> {
     return true;
   }
   async budgetBaseline(){
+    if(this.recoveryBlocked)throw new Problem("RECOVERY_IN_PROGRESS",503);
     return {usage:{...this.state.usage},rows:this.ctx.storage.sql.exec("SELECT * FROM pra_model_calls").toArray()};
   }
   async syncBudget(){
@@ -406,6 +485,7 @@ export class PersonalAgent extends DurableObject<Env> {
     if(!await this.flushBills())throw new Error("BILLING_UNAVAILABLE");
   }
   async acceptIdentity(userId:string,hash:string,expires:number) {
+    if(this.recoveryBlocked)throw new Problem("RECOVERY_IN_PROGRESS",503);
     const binding=this.ctx.storage.sql.exec<{user_id:string}>("SELECT user_id FROM pra_identity WHERE singleton=1").toArray()[0];
     if(binding&&binding.user_id!==userId)throw new Error("IDENTITY_MISMATCH");
     this.ctx.storage.sql.exec("INSERT OR IGNORE INTO pra_identity VALUES(1,?)",userId);
@@ -418,6 +498,8 @@ export class PersonalAgent extends DurableObject<Env> {
     for(const ws of this.ctx.getWebSockets("ui"))if(!hash||ws.deserializeAttachment()?.hash===hash)ws.close(1008,"revoked");
   }
   async fetch(r: Request): Promise<Response> {
+    if(this.recoveryBlocked)await this.ctx.blockConcurrencyWhile(()=>this.recoverPending());
+    if(this.recoveryBlocked)return json({error:"RECOVERY_IN_PROGRESS"},503);
     try {
       return await this.route(r);
     } catch (e) {
@@ -441,6 +523,8 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (!(await this.authorized(r, "user")))
       throw new Problem("UNAUTHORIZED", 401);
+    if(path==="/api/recovery/checkpoints"&&r.method==="POST")return this.checkpointRequest(r);
+    if(path==="/api/recovery/restore"&&r.method==="POST")return this.checkpointRequest(r,true);
     const workspaceResponse=await this.workspaceRoute(r,path);if(workspaceResponse)return workspaceResponse;
     if (path === "/api/events")
       return this.upgrade(r, "ui", await digest(cookie(r)!));
@@ -576,6 +660,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const b = await this.body(r);
       if(b.mode!==undefined&&!["normal","long"].includes(b.mode as string))throw new Problem("INVALID_TASK_MODE");
       if(b.priority!==undefined&&![0,1,2].includes(b.priority as number))throw new Problem("INVALID_PRIORITY");
+      if(this.database.sql.exec("SELECT id FROM pra_recovery_requests WHERE id=? UNION ALL SELECT request_id AS id FROM pra_task_tombstones WHERE request_id=?",text(b.requestId,128),text(b.requestId,128)).toArray().length)throw new Problem("RESOURCE_DELETED",410);
       const prior = this.state.tasks.find(t => t.requestId === b.requestId);
       if(prior&&b.mode!==undefined&&(b.mode==="long")!==!!prior.goal)throw new Problem("REQUEST_CONFLICT",409);
       const conversationId = typeof b.conversationId === "string" ? text(b.conversationId,128) : prior?.conversationId ?? crypto.randomUUID();
@@ -890,6 +975,7 @@ export class PersonalAgent extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
+    if(this.recoveryBlocked){ws.close(1012,"recovery");return;}
     const a = ws.deserializeAttachment();
     if (!a || !this.validHash(a.hash, a.kind === "ui" ? "user" : "device")) {
       ws.close(1008, "expired");
@@ -1170,10 +1256,12 @@ export class PersonalAgent extends DurableObject<Env> {
     }
   }
   async webSocketClose() {
+    if(this.recoveryBlocked)return;
     await this.maintenance.arm(Date.now() + 60000);
     this.publish();
   }
   async webSocketError() {
+    if(this.recoveryBlocked)return;
     await this.maintenance.arm(Date.now() + 60000);
   }
   catalog(version: string): ResearchCatalog {
@@ -1444,7 +1532,7 @@ export class PersonalAgent extends DurableObject<Env> {
       }
       if (terminal(t)||t.pauseRequested) return;
       const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
-      if (t.workflow) await (await this.runtime!.conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:!this.proactive.control(t)&&workflowTools(t.workflow,segmentUsage(t).calls).length ? null : [],instructions:this.proactive.control(t)?this.proactive.instruction(t):workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
+      if (t.workflow) await (await (await this.harness.pi()).conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:!this.proactive.control(t)&&workflowTools(t.workflow,segmentUsage(t).calls).length ? null : [],instructions:this.proactive.control(t)?this.proactive.instruction(t):workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
       const context=t.workflow?this.workflowContext(t):undefined;
       if(context){
         const recalled=(await this.memoryService(context.conversation.projectId).recall(t.input,context.conversation.scope)).items;context.memories=recalled;
@@ -1555,7 +1643,7 @@ export class PersonalAgent extends DurableObject<Env> {
     catch(e){this.state=this.repository.load();throw e;}
   }
   async tick(): Promise<number | undefined> {
-    if (this.busy) return Date.now() + 1000;
+    if (this.recoveryBlocked||this.busy) return Date.now() + 1000;
     this.busy = true;
     try {
       expire(this.state);
@@ -1692,7 +1780,7 @@ export class PersonalAgent extends DurableObject<Env> {
           if (!t.sessionId) {
             const session = await this.harness.sessions.create();
             t.sessionId = session.id;
-            await (await this.runtime!.conversation(
+            await (await (await this.harness.pi()).conversation(
               Number(session.id) as ConversationId,
               BACKGROUND_CONTEXT,
             ))!.configure({ tools: [] }, BACKGROUND_CONTEXT);
@@ -1810,6 +1898,7 @@ export default {
       const value=cookie(r);if(!value)return json({error:"UNAUTHORIZED"},401);
       const identity=await identities.authenticate(await digest(value));
       if(!identity)return json({error:"UNAUTHORIZED"},401);
+      if(url.pathname==="/api/recovery"&&r.method==="GET")return json(await identities.recoveryView(identity.id));
       return env.AGENTS.getByName(identity.id).fetch(r);
     } catch {return json({error:"SERVICE_UNAVAILABLE"},503);}
   },

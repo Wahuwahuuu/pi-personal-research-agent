@@ -19,6 +19,7 @@ export class DeletionStore {
   constructor(storage:StateStorage) {
     this.storage=storage;
     this.readers=new ReaderPurges(storage);
+    storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_task_tombstones(request_id TEXT PRIMARY KEY,task_id TEXT NOT NULL)");
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deletions(id TEXT PRIMARY KEY,session_id TEXT,status TEXT NOT NULL,created INTEGER NOT NULL,error TEXT,local_pending INTEGER NOT NULL)");
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deleted_operations(id TEXT PRIMARY KEY,deletion_id TEXT NOT NULL,purged INTEGER NOT NULL DEFAULT 0)");
     storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_deleted_operations_deletion ON pra_deleted_operations(deletion_id)");
@@ -78,6 +79,7 @@ export class DeletionStore {
   }
   capture(state:State,id:string){
     const prior=this.lineage(id),impact=deletionImpact(state,id,prior);
+    for(const t of state.tasks)if(t.conversationId===id)this.storage.sql.exec("INSERT OR IGNORE INTO pra_task_tombstones VALUES(?,?)",t.requestId,t.id);
     for(const kind of Object.keys(impact) as (keyof DeletionImpact)[]){
       const known=new Set(prior[kind]);
       for(const value of impact[kind])if(!known.has(value))this.storage.sql.exec("INSERT OR IGNORE INTO pra_deletion_lineage VALUES(?,?,?)",id,kind,value);
