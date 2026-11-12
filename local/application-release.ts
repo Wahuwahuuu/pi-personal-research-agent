@@ -32,17 +32,28 @@ async function owned(root:string,path:string){
  if(!rel||rel===".."||rel.startsWith(".."+sep)||isAbsolute(rel)||
    (await lstat(path)).isSymbolicLink()||await realpath(path)!==path)throw Error("LOCAL_RELEASE_PATH_ESCAPE");
 }
-async function inventory(directory:string,path=directory):Promise<Entry[]>{
- const out:Entry[]=[];
- for(const name of (await readdir(path)).sort()){
-  const file=join(path,name),relativePath=relative(directory,file).split(sep).join("/");
-  if(path===directory&&name==="release.json")continue;
-  await owned(directory,file);const stat=await lstat(file);
-  if(stat.isDirectory())out.push(...await inventory(directory,file));
-  else if(stat.isFile()){
-   const bytes=await readFile(file);out.push({path:relativePath,bytes:bytes.length,sha256:sha(bytes)});
-  }else throw Error("LOCAL_RELEASE_FILE_REQUIRED");
+async function inventory(directory:string):Promise<Entry[]>{
+ const folders=[directory],paths:string[]=[],out:Entry[]=[];
+ // Bound parallel reads across the whole tree, rather than multiplying concurrency per folder.
+ while(folders.length){
+  const folder=folders.pop()!;
+  for(const entry of await readdir(folder,{withFileTypes:true})){
+   if(folder===directory&&entry.name==="release.json")continue;
+   const path=join(folder,entry.name);
+   if(entry.isSymbolicLink())throw Error("LOCAL_RELEASE_PATH_ESCAPE");
+   if(entry.isDirectory()){await owned(directory,path);folders.push(path);}
+   else if(entry.isFile())paths.push(path);
+   else throw Error("LOCAL_RELEASE_FILE_REQUIRED");
+  }
  }
+ let cursor=0;
+ await Promise.all(Array.from({length:Math.min(8,paths.length)},async()=>{
+  while(cursor<paths.length){
+   const file=paths[cursor++];await owned(directory,file);
+   const bytes=await readFile(file);
+   out.push({path:relative(directory,file).split(sep).join("/"),bytes:bytes.length,sha256:sha(bytes)});
+  }
+ }));
  return out.sort((a,b)=>a.path.localeCompare(b.path));
 }
 async function writeAtomic(path:string,value:string){
