@@ -56,7 +56,18 @@ node scripts/install-runtime.ts --models "F:\Models\research" --device cuda
 
 安装器使用 packages/retrieval/uv.lock，以 --locked 安装检索、PDF 和托盘依赖。每次新建 .local/runtimes 下的独立环境，校验固定依赖、Python、模型资源及 CUDA 可用性后才将 status.json 标记为 ready。返回的 python 路径用于节点模板中的 python.executable 和 libraryPython。模型文件由部署者准备，安装器只读取和校验，不下载或更改它们。
 
-此步骤不启动服务、不修改已有节点配置，也不切换现有 Python 环境。失败会保留 failed 状态和规范错误代码供检查；再次安装会使用新目录。节点版本升级与回滚流程仍需单独执行。
+此步骤不启动服务、不修改已有节点配置，也不切换现有 Python 环境。失败会保留 failed 状态和规范错误代码供检查；再次安装会使用新目录。切换和回滚使用下方的独立命令。
+
+已按当前配置模板安装的节点，可使用以下命令切换到安装器返回的 ready 清单：
+
+```powershell
+node scripts/switch-runtime.ts --config ".local/node.json" --manifest ".local/runtimes/ENVIRONMENT_ID/status.json"
+node scripts/switch-runtime.ts --config ".local/node.json" --rollback ".local/runtime-switches/RECEIPT_ID/receipt.json"
+```
+
+切换先校验新环境，再停止指定节点与托盘，保存原配置并原子更新两个 Python 路径。命令返回回滚记录的位置；之后显式启动托盘。回滚会重新检查旧环境，并核对当前配置是否仍等于切换后的版本，发现后续手工修改时拒绝覆盖。更新互斥锁由 SQLite 管理，进程退出后自动释放；未写完完成标记的切换仍可使用记录回滚。原环境、资料库及凭证文件保留。
+
+此流程管理本机 Python 依赖环境；应用源码和云端发布版本的回退需要对应版本的迁移兼容检查。
 
 ## 本地节点
 
