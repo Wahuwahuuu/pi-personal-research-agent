@@ -1,3 +1,4 @@
+import { ContextWindow } from "./ContextWindow.tsx";
 import { TaskControls } from "./TaskControls.tsx";
 import { useEffect, useRef, useState } from "react";
 import { api, mutate, errorText } from "./api.ts";
@@ -265,6 +266,7 @@ export function Chat({
                     )}
                   </div>
                   <TaskProgress task={t} />
+                  <ContextWindow task={t} />
                   <TaskControls task={t} run={run} refresh={refresh} />
                   <div className="message-actions">
                     {t.researchEvidence?.length ? (

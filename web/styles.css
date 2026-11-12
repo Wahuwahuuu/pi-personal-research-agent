@@ -2057,3 +2057,7 @@ textarea {
   .recovery-consequences li + li { margin-top: 8px; }
   .recovery-actions { display: flex; gap: 12px; justify-content: flex-end; flex-wrap: wrap; }
 }
+
+.context-window { margin: 12px 0; font-size: 14px; }
+.context-window summary { cursor: pointer; padding: 6px 0; }
+.context-window p { margin: 8px 0; line-height: 1.6; }

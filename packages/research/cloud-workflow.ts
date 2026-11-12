@@ -1,3 +1,4 @@
+import {projectRecentDialogue,type ContextWindow} from "./context-window.ts";
 import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest} from "./memory.ts";
 import {stageObject} from "./internal/agent/p2-stages.ts";
 import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "./translation.ts";
@@ -14,6 +15,7 @@ export interface ResearchConversation {
   sessionId?:string; domain?:DomainState; history:DialogueRecord[];
 }
 export interface ResearchWorkflow {
+  contextWindow?:ContextWindow;
   phase:"prepare"|"agent"|"completion"|"comparison"|"translation"|"memory"|"finished";
   memory?:{answer:string;status:"completed"|"waiting_user";digest?:MemoryDigest;state:"pending"|"saved"|"failed"|"budget_exhausted";visibleSourceIds?:string[]};
   cloudOnly?:boolean; automatic?:boolean; preparedIndex?:string;
@@ -90,11 +92,19 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const domain=summary.domain_memory;
   domain.conclusion_candidates=[]; // Prior claims are never reintroduced as source evidence.
   domain.reading_notes=(domain.reading_notes??[]).slice(-2).map((n:any)=>({...n,answer_excerpt:Array.from(n.answer_excerpt??"").slice(0,400).join(""),excerpt_truncated:true}));
-  domain.user_constraints=boundedItems(domain.user_constraints.slice(-12),2500);
-  domain.unresolved_questions=boundedItems(domain.unresolved_questions.slice(-6),1500);
+  domain.user_constraints=boundedItems([...domain.user_constraints.slice(-12)].reverse(),2500).reverse();
+  domain.unresolved_questions=boundedItems([...domain.unresolved_questions.slice(-6)].reverse(),1500).reverse();
   domain.pending_inferences=[];
-  summary.conversation_only=boundedItems(summary.conversation_only.slice(-4),2500);
-  const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{archived_turns:c.conversation.history.length,visible_recent_turns:history(c).slice(-4).map(h=>h.turn_id),invalidated_turns_excluded:c.invalidatedMemoryTurns?.length??0},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:boundedItems(c.memories.slice(-20),4000),memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
+  const validHistory=history(c),answersIncluded=!d.state.reading_notes;
+  const recent=projectRecentDialogue(validHistory,answersIncluded),memories=boundedItems(c.memories.slice(-20),4000);
+  summary.conversation_only=recent.items;
+  w.contextWindow={version:1,stage:w.phase,stored_turns:c.conversation.history.length,
+    visible_recent_turns:recent.items.map(h=>h.turn_id),omitted_valid_turns:validHistory.length-recent.items.length,
+    invalidated_turns_excluded:c.conversation.history.length-validHistory.length,truncated_recent_turns:recent.truncated,
+    history_bytes:recent.bytes,constraints:domain.user_constraints.length,unresolved_questions:domain.unresolved_questions.length,
+    reading_notes:domain.reading_notes?.length??0,memories:memories.length,answers_included:answersIncluded};
+  summary.context_rule="Only conversation_only is included as recent discussion. Some fields are explicitly truncated. Other archived turns are not visible here; ask for missing context rather than claiming to remember it.";
+  const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{...w.contextWindow,archived_turns:c.conversation.history.length},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:memories,memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,tools:c.operations,visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);

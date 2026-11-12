@@ -166,6 +166,10 @@ try {
   const followChat=await api("tasks","POST",{input:"continue cloud conversation",kind:"chat",conversationId:done.conversationId,requestId:"chat-follow"});
   const cloudFollow=await until(async()=>{const t=(await api("state")).tasks.find((t:any)=>t.id===followChat.id);return t.status==="completed"?t:false;});
   assert.equal(cloudFollow.sessionId,done.sessionId);assert.equal(cloudFollow.tools,0);
+  assert.equal(cloudFollow.workflow.contextWindow.stored_turns,1);
+  assert.deepEqual(cloudFollow.workflow.contextWindow.visible_recent_turns,[done.id]);
+  assert.equal(cloudFollow.workflow.contextWindow.invalidated_turns_excluded,0);
+  checks.push("continuous Pi conversation persists the actual projected history window separately from its stored archive");
   checks.push("cloud-only turns reuse one Pi conversation before any device or corpus exists");
   checks.push(
     "official PiHarness deterministic provider completed cloud-only task",
