@@ -69,6 +69,11 @@ def jsonl(rows: list[dict]) -> bytes:
     return b"".join(canonical(row) + b"\n" for row in rows)
 
 
+def read_jsonl(content: str) -> list[dict]:
+    # JSONL records use LF; splitlines() also splits valid characters inside JSON strings.
+    return [json.loads(line) for line in content.split("\n") if line.strip()]
+
+
 def tokenize_bm25(text: str) -> list[str]:
     return _WORD.findall(text.casefold())
 
@@ -171,7 +176,7 @@ def load_source(corpus_dir: Path) -> tuple[list[dict], dict[str, dict], dict]:
     parent = json.loads(parent_path.read_text(encoding="utf-8"))
     if sha256(content) != parent.get("files", {}).get("papers.jsonl"):
         raise CorpusError("P1 source papers differ from their pinned manifest")
-    raw = [json.loads(line) for line in content.decode("utf-8").splitlines() if line.strip()]
+    raw = read_jsonl(content.decode("utf-8"))
     papers, paragraphs = [], {}
     seen = set()
     for row in raw:
@@ -436,8 +441,8 @@ def verify_artifacts(index_dir: Path, corpus_dir: Path) -> dict:
         path = index_dir / name
         if path.resolve(strict=True).parent != index_dir or sha256(path.read_bytes()) != digest:
             raise CorpusError("P2 index file hash or path differs")
-    chunks = [json.loads(line) for line in (index_dir / "chunks.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
-    mapping = [json.loads(line) for line in (index_dir / "source-map.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+    chunks = read_jsonl((index_dir / "chunks.jsonl").read_text(encoding="utf-8"))
+    mapping = read_jsonl((index_dir / "source-map.jsonl").read_text(encoding="utf-8"))
     if len(chunks) != manifest.get("chunk_count") or len(mapping) != len(chunks):
         raise CorpusError("P2 chunk count differs")
     seen, coverage = set(), {}
@@ -519,7 +524,7 @@ class P2Corpus:
         if dependency_versions() != manifest["identity"]["dependencies"]:
             raise CorpusError("Runtime dependency versions differ from the index")
         papers, _, _ = load_source(corpus_dir)
-        chunks = [json.loads(line) for line in (index_dir / "chunks.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+        chunks = read_jsonl((index_dir / "chunks.jsonl").read_text(encoding="utf-8"))
         vectors = np.load(index_dir / "dense-vectors.npy", allow_pickle=False)
         if (vectors.dtype != np.float32 or vectors.shape != (len(chunks), manifest["dense_dimensions"])
                 or not np.isfinite(vectors).all() or not np.allclose(np.linalg.norm(vectors, axis=1), 1, atol=1e-5)):

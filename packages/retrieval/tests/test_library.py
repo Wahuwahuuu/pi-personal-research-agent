@@ -5,7 +5,7 @@ import unittest
 from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 from retriever.library import Library, LibraryError, extract_pdf, canonical, sha
-from retriever.p2 import load_source, tokenize_library, tokenize_bm25, library_recipe, full_recipe, P2Corpus
+from retriever.p2 import load_source, tokenize_library, tokenize_bm25, library_recipe, full_recipe, P2Corpus, jsonl, read_jsonl
 
 def pdf(path, texts):
     writer = PdfWriter()
@@ -100,6 +100,28 @@ class LibraryTests(unittest.TestCase):
         papers, paragraphs, manifest = load_source(self.library.path(active["corpus"]))
         self.assertEqual(papers[0]["title"], "Known title")
         self.assertTrue(any(p["text"] == "Page three evidence." for p in paragraphs.values()))
+
+    def test_unicode_line_separators_are_source_text_not_jsonl_record_boundaries(self):
+        original = "before\u0085middle\u2028中文\u2029after"
+        rows = [{"text": original, "start": 0, "end": len(original)}, {"text": "second"}]
+        self.assertEqual(read_jsonl(jsonl(rows).decode("utf8")), rows)
+        self.assertEqual(read_jsonl(jsonl(rows).decode("utf8").replace("\n", "\r\n")), rows)
+        self.library.register_pdf("unicode", self.first)
+        def parser(path, paper_id, meta):
+            result = extract_pdf(path, paper_id, meta)
+            result["paper"]["title"] = original
+            result["paper"]["full_text"][0]["section_name"] = original
+            result["paper"]["full_text"][0]["paragraphs"] = [original]
+            return result
+        result = self.run_job(parser=parser)
+        self.assertEqual(result["status"], "published")
+        active = self.library.active(verify)
+        papers, paragraphs, _ = load_source(self.library.path(active["corpus"]))
+        self.assertEqual(papers[0]["title"], original)
+        paragraph = next(iter(paragraphs.values()))
+        self.assertEqual(paragraph["text"], original)
+        self.assertEqual(paragraph["section"], original)
+        self.assertEqual(paragraph["text"][7:14], original[7:14])
 
     def test_new_library_keeps_the_configured_base_papers_without_mutating_them(self):
         self.library.register_pdf("base", self.first)
