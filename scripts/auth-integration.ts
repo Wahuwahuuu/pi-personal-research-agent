@@ -59,6 +59,8 @@ export async function verifyIdentity(base:string,initialCookie:string,admin:stri
   ["tasks/"+victim.value.id+"/cancel","POST",{}],
   ["tasks/"+victim.value.id+"/continue","POST",{}],
   ["conversations/"+victim.value.conversationId,"DELETE",undefined],
+  ["data/retention/preview","POST",{id:victim.value.conversationId,days:0}],
+  ["data/retention/confirm","POST",{id:victim.value.conversationId,days:0,fingerprint:"0".repeat(64),requestId:"cross-user-retention"}],
   ["conversations/"+victim.value.conversationId,"PATCH",{title:"attacked"}],
   ["memories/"+mem.value.id,"DELETE",undefined]
  ] as const;

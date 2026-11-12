@@ -1,3 +1,4 @@
+export const TASK_CAPACITY=5000;
 import type {ControlReceipt} from "./conversation-control.ts";
 import type {ProactiveState} from "./proactive-research.ts";
 import type {LongGoal} from "./task-control.ts";
@@ -160,7 +161,7 @@ export function submit(
       throw new Problem("REQUEST_CONFLICT", 409);
     return old;
   }
-  if (s.tasks.length >= 5000) throw new Problem("CAPACITY", 429);
+  if (s.tasks.length >= TASK_CAPACITY) throw new Problem("CAPACITY", 429);
   const t: Task = {
     id: crypto.randomUUID(),
     requestId: key,

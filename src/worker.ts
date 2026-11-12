@@ -1,3 +1,4 @@
+import {retentionCandidates,retentionPreview,confirmRetention} from "./data-retention.ts";
 import {RELEASE_CONTRACT} from "./release-contract.ts";
 import {resolveConversationControl, recordConversationControl} from "./conversation-control.ts";
 import type {RecoveryJob} from "./recovery-store.ts";
@@ -646,14 +647,31 @@ export class PersonalAgent extends DurableObject<Env> {
       if(!p.has("limit"))return json(this.state.conversations??[]);
       return json(conversationPage(this.state,{q:p.get("q")??"",projectId:p.get("project")??undefined,archived:p.get("archived")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit"))},this.repository));
     }
+    if(path==="/api/data/retention"&&r.method==="GET"){
+      const p=new URL(r.url).searchParams;
+      const blocked=this.deletions.blockedConversationIds();
+      return json(retentionCandidates(this.state,{days:Number(p.get("days")??180),limit:Number(p.get("limit")??20),after:p.get("after")??undefined},id=>blocked.has(id)));
+    }
+    if(path==="/api/data/retention/preview"&&r.method==="POST"){
+      const b=await this.body(r);
+      return json(retentionPreview(this.state,text(b.id,128),Number(b.days),id=>!!this.deletions.get(id)||this.deletions.blocksConversation(id)));
+    }
+    if(path==="/api/data/retention/confirm"&&r.method==="POST"){
+      const b=await this.body(r),id=text(b.id,128),days=Number(b.days),fingerprint=text(b.fingerprint,64);
+      try{this.workspace.once(b.requestId,"retention:delete:"+id,{days,fingerprint},()=>{
+        confirmRetention(this.state,id,days,fingerprint,value=>!!this.deletions.get(value)||this.deletions.blocksConversation(value));
+        this.deletions.request(this.state,id);this.save();return {deletionId:id};
+      });}catch(error){this.state=this.repository.load();throw error;}
+      const deletion=this.deletions.get(id);if(!deletion)throw new Problem("DELETION_RECEIPT_MISSING",503);
+      return this.finishDeletionRequest(id,deletion);
+    }
     const conversationMatch=path.match(/^\/api\/conversations\/([^/]+)$/);
     if(conversationMatch && r.method==="DELETE") {
       const id=conversationMatch[1];
-      const deletion=this.database.transactionSync(()=>{const d=this.deletions.request(this.state,id);this.save();return d;});
-      this.cancelReaders(id);
-      for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});
-      if(deletion.session_id)this.ctx.waitUntil(this.harness.abort({session:deletion.session_id}).catch(()=>{}));
-      await this.maintenance.arm();this.publish();return json(deletion,deletion.status==="completed"?200:202);
+      let deletion;
+      try{deletion=this.database.transactionSync(()=>{const d=this.deletions.request(this.state,id);this.save();return d;});}
+      catch(error){this.state=this.repository.load();throw error;}
+      return this.finishDeletionRequest(id,deletion);
     }
     if(path==="/api/deletions"&&r.method==="GET"){
       const p=new URL(r.url).searchParams;
@@ -1651,6 +1669,12 @@ export class PersonalAgent extends DurableObject<Env> {
       const readers=this.deletions.readers.pending(a.hash,d.id);
       if(readers.length&&a.capabilities?.includes("reader-purge-v1"))this.send(ws,{type:"reader_purge",deletionId:d.id,requestIds:readers});
     }
+  }
+  async finishDeletionRequest(id:string,deletion:import("./deletion.ts").Deletion){
+    this.cancelReaders(id);
+    for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});
+    if(deletion.session_id)this.ctx.waitUntil(this.harness.abort({session:deletion.session_id}).catch(()=>{}));
+    await this.maintenance.arm();this.publish();return json(deletion,deletion.status==="completed"?200:202);
   }
   async processDeletion() {
     const d=this.deletions.pending()[0];if(!d)return false;

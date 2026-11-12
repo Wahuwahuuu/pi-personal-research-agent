@@ -57,6 +57,9 @@ export class DeletionStore {
     const last=items.at(-1);
     return {items,nextCursor:rows.length>limit&&last?JSON.stringify([last.created,last.id]):null};
   }
+  blockedConversationIds(){
+    return new Set(this.storage.sql.exec<{id:string}>("SELECT id FROM pra_deletions WHERE status IN ('pending','failed') UNION SELECT l.id FROM pra_deletion_lineage l JOIN pra_deletions d ON d.id=l.deletion_id WHERE l.kind='conversations' AND d.status IN ('pending','failed')").toArray().map(r=>r.id));
+  }
   pending() {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE status='pending' ORDER BY created").toArray();}
   localPending() {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE local_pending=1 AND status IN ('cloud_complete','completed')").toArray();}
   operationIds(id:string,hash?:string) {return this.custody.pending(id,hash);}

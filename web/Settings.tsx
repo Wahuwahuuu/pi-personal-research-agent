@@ -1,3 +1,4 @@
+import {DataRetention} from "./DataRetention.tsx";
 import {RecoveryCheckpoints} from "./RecoveryCheckpoints.tsx";
 import {DeletionRecords} from "./DeletionRecords.tsx";
 import {deviceView} from "./device-state.ts";
@@ -513,6 +514,7 @@ export function SettingsView({
           >
             导出在线数据
           </button>
+          <DataRetention revision={revision} refresh={refresh} />
           <RecoveryCheckpoints accountId={account.id} build={data.build} revision={revision} run={run} refresh={refresh} />
           <DeletionRecords revision={revision} run={run} />
           <details className="diagnostics">

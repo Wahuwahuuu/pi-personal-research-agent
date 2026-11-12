@@ -83,6 +83,10 @@ const messages: Record<string, string> = {
   BACKGROUND_DAILY_BUDGET:"今天的自动科研额度已用尽，待办保留，可以在后续额度可用时继续。",
 
   VERSIONED_ARXIV_ID_REQUIRED:"请填写包含版本号的 arXiv 编号，例如 2401.00001v2。",
+  RETENTION_NOT_ELIGIBLE:"这段会话已变化或仍有未完成工作。请返回刷新，重新检查可清理会话。",
+  RETENTION_RELATED_BUSY:"关联会话仍有未完成工作或已置顶。请先检查相关研究，稍后再清理。",
+  RETENTION_CHANGED:"检查影响后，相关研究记录发生了变化。请返回刷新并重新检查影响。",
+  INVALID_RETENTION_PERIOD:"请选择有效的最后活动时间。",
   IMPORT_QUEUE_FULL:"入库待办已达到 100 项，请完成或取消部分待办后再添加。",
   LOCAL_CANCEL_PENDING:"取消已保存，等待本机确认后才能重新入库。",
   IMPORT_ALREADY_PUBLISHED:"这篇论文已经入库。取消待办不会删除已入库的论文。",

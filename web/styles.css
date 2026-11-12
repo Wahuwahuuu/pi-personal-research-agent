@@ -2061,3 +2061,12 @@ textarea {
 .context-window { margin: 12px 0; font-size: 14px; }
 .context-window summary { cursor: pointer; padding: 6px 0; }
 .context-window p { margin: 8px 0; line-height: 1.6; }
+
+@layer components {
+ .data-retention { margin-top:36px; }
+ .data-retention>.field { margin-top:16px; max-width:240px; }
+ .data-retention>.help { margin-top:8px; }
+ .data-retention .deletion-row-heading h4,.retention-title { overflow-wrap:anywhere; }
+ .retention-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
+ .retention-receipt:not(:empty) { margin-block:16px; }
+}
