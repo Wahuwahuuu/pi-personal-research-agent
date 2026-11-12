@@ -39,7 +39,7 @@ export function cloudMemory(state:CloudMemoryState,papers:readonly Paper[],owner
   const prior=state.entries.find(e=>input.id?e.id===input.id:e.slot===input.slot&&e.projectId===projectId);
   if(input.id&&!prior)throw Error("UNKNOWN_MEMORY");
   const slot=input.slot??prior?.slot??"manual:"+createHash("sha256").update(input.content).digest("hex");
-  if(!input.edited&&((state.deletedSlots.includes(slot)||state.deletedSlots.includes(tombstoneSlot({slot,projectId:prior?.projectId??projectId})))||prior?.edited))return prior;
+  if(!input.edited&&(state.deletedSlots.includes(tombstoneSlot({slot,projectId:prior?.projectId??projectId}))||prior?.edited))return prior;
   if(input.edited)state.deletedSlots=state.deletedSlots.filter(s=>s!==tombstoneSlot({slot,projectId:prior?.projectId??projectId}));
   if(input.edited&&prior)invalidateMemoryInputs(state,[prior.id],prior.source_turn?[prior.source_turn]:[],[prior.id]);
   if(!input.edited&&input.source_turn&&state.invalidatedTurns?.includes(input.source_turn))return prior;

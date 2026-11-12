@@ -54,3 +54,14 @@ test("correction invalidates transitive cross-conversation derivations and repla
  assert.equal(state.entries.length,1);
  const restored=cloudMemory(JSON.parse(JSON.stringify(state)),papers,"owner");await restored.remove(first.id);assert.equal((await restored.recall("constraint",[])).items.length,0);
 });
+
+test("legacy unscoped tombstones do not suppress independent project memories, while original source turns and global preferences stay deleted",async()=>{
+ const state=newCloudMemory();state.deletedSlots=["default:shared-reading","shared-reading","preference:language"];state.invalidatedTurns=["deleted-source"];
+ const original=cloudMemory(state,papers,"owner",[],{projectId:"default"}),independent=cloudMemory(state,papers,"owner",[],{projectId:"new-project"});
+ await assert.rejects(original.save({kind:"reading",slot:"shared-reading",content:"Old project",source_session:"old-session",source_turn:"fresh-default",paper_ids:["a"]}));
+ await assert.rejects(independent.save({kind:"reading",slot:"different-slot",content:"Attempted replay",source_session:"old-session",source_turn:"deleted-source",paper_ids:["a"]}));
+ const fresh=await independent.save({kind:"reading",slot:"shared-reading",content:"Independent new project evidence",source_session:"new-session",source_turn:"independent-source",paper_ids:["a"]});
+ assert.equal(state.entries.find(e=>e.id===fresh.id)!.projectId,"new-project");
+ await assert.rejects(independent.save({kind:"preference",slot:"preference:language",content:"Old preference",source_turn:"different-source"}));
+ assert.equal(state.entries.length,1);assert.ok(state.deletedSlots.includes("shared-reading"));
+});
