@@ -9,7 +9,7 @@ def check(config):
     errors=[]
     if sys.version_info[:2] != (3,12):errors.append("PYTHON_312_REQUIRED")
     expected={"torch":"2.9.1","transformers":"4.57.3","numpy":"2.3.5","faiss-cpu":"1.15.1","rank-bm25":"0.2.2",
-              "pypdf":"7.0.1","pystray":"0.19.5","pywebview":"6.2.1","pillow":"13.0.0"}
+              "pypdf":"7.0.1","fonttools":"4.68.0","pystray":"0.19.5","pywebview":"6.2.1","pillow":"13.0.0"}
     versions={}
     for name,wanted in expected.items():
         try:versions[name]=importlib.metadata.version(name)

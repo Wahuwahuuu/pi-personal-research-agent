@@ -69,11 +69,17 @@ def extract_pdf(path: Path, paper_id: str, meta: dict):
         raise LibraryError("ENCRYPTED_PDF_UNSUPPORTED")
     if not 1 <= len(reader.pages) <= 1000:
         raise LibraryError("PDF_PAGE_LIMIT")
+    from .pdf_unicode import EmbeddedUnicodeRepair, PdfEncodingError
+    repair = EmbeddedUnicodeRepair()
     sections, gaps, total = [], [], 0
     for number, page in enumerate(reader.pages, 1):
         content = page.get_contents()
         if content and len(content.get_data()) > 10 * 1024 * 1024:
             raise LibraryError("PDF_PAGE_CONTENT_LIMIT")
+        try:
+            repair.prepare(page.get("/Resources"))
+        except PdfEncodingError:
+            raise LibraryError("PDF_TEXT_ENCODING_INVALID") from None
         text = unicode_text(page.extract_text() or "")
         text = text.replace("\0", "")
         if len(text) > 1000000:
@@ -92,7 +98,8 @@ def extract_pdf(path: Path, paper_id: str, meta: dict):
         "paper": {"paper_id": paper_id, "title": title[:2000], "abstract": meta["abstract"], "full_text": sections},
         "metadata": {**meta, "title": title[:2000], "pages": len(reader.pages),
                      "unreadablePages": gaps, "coverage": "partial" if gaps else "text",
-                     "parser": "pypdf-7.0.1-unicode-v1", "structure": "page-text"},
+                     "parser": "pypdf-7.0.1-fonttools-4.68.0-unicode-v2",
+                     **({"unicodeRepairs": repair.repairs} if repair.repairs else {}), "structure": "page-text"},
     }
 
 def download_arxiv(identifier: str, target: Path, cancelled=lambda: None):
