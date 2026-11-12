@@ -289,13 +289,13 @@ try {
     pages = catalogPages(catalog);
   let frames: any[] = [],
     controlled: WebSocket;
-  async function connectControlled(activeVersion="fixture-v1", retainedIndexes=[activeVersion]) {
+  async function connectControlled(activeVersion="fixture-v1", retainedIndexes=[activeVersion], credential=pair.token) {
     const activeCatalog={...catalog,indexVersion:activeVersion,evidence:catalog.evidence.map(e=>({...e,index_version:activeVersion}))};
     const pages=catalogPages(activeCatalog);
     frames = [];
     controlled = new WebSocket(
       base.replace("http", "ws") + "/api/device/connect",
-      { headers: { Authorization: "Bearer " + pair.token } },
+      { headers: { Authorization: "Bearer " + credential } },
     );
     controlled.on("error", () => {});
     controlled.on("message", (data) => {
@@ -505,6 +505,15 @@ try {
   const removedOps=(await api("state")).operations.filter((o:any)=>[research.id,derivedTask.id].includes(o.taskId)).map((o:any)=>o.id);
   await api("conversations/"+research.conversationId,"DELETE");
   await until(async()=> (await api("deletions/"+research.conversationId)).status==="cloud_complete");
+  const unrelatedDevice=await api("device/pair","POST",{requestId:crypto.randomUUID(),label:"Unrelated deletion device"});
+  await connectControlled("fixture-v1",["fixture-v1"],unrelatedDevice.token);
+  controlled!.send(JSON.stringify({type:"purged",deletionId:research.conversationId,operationIds:removedOps}));
+  await until(async()=>frames.some(m=>m.type==="error"&&m.code==="OPERATION_DEVICE_MISMATCH"));
+  assert.equal(frames.filter(m=>m.type==="purge_operations"&&m.deletionId===research.conversationId).length,0);
+  assert.equal((await api("deletions/"+research.conversationId)).status,"cloud_complete");
+  controlled!.terminate();await until(async()=>!(await api("state")).deviceOnline);
+  await api("device/revoke","POST",{id:unrelatedDevice.id});
+  checks.push("another authenticated device neither receives original-device cache deletion nor can forge its cleanup receipt");
   const purgeNode=child(["local/node.ts",config],{...process.env,PRA_DEVICE_TOKEN:pair.token,PRA_LOCAL_TOKEN:localControl});
   await until(async()=>(await readerLocal("purges")).requestIds.includes(readerReceipt.id));
   assert.equal((await api("deletions/"+research.conversationId)).status,"cloud_complete");

@@ -1054,12 +1054,13 @@ export class PersonalAgent extends DurableObject<Env> {
         if(this.libraryJobs.cancelled(text(m.id,128),m.generation,a.hash))this.send(ws,{type:"library_ack",id:m.id,generation:m.generation,terminal:true});
       } else if(m.type==="purged") {
         if(typeof m.deletionId!=="string"||!Array.isArray(m.operationIds))throw new Problem("INVALID_PURGE_ACK");
-        this.deletions.localDone(m.deletionId,m.operationIds);this.sendPurges(ws);
+        this.deletions.localDone(m.deletionId,m.operationIds,a.hash);this.sendPurges(ws);
       } else if (m.type === "result") {
-        if(this.deletions.deletedOperation(m.operationId)){this.send(ws,{type:"ack",operationId:m.operationId,status:"discarded"});this.sendPurges(ws);return;}
+        if(this.deletions.deletedOperation(m.operationId)){this.deletions.lateOperation(m.operationId,a.hash);this.send(ws,{type:"ack",operationId:m.operationId,status:"discarded"});this.sendPurges(ws);return;}
 
         const op = this.state.operations.find((o) => o.id === m.operationId);
         const task = op && getTask(this.state, op.taskId);
+        if(op)this.deletions.custody.receive(op,a.hash);
         if (
           op &&
           task?.engine === "durable" &&
@@ -1111,6 +1112,7 @@ export class PersonalAgent extends DurableObject<Env> {
         });
       } else if (m.type === "operation_error") {
         const op = this.state.operations.find((o) => o.id === m.operationId);
+        if(op)this.deletions.custody.receive(op,a.hash);
         if (op && op.state !== "done" && op.state !== "cancelled") {
           const t = getTask(this.state, op.taskId);
           t.status = "failed";
@@ -1129,6 +1131,7 @@ export class PersonalAgent extends DurableObject<Env> {
       } else if (m.type === "operation_deferred") {
         if(!["indexing","paused","busy"].includes(m.reason))throw new Problem("INVALID_DEFERRAL");
         const op=this.state.operations.find(o=>o.id===m.operationId);
+        if(op)this.deletions.custody.receive(op,a.hash);
         if(op?.state==="sent"){
           const task=getTask(this.state,op.taskId);
           op.state="pending";op.deadline=0;op.attempts=Math.max(0,(op.attempts??1)-1);
@@ -1371,6 +1374,7 @@ export class PersonalAgent extends DurableObject<Env> {
         else if ((op.attempts ?? 0) >= 3)
           failResearch(this.state, t, "LOCAL_RETRY_LIMIT");
         else {
+          this.deletions.custody.dispatch(op,attachment.hash);
           op.state = "sent";
           op.deadline = Date.now() + 60000;
           op.attempts = (op.attempts ?? 0) + 1;
@@ -1494,7 +1498,7 @@ export class PersonalAgent extends DurableObject<Env> {
   sendPurges(ws:WebSocket) {
     const a=ws.deserializeAttachment();
     for(const d of this.deletions.localPending()){
-      const operations=this.deletions.operationIds(d.id);
+      const operations=this.deletions.operationIds(d.id,a.hash);
       if(operations.length)this.send(ws,{type:"purge_operations",deletionId:d.id,operationIds:operations});
       const readers=this.deletions.readers.pending(a.hash,d.id);
       if(readers.length&&a.capabilities?.includes("reader-purge-v1"))this.send(ws,{type:"reader_purge",deletionId:d.id,requestIds:readers});
@@ -1657,6 +1661,7 @@ export class PersonalAgent extends DurableObject<Env> {
                 t.status = "failed";
                 t.error = "INDEX_CHANGED";
               } else if (op.state === "pending") {
+                this.deletions.custody.dispatch(op,a.hash);
                 op.state = "sent";
                 op.deadline = Date.now() + 60000;
                 t.status = "waiting_device";

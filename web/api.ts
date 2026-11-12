@@ -42,6 +42,7 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  LEGACY_DEVICE_OWNERSHIP_UNKNOWN:"云端内容已清理，但旧版没有完整记录哪些设备保存过结果，本地副本仍待核验；不能视为全部删除。",
   DELETION_PENDING:"这个会话的来源仍在清理，请先完成数据删除；其他独立会话可以继续使用。",
   CONTEXT_SOURCE_DELETED:"这次回答使用的来源已删除，相关结果已清除。你可以在当前会话重新提问。",
   PAIRING_REVOKED:"这次配对已撤销，请重新生成配对凭证。",

@@ -1,3 +1,4 @@
+import {OperationCustody} from "./operation-custody.ts";
 import {ReaderPurges} from "./reader-purges.ts";
 import {deletionImpact,emptyImpact,removeConversationContent,invalidateDeletedSources,type DeletionImpact} from "./deletion-lineage.ts";
 import { Problem, cancel, type State } from "./domain.ts";
@@ -10,6 +11,7 @@ export interface Deletion {
 export class DeletionStore {
   storage:StateStorage;
   readers:ReaderPurges;
+  custody:OperationCustody;
   constructor(storage:StateStorage) {
     this.storage=storage;
     this.readers=new ReaderPurges(storage);
@@ -17,11 +19,14 @@ export class DeletionStore {
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deleted_operations(id TEXT PRIMARY KEY,deletion_id TEXT NOT NULL,purged INTEGER NOT NULL DEFAULT 0)");
     storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_deleted_operations_deletion ON pra_deleted_operations(deletion_id)");
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deletion_lineage(deletion_id TEXT NOT NULL,kind TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(deletion_id,kind,id))");
+    this.custody=new OperationCustody(storage);
+    // Legacy global acknowledgments do not prove which offline devices were actually cleared.
+    for(const r of storage.sql.exec<{id:string}>("SELECT d.id FROM pra_deletions d WHERE d.status='completed' AND EXISTS(SELECT 1 FROM pra_deleted_operations o LEFT JOIN pra_operation_purge_scopes s ON s.id=o.id WHERE o.deletion_id=d.id AND COALESCE(s.verified,0)=0)").toArray())this.refreshLocal(r.id);
   }
   get(id:string) {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE id=?",id).toArray()[0];}
   pending() {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE status='pending' ORDER BY created").toArray();}
   localPending() {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE local_pending=1 AND status IN ('cloud_complete','completed')").toArray();}
-  operationIds(id:string) {return this.storage.sql.exec<{id:string}>("SELECT id FROM pra_deleted_operations WHERE deletion_id=? AND purged=0 LIMIT 200",id).toArray().map(r=>r.id);}
+  operationIds(id:string,hash?:string) {return this.custody.pending(id,hash);}
   deletedOperation(id:string) {return this.storage.sql.exec("SELECT id FROM pra_deleted_operations WHERE id=?",id).toArray().length>0;}
   request(state:State,id:string) {
     const prior=this.get(id);if(prior&&prior.status!=="failed")return prior;
@@ -45,7 +50,7 @@ export class DeletionStore {
       const known=new Set(prior[kind]);
       for(const value of impact[kind])if(!known.has(value))this.storage.sql.exec("INSERT OR IGNORE INTO pra_deletion_lineage VALUES(?,?,?)",id,kind,value);
     }
-    for(const op of impact.operations)if(!this.deletedOperation(op))this.storage.sql.exec("INSERT OR IGNORE INTO pra_deleted_operations(id,deletion_id) VALUES(?,?)",op,id);
+    for(const op of impact.operations)if(!this.deletedOperation(op))this.custody.capture(op,id,state.operations.find(o=>o.id===op));
     if(this.operationIds(id).length)this.storage.sql.exec("UPDATE pra_deletions SET local_pending=1 WHERE id=? AND local_pending=0",id);
     for(const t of state.tasks)if(impact.turns.includes(t.id))cancel(state,t.id);
     invalidateDeletedSources(state,id,impact);
@@ -54,17 +59,17 @@ export class DeletionStore {
   refreshLocal(id:string){
     const pending=this.operationIds(id).length>0||this.readers.remaining(id);
     this.storage.sql.exec("UPDATE pra_deletions SET local_pending=?,status=CASE WHEN status IN ('cloud_complete','completed') THEN ? ELSE status END WHERE id=?",Number(pending),pending?"cloud_complete":"completed",id);
+    if(this.get(id)?.status==="cloud_complete"&&this.custody.unknown(id))this.storage.sql.exec("UPDATE pra_deletions SET error=\'LEGACY_DEVICE_OWNERSHIP_UNKNOWN\' WHERE id=?",id);
   }
   cloudDone(id:string) {
     this.storage.sql.exec("UPDATE pra_deletions SET status='cloud_complete',error=NULL WHERE id=?",id);
     this.refreshLocal(id);
   }
-  localDone(id:string,ids:string[]) {
-    if(ids.length>200||ids.some(id=>typeof id!=="string"))throw new Problem("INVALID_PURGE_ACK");
-    this.storage.transactionSync(()=>{
-      for(const op of ids)this.storage.sql.exec("UPDATE pra_deleted_operations SET purged=1 WHERE id=? AND deletion_id=?",op,id);
-      this.refreshLocal(id);
-    });
+  localDone(id:string,ids:unknown,hash:string) {
+    this.storage.transactionSync(()=>{this.custody.acknowledge(id,ids,hash);this.refreshLocal(id);});
+  }
+  lateOperation(id:string,hash:string){
+    const deletionId=this.custody.late(id,hash);if(deletionId)this.refreshLocal(deletionId);
   }
   readersDone(id:string,ids:unknown,hash:string){
     this.storage.transactionSync(()=>{this.readers.acknowledge(id,ids,hash);this.refreshLocal(id);});

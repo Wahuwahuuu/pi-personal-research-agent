@@ -154,6 +154,7 @@ export function createResearchPorts(
       if (!op) {
         if (taskAllowance(t).tools <= 0) throw new Problem("TOOL_BUDGET");
         op = {
+          deliveryVersion: 1,
           id: r.operationId,
           taskId: t.id,
           tool: r.tool,

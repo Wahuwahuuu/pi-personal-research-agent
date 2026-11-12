@@ -39,10 +39,11 @@ test("three-hop deletion removes persisted derived copies and edited artifacts w
   s.memories=s.cloudMemory.entries.map(m=>({id:m.id,content:m.content,source:m.source_session,updated:0}));
   child.workflow={phase:"memory",warnings:[],candidate:"DERIVED_PRIVATE_CANARY",memory:{answer:"DERIVED_PRIVATE_CANARY",status:"completed",state:"saved"}};
   child.goal={maxSegments:4,segments:[{index:1,started:0,calls:0,tools:0,activeMs:0,checkpoint:{saved:0,reason:"done",phase:"memory",answer:"DERIVED_PRIVATE_CANARY",remaining:["DERIVED_PRIVATE_CANARY"],evidenceIds:[]}}]};
-  s.operations=[root,child,leaf].map(t=>({id:"op-"+t.id,taskId:t.id,tool:"retrieve_chunks",params:{query:"DERIVED_PRIVATE_CANARY"},indexVersion:"index",state:"done",deadline:0,result:{text:"DERIVED_PRIVATE_CANARY"}}));
+  s.operations=[root,child,leaf].map(t=>({deliveryVersion:1,id:"op-"+t.id,taskId:t.id,tool:"retrieve_chunks",params:{query:"DERIVED_PRIVATE_CANARY"},indexVersion:"index",state:"done",deadline:0,result:{text:"DERIVED_PRIVATE_CANARY"}}));
   const a=artifacts.create({projectId:"default",conversationId:"child",taskId:child.id,kind:"reading",title:"Derived result",partial:false},"DERIVED_PRIVATE_CANARY",[]);
   workspace.once("edit","artifact:"+a.id,{content:"DERIVED_PRIVATE_CANARY"},()=>artifacts.revise(a.id,1,"DERIVED_PRIVATE_CANARY"));
   const unrelated=artifacts.create({projectId:"default",conversationId:"child",taskId:safe.id,kind:"reading",title:"Independent",partial:false},"INDEPENDENT_ARTIFACT",[]);
+  for(const op of s.operations)deletions.custody.dispatch(op,"original-device");
   repo.save(s);deletions.request(s,"root");
   assert.equal(s.cloudMemory.entries.length,1);assert.equal(deletions.blocksConversation("child"),true);
   deletions.fail("root","PI_DELETE_SCHEMA_MISMATCH");
@@ -66,7 +67,7 @@ test("three-hop deletion removes persisted derived copies and edited artifacts w
   assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM pra_artifact_versions WHERE id=?").get(a.id)!.n,0);
   assert.equal(reopened.blocksConversation("child"),false);
   assert.equal(reopened.get("root")!.status,"cloud_complete");for(const id of impact.operations)assert.equal(reopened.deletedOperation(id),true);
-  reopened.localDone("root",impact.operations);assert.equal(reopened.get("root")!.status,"completed");
+  reopened.localDone("root",impact.operations,"original-device");assert.equal(reopened.get("root")!.status,"completed");
   assert.equal(reopened.request(persisted,"root").status,"completed");
  }finally{f.db.close();}
 });

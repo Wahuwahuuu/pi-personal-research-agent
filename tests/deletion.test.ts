@@ -57,11 +57,12 @@ test("real Pi SQLite transcript is removed; a separate conversation survives and
 test("application deletion cancels tasks, removes derived memory and leaves durable operation tombstones until local purge",()=>{
  const db=new DatabaseSync(":memory:"),deletions=new DeletionStore(port(db)),s=initialState(),t=submit(s,"private","req","research");
  t.conversationId="c";s.conversations=[{id:"c",sessionId:"12",title:"private",projectId:"p",scope:[],created:0,history:[]}];
- s.operations=[{id:"op",taskId:t.id,tool:"search_papers",params:{query:"private"},indexVersion:"v",state:"pending",deadline:0}];
+ s.operations=[{deliveryVersion:1,id:"op",taskId:t.id,tool:"search_papers",params:{query:"private"},indexVersion:"v",state:"pending",deadline:0}];
  s.cloudMemory={enabled:true,deletedSlots:[],entries:[{id:"m",slot:"reading:p",kind:"reading",content:"private",paper_ids:["p"],source_session:"c",source_turn:t.id,created_at:"",updated_at:"",edited:false}]};
+ deletions.custody.dispatch(s.operations[0],"original-device");
  assert.equal(deletions.request(s,"c").status,"pending");assert.equal(t.status,"cancelled");
  deleteConversationState(s,"c");deletions.cloudDone("c");
  assert.equal(s.tasks.length,0);assert.equal(s.operations.length,0);assert.equal(s.cloudMemory.entries.length,0);
  assert.equal(deletions.get("c")!.status,"cloud_complete");assert.equal(deletions.deletedOperation("op"),true);
- deletions.localDone("c",["op"]);assert.equal(deletions.request(s,"c").status,"completed");db.close();
+ deletions.localDone("c",["op"],"original-device");assert.equal(deletions.request(s,"c").status,"completed");db.close();
 });

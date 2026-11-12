@@ -51,6 +51,7 @@ export interface Task {
   modelAdmitted?: boolean;
 }
 export interface Operation {
+  deliveryVersion?: 1;
   id: string;
   taskId: string;
   tool: Tool;
@@ -200,6 +201,7 @@ export function operation(
   if (prior) return prior;
   if (taskAllowance(t).tools <= 0) throw new Problem("TOOL_BUDGET", 429);
   const op: Operation = {
+    deliveryVersion: 1,
     id: crypto.randomUUID(),
     taskId: t.id,
     tool,
