@@ -226,7 +226,7 @@ export class PersonalAgent extends DurableObject<Env> {
               this.save();
             });
           } catch(error) {
-            Object.assign(this.state.usage,previousUsage);budget.calls=previousCalls;if(budget!==t)t.calls=previousChildCalls;this.repository.load();
+            Object.assign(this.state.usage,previousUsage);budget.calls=previousCalls;if(budget!==t)t.calls=previousChildCalls;this.state=this.repository.load();
             if(reservationId){this.queueBill(reservationId,{input:0,output:0});await this.flushBills();}
             reservationId=undefined;throw error;
           }
@@ -239,7 +239,7 @@ export class PersonalAgent extends DurableObject<Env> {
               if(reservationId){this.budgetLedger.settle(reservationId,usage);this.queueBill(reservationId,usage);}
               this.save();
             });
-          } catch(error) {Object.assign(this.state.usage,previousUsage);this.repository.load();throw error;}
+          } catch(error) {Object.assign(this.state.usage,previousUsage);this.state=this.repository.load();throw error;}
           reservationId=undefined;
           if(env.MODEL_MODE!=="mock")await this.flushBills();
         };
@@ -1187,7 +1187,7 @@ export class PersonalAgent extends DurableObject<Env> {
         }catch(error){
           if(previousNotice)previousNotice.text=previousText!;
           else this.state.notices=this.state.notices.filter(n=>n.id!==noticeId);
-          this.repository.load();throw error;
+          this.state=this.repository.load();throw error;
         }
         this.send(ws,{type:"library_ack",id:m.id,generation:m.generation,terminal:result.terminal});
       } else if(m.type==="library_cancelled"){
@@ -1890,13 +1890,13 @@ export class PersonalAgent extends DurableObject<Env> {
             const prior=structuredClone(p);
             let b:ReturnType<ResearchBatches["start"]>;
             try{b=this.database.transactionSync(()=>{const batch=this.researchBatches.start(p);this.save();return batch;});}
-            catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,prior);this.repository.load();throw e;}
+            catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,prior);this.state=this.repository.load();throw e;}
             try{
               const page=await discover(b.query,b.from,b.until,b.offset);
               if(p.enabled&&this.state.plans.includes(p)){
                 const previous=structuredClone(p);
                 try{this.database.transactionSync(()=>{this.researchBatches.commit(p,b.id,b.offset,page.rows,page.complete,Date.now(),page.nextOffset);this.save();});}
-                catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,previous);this.repository.load();throw e;}
+                catch(e){for(const key of Object.keys(p))delete (p as any)[key];Object.assign(p,previous);this.state=this.repository.load();throw e;}
               }
             }catch(error){
               if(this.state.plans.includes(p)){
