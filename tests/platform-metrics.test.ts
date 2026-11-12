@@ -6,7 +6,7 @@ const row=(namespaceId:string,sum:any)=>({dimensions:{namespaceId},sum});
 function fixture(options:{fail?:string;empty?:string;invalid?:string;truncated?:string;namespaceFail?:boolean;large?:boolean;missingStorage?:boolean}={}){
  const calls:{url:string;request:RequestInit}[]=[];
  const fetcher=(async(url:RequestInfo|URL,request:RequestInit={})=>{
-  calls.push({url:String(url),request});assert.equal(request.redirect,"error");
+  calls.push({url:String(url),request});assert.equal(request.redirect,"manual");
   if(String(url).includes("namespaces")){
    if(options.namespaceFail)return Response.json({success:false},{status:403});
    return Response.json({success:true,result_info:{page:1,total_count:2},result:[{id:"one",script:"research",use_sqlite:true},{id:"two",script:"other",use_sqlite:true}]});
@@ -66,4 +66,9 @@ test("UTC window does not follow Shanghai date and invalid/future days fail befo
 test("transport exceptions and invalid schemas are normalized without credential or provider text",async()=>{
  const r=await collectPlatformMetrics(base,(async()=>{throw Error(base.token);}) as typeof fetch);
  assert.equal(r.status,"partial");assert.equal(r.project.workerRequests.value,null);assert.equal(JSON.stringify(r).includes(base.token),false);
+});
+
+test("platform fetch refuses redirects without forwarding the credential",async()=>{
+ let calls=0;const r=await collectPlatformMetrics(base,(async(_url,init)=>{calls++;assert.equal(init?.redirect,"manual");return new Response(null,{status:302,headers:{Location:"https://untrusted.example"}});}) as typeof fetch);
+ assert.equal(calls,5);assert.equal(r.status,"partial");assert.equal(r.account.workerRequests.value,null);
 });

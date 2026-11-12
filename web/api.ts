@@ -75,6 +75,9 @@ const messages: Record<string, string> = {
   PROACTIVE_IMPORT_FAILED:"所选论文尚未成功入库，请在论文库检查失败原因，重试入库后继续研究任务。",
   PROACTIVE_RESULT_INVALID:"本轮筛选或简报的结构未通过校验，已保留记录，请在研究会话中检查并决定是否继续。",
   RESEARCH_DELETED:"关联研究会话已经删除，旧研究结果不会恢复。",
+  PLATFORM_RESOURCE_LIMIT:"云端资源已达到保护阈值，后台研究稍后继续，已有成果和待办已保留。",
+  PLATFORM_METRICS_STALE:"云端用量统计已过期，待新统计确认后继续后台研究。",
+  PLATFORM_METRICS_UNAVAILABLE:"暂时无法确认云端剩余额度，后台研究等待恢复，已有成果可查看。",
   BACKGROUND_DAILY_BUDGET:"今天的自动科研额度已用尽，待办保留，可以在后续额度可用时继续。",
 
   VERSIONED_ARXIV_ID_REQUIRED:"请填写包含版本号的 arXiv 编号，例如 2401.00001v2。",

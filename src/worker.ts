@@ -10,6 +10,7 @@ import {ResearchBatches} from "./research-batches.ts";
 import {LibraryJobs} from "./library-jobs.ts";
 import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts";
 import {DeviceIndexes} from "./device-indexes.ts";
+import {PLATFORM_STOPS,applyPlatformWait,type PlatformStatus} from "./platform-resources.ts";
 import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks} from "./task-control.ts";
 import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
@@ -76,6 +77,9 @@ export interface Env {
   MODEL_MODE: string;
   RESEARCH_ENGINE?: string;
   BUILD_ID?: string;
+  RESOURCE_WORKER_NAME?:string;
+  CLOUDFLARE_ACCOUNT_ID?:string;
+  CLOUDFLARE_METRICS_TOKEN?:string;
   ALLOW_PAID_CALLS?: string;
   MODEL_API_KEY?: string;
   MODEL_BASE_URL?: string;
@@ -117,6 +121,8 @@ export class PersonalAgent extends DurableObject<Env> {
   memoryIndex:MemoryIndex;
   database: StateStorage;
   private busy = false;
+  private resources:PlatformStatus={enabled:false,blocked:true,nextCheck:0};
+  private resourcesChecked=0;
   private recoveryBlocked=false;
   private ownerId: string;
   private budgetImported=false;
@@ -189,6 +195,7 @@ export class PersonalAgent extends DurableObject<Env> {
           if(env.MODEL_MODE!=="mock")await this.syncBudget();
           const t=this.state.tasks.find(t=>t.status==="running"&&t.modelOperation);
           if(!t)throw new Error("NO_ACTIVE_TASK");
+          if(t.origin==="schedule"){const status=await this.identityRegistry().platformStatus();if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);}
           if(t.proactive&&!this.proactive.allowed(t)){t.pauseRequested=true;t.proactive.planPaused=true;throw new Problem("PLAN_PAUSED");}
           const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
           reservedOutput=outputLimit();
@@ -442,11 +449,23 @@ export class PersonalAgent extends DurableObject<Env> {
     const ws=this.connectedDevice(),a=ws?.deserializeAttachment();
     return{connected:!!ws,ready:!!a?.ready,phase:a?.ready?(a.phase==="empty"?"empty":"ready"):ws?(a?.phase??"loading"):"offline",canImport:!!a?.capabilities?.includes("library-v1")};
   }
+  async resourcesChanged(){this.resourcesChecked=0;if(this.recoveryBlocked)return;await this.refreshResources();await this.maintenance.arm();}
+  private async refreshResources(){
+    if(this.resourcesChecked&&Date.now()-this.resourcesChecked<30000)return;
+    try{this.resources=await this.identityRegistry().platformStatus();}
+    catch{this.resources={enabled:true,blocked:true,reason:"PLATFORM_METRICS_UNAVAILABLE",nextCheck:Date.now()+60000};}
+    this.resourcesChecked=Date.now();
+    if(applyPlatformWait(this.state,this.resources))this.save();
+    if(this.resources.blocked&&(this.state.plans.some(p=>p.enabled)||this.state.tasks.some(t=>t.platformWait))){
+      notice(this.state,"platform:"+new Date().toISOString().slice(0,10)+":"+this.resources.reason,
+        this.resources.reason==="PLATFORM_RESOURCE_LIMIT"?"后台科研暂缓：云端资源已达到保护阈值，待办与已有成果已保留。":"后台科研暂缓：云端资源用量尚未确认，取得新统计后再继续，待办已保留。");
+    }
+  }
   dispatchImports(){
     const ws=this.connectedDevice("library-v1");if(!ws)return;
     const a=ws.deserializeAttachment();
     for(const job of this.libraryJobs.cancellations())if(job.deviceHash===a.hash)this.send(ws,{type:"library_cancel",id:job.id,generation:job.generation});
-    for(const job of this.libraryJobs.dispatch(a.hash,Date.now(),job=>job.origin==="user"||this.proactive.allowedImport(job.batchId)))this.send(ws,{type:"library_import",id:job.id,generation:job.generation,arxivId:job.arxivId,title:job.title});
+    for(const job of this.libraryJobs.dispatch(a.hash,Date.now(),job=>job.origin==="user"||(!this.resources.blocked&&this.proactive.allowedImport(job.batchId))))this.send(ws,{type:"library_import",id:job.id,generation:job.generation,arxivId:job.arxivId,title:job.title});
   }
   validHash(hash: string, kind: string) {
     return !!this.ctx.storage.sql
@@ -717,6 +736,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const control=path.match(/^\/api\/tasks\/([^/]+)\/(pause|resume|amend|priority)$/);
     if(control&&r.method==="POST"){
       const t=getTask(this.state,control[1]),b=await this.body(r);
+      if(control[2]==="resume"&&t.origin==="schedule"){const status=await this.identityRegistry().platformStatus();if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);}
       const value=this.workspace.once(b.requestId??crypto.randomUUID(),"task:"+control[1]+":"+control[2],b,()=>{
         if(control[2]==="pause"){pauseTask(t);if(t.proactive)t.proactive.planPaused=false;}
         if(control[2]==="resume")resumeTask(this.state,t);
@@ -1434,6 +1454,8 @@ export class PersonalAgent extends DurableObject<Env> {
           if(error instanceof Problem&&error.code==="PROACTIVE_PERSIST_RETRY")throw error;
           failResearch(this.state,t,error instanceof Error&&/^[A-Z_]{1,64}$/.test(error.message)?error.message:"RESEARCH_WORKFLOW_FAILED");
         }
+      } else if(t.modelFailure&&PLATFORM_STOPS.has(t.modelFailure)){
+        t.platformWait="queued";t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();
       } else if(t.workflow?.phase==="memory"&&t.workflow.memory){
         t.answer=t.workflow.memory.answer;t.status=t.workflow.memory.status;t.workflow.memory.state="failed";t.workflow.phase="finished";t.workflow.warnings.push("MEMORY_SYNTHESIS_FAILED");
         this.finishProactiveReading(t);
@@ -1455,7 +1477,7 @@ export class PersonalAgent extends DurableObject<Env> {
       attachment.catalogReady &&
       !this.state.operations.some((o) => o.state === "sent")
     ) {
-      const op = orderedTasks(this.state).filter(t=>!t.pauseRequested&&this.proactive.allowed(t)).flatMap(t=>this.state.operations.filter(o=>o.taskId===t.id)).find(
+      const op = orderedTasks(this.state).filter(t=>!t.pauseRequested&&this.proactive.allowed(t)&&(t.origin!=="schedule"||!this.resources.blocked)).flatMap(t=>this.state.operations.filter(o=>o.taskId===t.id)).find(
         (o) =>
           o.state === "pending" &&
           this.state.tasks.some(
@@ -1491,7 +1513,7 @@ export class PersonalAgent extends DurableObject<Env> {
       return;
     const t = orderedTasks(this.state).filter(t=>!t.conversationId||!this.deletions.blocksConversation(t.conversationId)).find(
       (t) =>
-        !t.pauseRequested&&this.proactive.allowed(t)&&t.proactive?.stage!=="imports"&&t.engine === "durable" &&
+        !t.pauseRequested&&this.proactive.allowed(t)&&(t.origin!=="schedule"||!this.resources.blocked)&&t.proactive?.stage!=="imports"&&t.engine === "durable" &&
         (t.status === "queued" ||
           (t.status === "waiting_device" && !t.sessionId && dev)) &&
         !this.state.tasks.some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
@@ -1650,7 +1672,8 @@ export class PersonalAgent extends DurableObject<Env> {
     this.busy = true;
     try {
       expire(this.state);
-      this.proactiveStep(()=>this.proactive.tick());
+      await this.refreshResources();
+      if(!this.resources.blocked)this.proactiveStep(()=>this.proactive.tick());
       this.libraryJobs.expire();this.dispatchImports();
       await this.tickResearch();
       if(await this.processDeletion())return Date.now()+1000;
@@ -1818,7 +1841,7 @@ export class PersonalAgent extends DurableObject<Env> {
           }
         }
       }
-      const p = this.state.plans.find((p) => p.enabled && p.next <= Date.now());
+      const p = !this.resources.blocked?this.state.plans.find((p) => p.enabled && p.next <= Date.now()):undefined;
       if(p){
         let slot:Awaited<ReturnType<IdentityRegistry["claimDiscovery"]>>|undefined;
         try{slot=await this.identityRegistry().claimDiscovery(this.ownerId);}
@@ -1849,7 +1872,8 @@ export class PersonalAgent extends DurableObject<Env> {
       }
       // Discovery and model settlement can create a new stage after the opening tick.
       // Persist that handoff now so a daily alarm never strands a ready batch.
-      this.proactiveStep(()=>this.proactive.tick());
+      if(!this.resources.blocked)this.proactiveStep(()=>this.proactive.tick());
+      applyPlatformWait(this.state,this.resources);
       this.dispatchImports();
       this.save();
       this.publish();
@@ -1859,16 +1883,17 @@ export class PersonalAgent extends DurableObject<Env> {
       const importDeadline=this.libraryJobs.nextDeadline();
       const budgetWake=this.proactive.nextBudgetWake();
       const times = [
-        ...(budgetWake===undefined?[]:[budgetWake]),
+        ...(budgetWake===undefined?[]:[this.resources.blocked?Math.max(Date.now()+60000,budgetWake):budgetWake]),
         ...(importDeadline===undefined?[]:[importDeadline]),
         ...this.state.operations
           .filter((o) => o.state === "sent")
           .map((o) => o.deadline),
-        ...this.state.plans.filter((p) => p.enabled).map((p) => p.next),
+        ...this.state.plans.filter((p) => p.enabled).map((p) => this.resources.blocked?Math.max(Date.now()+60000,p.next):p.next),
+        ...(this.state.tasks.some(t=>t.platformWait)?[Date.now()+60000]:[]),
       ];
       if (
         this.state.tasks.some(
-          (t) => t.runOpen || t.status === "running" || t.status === "queued",
+          (t) => t.runOpen || t.status === "running" || (t.status === "queued"&&(t.origin!=="schedule"||!this.resources.blocked)),
         )
       )
         times.push(Date.now() + 1000);
@@ -1884,6 +1909,9 @@ export class PersonalAgent extends DurableObject<Env> {
   }
 }
 export default {
+  async scheduled(_controller:ScheduledController,env:Env,ctx:ExecutionContext){
+    if(env.CLOUDFLARE_METRICS_TOKEN&&env.OWNER_ID)ctx.waitUntil(env.IDENTITIES.getByName("accounts:"+env.OWNER_ID).refreshPlatform());
+  },
   async fetch(r:Request,env:Env):Promise<Response> {
     try {
       const url=new URL(r.url);
@@ -1891,7 +1919,7 @@ export default {
       if(!sameOrigin(r))return json({error:"ORIGIN_DENIED"},403);
       if(!env.OWNER_ID)return json({error:"OWNER_NOT_CONFIGURED"},503);
       const identities=env.IDENTITIES.getByName("accounts:"+env.OWNER_ID);
-      if(url.pathname==="/api/login"||url.pathname.startsWith("/api/auth/"))return identities.fetch(r);
+      if(url.pathname==="/api/login"||url.pathname==="/api/platform"||url.pathname==="/api/platform/refresh"||url.pathname.startsWith("/api/auth/"))return identities.fetch(r);
       if(url.pathname==="/api/device/connect"||url.pathname==="/api/device/verify"){
         const value=bearer(r);if(!value)return json({error:"UNAUTHORIZED"},401);
         const userId=await identities.deviceOwner(await digest(value));

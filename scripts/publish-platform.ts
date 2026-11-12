@@ -1,0 +1,14 @@
+import {mkdir,writeFile} from "node:fs/promises";
+import {resolve} from "node:path";
+import {collectPlatformMetrics} from "./platform-metrics.ts";
+import {platformOperator,platformCloudAccount} from "./platform-operator.ts";
+const [recordFile,sessionFile,...extra]=process.argv.slice(2);
+if(!recordFile||!sessionFile||extra.length)throw Error("USAGE: node scripts/publish-platform.ts .local/DEPLOYMENT.json .local/SESSION.secret");
+const {target,api,status}=await platformOperator(recordFile,sessionFile),identity=await platformCloudAccount(target);
+const report=await collectPlatformMetrics({...identity,scriptName:target.name});
+const requestId=crypto.randomUUID(),directory=resolve(".local/platform-metrics");await mkdir(directory,{recursive:true});
+const receipt=resolve(directory,"published-"+requestId+".json");
+await writeFile(receipt,JSON.stringify({requestId,target,report,status:"prepared"},null,2),{flag:"wx"});
+const result=await api("platform",{requestId,report});
+await writeFile(receipt,JSON.stringify({requestId,target,report,result,status:"published"},null,2));
+console.log(JSON.stringify({receipt,automaticPauseApplied:result.automaticPauseApplied,reason:result.reason,observedAt:result.observedAt,cloudMonitoringConfigured:status.cloudMonitoringConfigured,planChanged:false}));

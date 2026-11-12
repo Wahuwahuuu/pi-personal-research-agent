@@ -47,6 +47,10 @@ export async function verifyIdentity(base:string,initialCookie:string,admin:stri
  assert.notEqual(memberRegistered.value.account.id,registered.value.account.id);
  assert.equal((await request("auth/register/options","","POST",{invite:invite.value.code})).r.status,403);
  assert.equal((await request("auth/invites",memberCookie,"POST",{name:"Unauthorized"})).r.status,403);
+ assert.equal((await request("platform",memberCookie,"POST",{})).r.status,403);
+ assert.equal((await request("platform","","POST",{})).r.status,401);
+ assert.equal((await request("platform",memberCookie)).r.status,200);
+ checks.push("shared platform protection can be read by signed accounts but only the owner can publish observations");
  const victim=await ok("tasks",ownerCookie,"POST",{requestId:"isolation-victim",kind:"chat",input:"OWNER_ONLY_CANARY"});
  const attacker=await ok("tasks",memberCookie,"POST",{requestId:"isolation-victim",kind:"chat",input:"MEMBER_ONLY_CANARY",userId:registered.value.account.id});
  assert.notEqual(victim.value.id,attacker.value.id);

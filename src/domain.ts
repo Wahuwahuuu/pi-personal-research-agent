@@ -19,6 +19,7 @@ export interface Task {
   input: string;
   kind: "chat" | "research" | "auto";
   origin?: "user" | "schedule";
+  platformWait?: "queued" | "waiting_device";
   proactive?: ProactiveState;
   status: Status;
   created: number;

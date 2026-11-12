@@ -184,3 +184,15 @@ npx wrangler dev --var RESEARCH_ENGINE:durable
 登录 Wrangler 后运行 `node scripts/observe-platform.ts WORKER_NAME [YYYY-MM-DD]`。工具只读查询 Cloudflare GraphQL 和 namespace 清单，分别保存项目与账户共享用量，结果仅在忽略跟踪的 `.local/platform-metrics/`。默认 UTC 当日，可查询最近七日；模型费用仍按上海自然月结算。凭证只在进程内使用，不写入报告。
 
 请求、GB-s、SQLite 行读写来自平台统计；DO 请求采用不折算 WebSocket 优惠的保守估算，存储为各 namespace 窗口峰值之和。数据可能采样或延迟，缺失、无权限、空结果和截断显示未知；估算剩余额度不是保证。达到项目目标或账户 80% 免费额度时建议暂停后台并返回退出码 2，数据不全返回 3；此命令本身不暂停任务、不修改套餐。口径见 [DO 指标](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/) 和 [DO 免费额度](https://developers.cloudflare.com/durable-objects/platform/pricing/)。
+
+### 后台资源保护与云端监测
+
+`node scripts/publish-platform.ts .local/deployment.json .local/deployment-session.secret` 使用现有 Wrangler 登录读取真实统计，再以应用所有者会话上传；服务端按固定额度重新计算，其他账户和设备不能改变资源保护。手动发布只是一份快照：启用后超过 75 分钟、跨 UTC 日、统计未知或达到阈值，新的后台发现、模型步骤和入库派发会等待。前台对话、查询、取消和删除继续可用；新鲜统计恢复余量后接续原任务，人工暂停与累计预算保留。
+
+若需要本机离线时继续监测，在 [Cloudflare API Token 页面](https://dash.cloudflare.com/profile/api-tokens) 创建限定本账户的专用只读 Token，权限为 Account Analytics Read 与 Workers Scripts Read，然后运行：
+
+```powershell
+.\scripts\configure-platform-monitor.ps1 -DeploymentRecord .local\deployment.json -SessionSecret .local\deployment-session.secret
+```
+
+本地提示框隐藏输入，通过标准输入直接交给配置程序；程序先检查账户、目标构建、应用所有者和读取权限，再只写入 Worker Secrets，不保存明文 Token。不要使用部署 OAuth 凭证或模型密钥。云端每 30 分钟读取统计，失败或过期时保留待办并暂停后台，不会自动改套餐。设置完成还会验证一次真实云端读取；缺少凭证时不宣称持续监测已就绪。

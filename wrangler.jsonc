@@ -24,6 +24,8 @@
     "MODEL_MODE": "mock",
     "OWNER_ID": "personal",
     "RESEARCH_ENGINE": "durable",
+    "RESOURCE_WORKER_NAME": "pi-personal-research-agent",
   },
+  "triggers": { "crons": ["*/30 * * * *"] },
   "observability": { "enabled": false },
 }

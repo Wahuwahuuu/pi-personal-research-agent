@@ -1,3 +1,5 @@
+import {PlatformResources,type PlatformStatus} from "./platform-resources.ts";
+import {collectPlatformMetrics} from "./platform-analytics.ts";
 import {RecoveryStore,type RecoveryCheckpoint} from "./recovery-store.ts";
 import { DiscoveryGate } from "./discovery-gate.ts";
 import {SharedBudget} from "./shared-budget.ts";
@@ -17,11 +19,34 @@ export class IdentityRegistry extends DurableObject<Env> {
  budget:SharedBudget;
  discovery:DiscoveryGate;
  recovery:RecoveryStore;
+ platform:PlatformResources;
+ private platformRefresh?:Promise<PlatformStatus>;
  constructor(ctx:DurableObjectState,env:Env){
   super(ctx,env);
   let depth=0;
   const db:StateStorage={sql:{exec(query,...bindings){const rows=ctx.storage.sql.exec(query,...bindings);return{toArray:()=>rows.toArray() as any};}},transactionSync:fn=>{if(depth)return fn();return ctx.storage.transactionSync(()=>{depth++;try{return fn();}finally{depth--;}});}};
-  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);this.discovery=new DiscoveryGate(db);this.recovery=new RecoveryStore(db);
+  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);this.discovery=new DiscoveryGate(db);this.recovery=new RecoveryStore(db);this.platform=new PlatformResources(db);
+ }
+ async refreshPlatform(requestId?:string):Promise<PlatformStatus>{
+  if(requestId&&this.platform.knownRequest(requestId))return this.platform.status();
+  if(this.platformRefresh){await this.platformRefresh;if(!requestId||this.platform.knownRequest(requestId))return this.platform.status();}
+  const token=this.env.CLOUDFLARE_METRICS_TOKEN;
+  if(!token)return this.platform.status();
+  const pending=(async()=>{
+   try{
+    if(!this.env.CLOUDFLARE_ACCOUNT_ID||!this.env.RESOURCE_WORKER_NAME)throw Error("PLATFORM_CONFIGURATION_REQUIRED");
+    const report=await collectPlatformMetrics({accountId:this.env.CLOUDFLARE_ACCOUNT_ID,token,scriptName:this.env.RESOURCE_WORKER_NAME});
+    this.platform.record(requestId??crypto.randomUUID(),report,this.env.RESOURCE_WORKER_NAME);
+    return this.platform.status();
+   }catch{return{enabled:true,blocked:true,reason:"PLATFORM_METRICS_UNAVAILABLE",nextCheck:Date.now()+60000};}
+  })();
+  this.platformRefresh=pending;
+  try{return await pending;}finally{this.platformRefresh=undefined;}
+ }
+ async platformStatus():Promise<PlatformStatus>{
+  if(this.env.CLOUDFLARE_METRICS_TOKEN&&(!this.env.CLOUDFLARE_ACCOUNT_ID||!this.env.RESOURCE_WORKER_NAME))return{enabled:true,blocked:true,reason:"PLATFORM_METRICS_UNAVAILABLE",nextCheck:Date.now()+60000};
+  if(this.env.CLOUDFLARE_METRICS_TOKEN&&!this.platform.snapshot())return this.refreshPlatform();
+  return this.platform.status();
  }
  private recoveryAccount(owner:string){if(!this.store.account(owner))throw new Problem("UNKNOWN_ACCOUNT",404);}
  async recoveryView(owner:string){this.recoveryAccount(owner);return this.recovery.view(owner);}
@@ -33,7 +58,7 @@ export class IdentityRegistry extends DurableObject<Env> {
  async prepareRecovery(owner:string,id:string,checkpointId:string,guard:string){this.recoveryAccount(owner);const j=this.recovery.prepare(owner,id,checkpointId,JSON.parse(guard));return{id:j.id,status:j.status};}
  async finishRecovery(owner:string,id:string){this.recoveryAccount(owner);this.recovery.complete(owner,id);}
  async failRecovery(owner:string,id:string,code:string){this.recoveryAccount(owner);this.recovery.fail(owner,id,code);}
- async claimDiscovery(owner:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");return this.discovery.claim(owner);}
+ async claimDiscovery(owner:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");const status=await this.platformStatus();if(status.blocked)return{ok:false as const,retryAt:status.nextCheck};return this.discovery.claim(owner);}
  async releaseDiscovery(owner:string,token:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.discovery.release(owner,token);}
  async importBudget(owner:string,rows:any[]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.budget.import(owner,rows);}
  async prepareBudgets(){
@@ -48,6 +73,7 @@ export class IdentityRegistry extends DurableObject<Env> {
  }
  async reserveBudget(owner:string,request:Parameters<BudgetLedger["reserve"]>[0]){
   if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");
+  if(request.background){const resources=await this.platformStatus();if(resources.blocked)return{ok:false as const,error:resources.reason!};}
   if(!await this.prepareBudgets())return{ok:false as const,error:"VALIDATION_MIGRATION_REQUIRED"};
   return this.budget.reserve(owner,request);
  }
@@ -73,6 +99,18 @@ export class IdentityRegistry extends DurableObject<Env> {
   const owner=this.env.OWNER_ID;
   this.store.clean();
   if(r.method==="POST")this.store.rate(await digest((r.headers.get("CF-Connecting-IP")??"local")+":"+path),30);
+  if(path==="/api/platform"||path==="/api/platform/refresh"){
+   if(!identity)throw new Problem("UNAUTHORIZED",401);
+   if(path==="/api/platform"&&r.method==="GET")return json({...this.platform.view(),...await this.platformStatus(),workerName:this.env.RESOURCE_WORKER_NAME,cloudMonitoringConfigured:!!(this.env.CLOUDFLARE_METRICS_TOKEN&&this.env.CLOUDFLARE_ACCOUNT_ID&&this.env.RESOURCE_WORKER_NAME)});
+   if(r.method==="POST"){
+    if(identity.role!=="owner")throw new Problem("FORBIDDEN",403);
+    if(path==="/api/platform/refresh"){const b=await this.body(r),status=await this.refreshPlatform("refresh:"+await digest(text(b.requestId,128)));await this.env.AGENTS.getByName(identity.id).resourcesChanged();return json({...this.platform.view(),...status});}
+    const b=await this.body(r),result=this.platform.record(b.requestId,b.report,this.env.RESOURCE_WORKER_NAME);
+    await this.env.AGENTS.getByName(identity.id).resourcesChanged();
+    return json(result);
+   }
+   throw new Problem("METHOD_NOT_ALLOWED",405);
+  }
   if(path==="/api/auth/status"&&r.method==="GET")return json({bootstrapAvailable:this.store.credentials(owner).length===0,account:identity?publicAccount(identity):null});
   if(path==="/api/login"&&r.method==="POST"){
    if(this.store.credentials(owner).length)throw new Problem("PASSKEY_REQUIRED",403);

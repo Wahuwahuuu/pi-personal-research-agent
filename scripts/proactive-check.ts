@@ -44,6 +44,7 @@ const options = convertV4MiniflareOptions({
     OWNER_ID: "proactive-" + crypto.randomUUID(),
     MODEL_MODE: "mock",
     RESEARCH_ENGINE: "durable",
+    RESOURCE_WORKER_NAME: "proactive-check",
   },
   durableObjects: {
     AGENTS: { className: "PersonalAgent", useSQLite: true },
@@ -295,7 +296,30 @@ try {
   report.checks.push(
     "metadata screening uses one Pi request; offline import wait makes no extra model calls",
   );
+  const measured=(limit:boolean)=>{
+    const at=new Date().toISOString(),counts=Object.fromEntries(["workerRequests","doRequestUpperEstimate","doDuration","sqliteRowsRead","sqliteRowsWritten","sqliteStoredBytes"].map(k=>[k,{status:"observed",value:1}]));
+    return{version:1,source:"Cloudflare GraphQL Analytics API",accountScope:"a".repeat(64),scriptName:"proactive-check",observedAt:at,window:{day:at.slice(0,10),timezone:"UTC",start:at.slice(0,10)+"T00:00:00.000Z",end:at},account:counts,project:{...counts,sqliteRowsRead:{status:"observed",value:limit?500000:1}}};
+  };
+  const sourceBefore=sourceCalls;
+  await api("platform","POST",{requestId:crypto.randomUUID(),report:measured(true)});
+  assert.equal((await api("tasks/"+waiting.task.id)).error,"PLATFORM_RESOURCE_LIMIT");
+  const heldPlan=await api("plans","POST",{requestId:crypto.randomUUID(),query:"held-metadata",autoProcess:false});
   await connect();
+  const foreground=await api("tasks","POST",{requestId:crypto.randomUUID(),kind:"chat",input:"Hello"});
+  await until(async()=>{const t=await api("tasks/"+foreground.id);assert.notEqual(t.status,"failed");return t.status==="completed";});
+  const afterForeground=(await api("state")).usage.requests;
+  await sleep(3500);
+  assert.equal((await api("state")).usage.requests,afterForeground);
+  assert.equal(sourceCalls,sourceBefore);
+  assert.equal((await api("tasks/"+waiting.task.id)).calls,waiting.task.calls);
+  assert.equal((await api("research-batches?plan="+heldPlan.id)).items.length,0);
+  assert.equal((await api("tasks/"+waiting.task.id)).proactive.stage,"imports");
+  const resumeDenied=await fetch(base+"/api/tasks/"+waiting.task.id+"/resume",{method:"POST",headers:{Cookie:cookie,"Content-Type":"application/json"},body:JSON.stringify({requestId:crypto.randomUUID()})});
+  assert.equal(resumeDenied.status,429);
+  await api("plans/"+heldPlan.id,"PATCH",{requestId:crypto.randomUUID(),enabled:false});
+  await api("platform","POST",{requestId:crypto.randomUUID(),report:measured(false)});
+  assert.equal((await api("platform")).blocked,false);
+  report.checks.push("shared resource threshold blocks metadata, imports and new background model steps; foreground completes, repeated waiting adds zero model calls, fresh measured headroom resumes the same task");
   const done = await until(async () => {
     const value = await batchTask(plan.id);
     if (["failed", "waiting_user"].includes(value?.task.status))
