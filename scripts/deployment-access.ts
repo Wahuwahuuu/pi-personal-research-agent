@@ -42,8 +42,22 @@ export async function deploymentAccess(url:string,credentials:DeploymentCredenti
  const access:DeploymentAccess={kind:"session",path:"/api/state",headers:{Cookie:cookie}};
  await deploymentBuild(url,access,fetcher);return access;
 }
+/** Active DOs defer updates by default; leave their grace period intact during normal releases.
+ * https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/
+ */
+export function deploymentVerificationTimeout(strategy?: {mode?:string;max_delay?:number}) {
+ const mode=strategy?.mode??"deferred";
+ if(!["deferred","immediate"].includes(mode))throw Error("INVALID_CODE_UPDATE_STRATEGY");
+ if(mode==="immediate"){
+  if(strategy?.max_delay!==undefined)throw Error("INVALID_CODE_UPDATE_STRATEGY");
+  return 120000;
+ }
+ const delay=strategy?.max_delay??300;
+ if(typeof delay!=="number"||!Number.isFinite(delay)||delay<0||delay>86400)throw Error("INVALID_CODE_UPDATE_STRATEGY");
+ return Math.max(120000,Math.ceil(delay*1000)+60000);
+}
 export async function waitForDeployment(url:string,access:DeploymentAccess,build:string,options:{timeoutMs?:number;intervalMs?:number;fetcher?:Fetcher}={}){
- const until=Date.now()+(options.timeoutMs??120000),fetcher=options.fetcher??fetch;
+ const until=Date.now()+(options.timeoutMs??deploymentVerificationTimeout()),fetcher=options.fetcher??fetch;
  do{
   try{if(await deploymentBuild(url,access,fetcher)===build)return;}
   catch(error){if(error instanceof Error&&error.message==="DEPLOYMENT_AUTH_REJECTED")throw error;}

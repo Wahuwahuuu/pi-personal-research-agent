@@ -204,3 +204,5 @@ npx wrangler dev --var RESEARCH_ENGINE:durable
 每轮讨论可展开“对话上下文范围”，区分当时保存的历史与本步准备的近期文字、约束和记忆。窗口优先最近内容，中文与 emoji 按完整字符截短，并明确标记截短；原始会话不改写。该清单描述步骤开始前的应用投影，执行中新读取的论文仍在证据面板中查看。
 
 科研完成检查沿用原版 AsterCite 的执行状态与论文/片段标识摘要。原文不会在这一检查步骤中重复发送；空结果、未完成与结果未记录分别保留，省略的操作和标识有明确计数。摘要不能代替原文证据或科研正确性验收。
+
+Cloudflare 默认允许活跃 Durable Object 延后最多 300 秒更新代码。普通发布保留这个宽限期，按配置延迟加确认窗口等待实际构建切换；未确认时仍保存为待核实发布。可在 Wrangler 配置的 durable_objects.code_update_strategy 中调整策略，详见 [官方代码更新说明](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)。

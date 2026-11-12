@@ -1,6 +1,6 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
-import {deploymentAccess,waitForDeployment,deploymentBuild} from "../scripts/deployment-access.ts";
+import {deploymentAccess,waitForDeployment,deploymentBuild,deploymentVerificationTimeout} from "../scripts/deployment-access.ts";
 const token="d".repeat(64),cookie="pra_session="+"c".repeat(64),build="a".repeat(40),base="https://worker.example";
 const reply=(v:unknown,status=200,headers?:Record<string,string>)=>new Response(JSON.stringify(v),{status,headers});
 test("post-Passkey deployment uses read-only device verification without login or WebSocket",async()=>{
@@ -42,4 +42,17 @@ test("uploaded build is not success until the selected personal DO serves it, an
  await waitForDeployment(base,access,build,{intervalMs:1,timeoutMs:100,fetcher:(async()=>reply({build:++calls===1?"old":build})) as any});assert.equal(calls,2);
  await assert.rejects(waitForDeployment(base,access,build,{intervalMs:1,timeoutMs:5,fetcher:(async()=>reply({build:"old"})) as any}),/DEPLOYED_BUILD_NOT_SERVING/);
  calls=0;await assert.rejects(waitForDeployment(base,access,build,{fetcher:(async()=>{calls++;return reply({},401);}) as any}),/DEPLOYMENT_AUTH_REJECTED/);assert.equal(calls,1);
+});
+
+test("deployment confirmation accommodates the documented DO grace period without forcing immediate updates",()=>{
+ assert.equal(deploymentVerificationTimeout(),360000);
+ assert.equal(deploymentVerificationTimeout({mode:"deferred"}),360000);
+ assert.equal(deploymentVerificationTimeout({mode:"immediate"}),120000);
+ assert.equal(deploymentVerificationTimeout({mode:"deferred",max_delay:0}),120000);
+ assert.equal(deploymentVerificationTimeout({mode:"deferred",max_delay:120.25}),180250);
+ assert.equal(deploymentVerificationTimeout({mode:"deferred",max_delay:86400}),86460000);
+});
+test("invalid update strategies fail before deployment instead of silently applying a different policy",()=>{
+ for(const strategy of [{mode:"unknown"},{mode:"immediate",max_delay:5},{max_delay:-1},{max_delay:86401},{max_delay:NaN},{max_delay:Infinity},{max_delay:"300"}])
+  assert.throws(()=>deploymentVerificationTimeout(strategy as any),/INVALID_CODE_UPDATE_STRATEGY/);
 });

@@ -2,7 +2,7 @@ import {execFileSync} from "node:child_process";
 import {mkdir,readFile,writeFile,cp,rename} from "node:fs/promises";
 import {resolve,sep} from "node:path";
 import {parseModelSettings,modelDeploymentArgs} from "../src/model-settings.ts";
-import {deploymentAccess,waitForDeployment,type DeploymentAccess} from "./deployment-access.ts";
+import {deploymentAccess,waitForDeployment,deploymentVerificationTimeout,type DeploymentAccess} from "./deployment-access.ts";
 import {freezeWorker} from "./freeze-worker.ts";
 import {inspectFrozenRelease,verifyFrozenRelease} from "./frozen-release.ts";
 // No billing mutations; the operator has confirmed Workers Free for this account.
@@ -63,15 +63,16 @@ config.main=resolve("src/worker.ts");config.assets.directory=resolve(release,"as
 const file=resolve(release,"wrangler.json");await writeFile(file,JSON.stringify(config));
 await freezeWorker(file,resolve(release,"worker"));committed();
 const frozen=await inspectFrozenRelease(resolve(".local/releases"),release,{name,build});
+const verificationTimeoutMs=deploymentVerificationTimeout(frozen.config.durable_objects?.code_update_strategy);
 const output=cli(["deploy","--config",file,...modelDeploymentArgs(settings)]);
 await verifyFrozenRelease(resolve(".local/releases"),frozen);
 const url=output.match(/https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev/)?.[0];
 if(!url||(previous&&url!==previous.url))throw Error("DEPLOYED_URL_MISMATCH");
-const record={name,url,mode:settings?.mode??"mock",modelId:settings?.mode==="live"?settings.modelId:"deterministic-v1",thinking:"off",freePlanConfirmedByUser:true,build,release,artifactDigest:frozen.digest,deployed:new Date().toISOString(),servingBuildVerified:false,initialProvisioning:!verified&&(!previous||!!pending?.initialProvisioning)};
+const record={name,url,mode:settings?.mode??"mock",modelId:settings?.mode==="live"?settings.modelId:"deterministic-v1",thinking:"off",freePlanConfirmedByUser:true,build,release,artifactDigest:frozen.digest,verificationTimeoutMs,deployed:new Date().toISOString(),servingBuildVerified:false,initialProvisioning:!verified&&(!previous||!!pending?.initialProvisioning)};
 await writeFile(".local/deployment-pending.json",JSON.stringify(record,null,2));
 if(!previous)cli(["secret","bulk","--config",file],JSON.stringify({ADMIN_TOKEN:token}));
 access??=await deploymentAccess(url,{bootstrapToken:token});
-await waitForDeployment(url,access,build);
+await waitForDeployment(url,access,build,{timeoutMs:verificationTimeoutMs});
 const completed={...record,servingBuildVerified:true,verified:new Date().toISOString(),verification:access.kind};
 await writeFile(resolve(release,"verification.json"),JSON.stringify(completed,null,2));
 const temporary=".local/deployment."+crypto.randomUUID()+".tmp";await writeFile(temporary,JSON.stringify(completed,null,2));await rename(temporary,".local/deployment.json");
