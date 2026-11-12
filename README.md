@@ -178,3 +178,9 @@ npx wrangler dev --var RESEARCH_ENGINE:durable
 检查点依赖平台的有限保留窗口，不是永久离线备份。此协议不覆盖绕过应用入口的控制台整库回退、身份对象同时回退或平台备份物理清除。既有历史中未记录的删除请求标识无法补造。平台机制见 [Cloudflare PITR 文档](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)。
 
 鉴权诊断接口 GET /api/recovery/schema 返回当前构建、存储结构指纹和表/索引定义，仅用于排查版本兼容性；不返回行数据、恢复书签或凭证，不接受任意 SQL。
+
+## 平台资源观测
+
+登录 Wrangler 后运行 `node scripts/observe-platform.ts WORKER_NAME [YYYY-MM-DD]`。工具只读查询 Cloudflare GraphQL 和 namespace 清单，分别保存项目与账户共享用量，结果仅在忽略跟踪的 `.local/platform-metrics/`。默认 UTC 当日，可查询最近七日；模型费用仍按上海自然月结算。凭证只在进程内使用，不写入报告。
+
+请求、GB-s、SQLite 行读写来自平台统计；DO 请求采用不折算 WebSocket 优惠的保守估算，存储为各 namespace 窗口峰值之和。数据可能采样或延迟，缺失、无权限、空结果和截断显示未知；估算剩余额度不是保证。达到项目目标或账户 80% 免费额度时建议暂停后台并返回退出码 2，数据不全返回 3；此命令本身不暂停任务、不修改套餐。口径见 [DO 指标](https://developers.cloudflare.com/durable-objects/observability/metrics-and-analytics/) 和 [DO 免费额度](https://developers.cloudflare.com/durable-objects/platform/pricing/)。
