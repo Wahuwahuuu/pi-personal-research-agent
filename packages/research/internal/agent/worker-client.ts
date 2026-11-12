@@ -27,7 +27,7 @@ export interface WorkerReady { version: 1; type: "ready"; backend: string; index
 
 /** Only OS execution variables reach the corpus worker; provider credentials never do. */
 export function workerEnvironment(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" };
+  const env: NodeJS.ProcessEnv = { PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8", PYTHONDONTWRITEBYTECODE: "1" };
   for (const name of ["PATH", "Path", "SystemRoot", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TEMP", "TMP"]) {
     if (process.env[name] !== undefined) env[name] = process.env[name];
   }
