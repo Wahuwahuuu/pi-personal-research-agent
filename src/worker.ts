@@ -26,6 +26,7 @@ import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
 import { StateRepository, type StateStorage } from "./state-store.ts";
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/research/cloud-memory.ts";
+import {managedRuntimeSettings} from "./runtime-settings.ts";
 import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -270,15 +271,7 @@ export class PersonalAgent extends DurableObject<Env> {
               ),
             ),
             onWake,
-            settings: {
-              retry: { maxRetries: 0 },
-              stream: { timeoutMs: 90000 },
-              progress: {
-                partialIntervalMs: 1000,
-                outputIntervalMs: 1000,
-                persistWithinMs: 1000,
-              },
-            },
+            settings: managedRuntimeSettings,
           },
           context,
         );
