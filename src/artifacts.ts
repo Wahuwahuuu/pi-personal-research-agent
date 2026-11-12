@@ -1,3 +1,5 @@
+import {createHash} from "node:crypto";
+import {arxivVersion} from "../packages/research/source-links.ts";
 import type {StateStorage} from "./state-store.ts";
 import {Problem,text} from "./domain.ts";
 import type {Chunk,Paper} from "../packages/research/core.ts";
@@ -48,8 +50,17 @@ const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&
 export function exportArtifact(a:ReturnType<Artifacts["get"]>,format:string,papers:readonly Paper[]){
  const refs=[...new Set(a.sources.map(s=>s.paper_id))].map(id=>papers.find(p=>p.paper_id===id)??{paper_id:id,title:id,abstract:""});
  if(format==="bibtex"){
-  const clean=(v:string)=>v.replace(/[{}\\\r\n]/g," ");
-  return{type:"application/x-bibtex; charset=utf-8",extension:"bib",content:refs.map((p,i)=>"@misc{paper"+(i+1)+",\n  title = {"+clean(p.title)+"}"+(/^\d{4}\.\d{4,5}$/.test(p.paper_id)?",\n  eprint = {"+p.paper_id+"},\n  archivePrefix = {arXiv}":"")+"\n}").join("\n\n")};
+  const escapeTex=(value:string)=>value.replace(/[\u0000-\u001f\u007f]/g," ").replace(/[\\{}%&#_$^~]/g,c=>({
+    "\\":"\\textbackslash{}","{":"\\textbraceleft{}","}":"\\textbraceright{}","%":"\\%","&":"\\&","#":"\\#","_":"\\_","$":"\\$","^":"\\textasciicircum{}","~":"\\textasciitilde{}",
+  }[c]!));
+  const unique=new Map(refs.map(p=>[arxivVersion(p.paper_id)??p.paper_id,p]));
+  const content=[...unique].map(([identity,p])=>{
+    const version=arxivVersion(p.paper_id),key=version?"arxiv"+version.replace(".","_"):"local"+createHash("sha256").update(identity).digest("hex").slice(0,16);
+    const fields=["title = {"+escapeTex(p.title)+"}"];
+    if(version)fields.push("eprint = {"+version+"}","archivePrefix = {arXiv}","url = {https://arxiv.org/abs/"+version+"}");
+    return "@misc{"+key+",\n  "+fields.join(",\n  ")+"\n}";
+  }).join("\n\n");
+  return{type:"application/x-bibtex; charset=utf-8",extension:"bib",content};
  }
  const textContent="# "+a.title+"\n\n"+a.content+"\n\n## 证据出处\n\n"+a.sources.map((s,i)=>"["+(i+1)+"] "+s.paper_id+" · "+s.section+" · "+s.chunk_id+" · "+s.start+"–"+s.end+"\n\n> "+s.text.replaceAll("\n","\n> ")).join("\n\n");
  if(format==="md")return{type:"text/markdown; charset=utf-8",extension:"md",content:textContent};

@@ -25,3 +25,29 @@ test("Markdown, HTML and BibTeX exports preserve evidence and do not execute edi
  const bib=exportArtifact(value,"bibtex",[{paper_id:source.paper_id,title:"Real { title }",abstract:""}]).content;
  assert.match(bib,/arXiv/);assert.ok(!bib.includes("author"));assert.ok(!bib.includes("Real {"));db.close();
 });
+
+test("BibTeX preserves exact versions, deduplicates legacy v1 and keeps stable citation keys without inventing metadata",()=>{
+ const {db,a}=setup();
+ try{
+  const ids=["2501.12345v2","2501.12345","2501.12345v1","local:private","2501.12345v3"];
+  const sources=ids.map((id,i)=>({...source,paper_id:id,chunk_id:"s"+i}));
+  const value=a.create({...input,taskId:"versions"},"Versioned sources",sources);
+  const title="A {50%} result & #1 $x_y$ ^ ~ \\input{private}";
+  const papers=ids.map(paper_id=>({paper_id,title,abstract:""}));
+  const exported=exportArtifact(value,"bibtex",papers);
+  assert.equal(exported.extension,"bib");assert.equal((exported.content.match(/@misc{/g)??[]).length,4);
+  for(const version of [1,2,3])assert.ok(exported.content.includes("eprint = {2501.12345v"+version+"}"));
+  assert.ok(exported.content.includes("url = {https://arxiv.org/abs/2501.12345v2}"));
+  assert.ok(exported.content.includes("A \\textbraceleft{}50\\%\\textbraceright{} result \\& \\#1 \\$x\\_y\\$ \\textasciicircum{} \\textasciitilde{} \\textbackslash{}input\\textbraceleft{}private\\textbraceright{}"));
+  assert.ok(!exported.content.includes("\\input{private}"));
+  assert.ok(!exported.content.includes("author ="));assert.ok(!exported.content.includes("year ="));
+  const reversed=exportArtifact({...value,sources:[...sources].reverse()},"bibtex",papers).content;
+  const keys=(v:string)=>[...v.matchAll(/@misc\{([^,]+),/g)].map(m=>m[1]).sort();
+  assert.deepEqual(keys(exported.content),keys(reversed));
+  const localEntry=exported.content.split("\n\n").find(v=>v.startsWith("@misc{local"))!;
+  const unbalanced=exportArtifact(value,"bibtex",papers.map(p=>({...p,title:"Unpaired { title"}))).content;
+  assert.ok(unbalanced.includes("Unpaired \\textbraceleft{} title"));
+  assert.equal([...unbalanced].filter(c=>c==="{").length,[...unbalanced].filter(c=>c==="}").length);
+  assert.ok(!localEntry.includes("eprint"));assert.ok(!localEntry.includes("url"));assert.ok(!localEntry.includes("local:private"));
+ }finally{db.close();}
+});
