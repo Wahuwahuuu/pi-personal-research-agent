@@ -392,6 +392,9 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     return true;
   }
+  async budgetBaseline(){
+    return {usage:{...this.state.usage},rows:this.ctx.storage.sql.exec("SELECT * FROM pra_model_calls").toArray()};
+  }
   async syncBudget(){
     if(!this.budgetImported){
       try{await this.identityRegistry().importBudget(this.ownerId,this.ctx.storage.sql.exec("SELECT * FROM pra_model_calls").toArray());this.budgetImported=true;}

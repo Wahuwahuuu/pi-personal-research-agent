@@ -75,6 +75,8 @@ const messages: Record<string, string> = {
   AUTHENTICATION_FAILED: "通行密钥验证未完成，请重试。",
   RECOVERY_INVALID: "恢复码无效或已经使用。",
   TRY_LATER: "尝试次数较多，请一分钟后重试。",
+  VALIDATION_BUDGET: "本应用的模型验证总配额已达到上限，已有研究结果已保留。切换账户或跨月不会重置额度。",
+  VALIDATION_MIGRATION_REQUIRED: "正在核对已有账户的累计用量，完成后才能继续付费调用。",
   MONTHLY_BUDGET: "本月模型预算已用尽，研究结果已保留。",
   BACKGROUND_BUDGET: "自动科研预算已暂停，待办会保留。",
   PRICE_REVIEW_REQUIRED: "模型费率需要核对，付费调用已暂停。",

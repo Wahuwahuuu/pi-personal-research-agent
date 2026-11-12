@@ -1,7 +1,7 @@
 import { Problem } from "./domain.ts";
 import type { StateStorage } from "./state-store.ts";
 
-export const BUDGET_STOPS = new Set(["BILLING_UNAVAILABLE","MONTHLY_BUDGET","BACKGROUND_BUDGET","BACKGROUND_DAILY_BUDGET","PRICE_NOT_CONFIGURED","PRICE_REVIEW_REQUIRED"]);
+export const BUDGET_STOPS = new Set(["VALIDATION_BUDGET","VALIDATION_MIGRATION_REQUIRED","BILLING_UNAVAILABLE","MONTHLY_BUDGET","BACKGROUND_BUDGET","BACKGROUND_DAILY_BUDGET","PRICE_NOT_CONFIGURED","PRICE_REVIEW_REQUIRED"]);
 const MICRO = 1_000_000;
 export interface ModelUsage { input: number; output: number }
 export interface PriceCard {

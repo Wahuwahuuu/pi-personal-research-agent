@@ -1,10 +1,11 @@
+import {ValidationBudget} from "./validation-budget.ts";
 import {BudgetLedger,BUDGET_STOPS,type ModelUsage} from "./budget.ts";
 import {Problem} from "./domain.ts";
 import type {StateStorage} from "./state-store.ts";
 export class SharedBudget {
- readonly ledger:BudgetLedger;readonly db:StateStorage;
+ readonly ledger:BudgetLedger;readonly db:StateStorage;readonly validation:ValidationBudget;
  constructor(db:StateStorage){
-  this.db=db;this.ledger=new BudgetLedger(db);
+  this.db=db;this.ledger=new BudgetLedger(db);this.validation=new ValidationBudget(db);
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_budget_imports(owner TEXT PRIMARY KEY)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_budget_owners(id TEXT PRIMARY KEY,owner TEXT NOT NULL)");
  }
@@ -25,18 +26,25 @@ export class SharedBudget {
  reserve(owner:string,request:Parameters<BudgetLedger["reserve"]>[0],now=Date.now()){
   // A model HTTP attempt has a 90-second timeout. Stale reservations stay charged,
   // rather than becoming free when the coordinating object is restarted.
-  for(const row of this.db.sql.exec<{id:string}>("SELECT id FROM pra_model_calls WHERE status='reserved' AND created<?",now-180000).toArray())this.ledger.settle(row.id);
+  for(const row of this.db.sql.exec<{id:string;owner:string}>("SELECT c.id,o.owner FROM pra_model_calls c JOIN pra_budget_owners o ON o.id=c.id WHERE c.status='reserved' AND c.created<?",now-180000).toArray())this.settle(row.owner,row.id);
   try{return this.db.transactionSync(()=>{
    const existing=this.db.sql.exec<{owner:string}>("SELECT owner FROM pra_budget_owners WHERE id=?",request.id).toArray()[0];
    if(existing&&existing.owner!==owner)throw new Problem("RESERVATION_CONFLICT",409);
+   this.validation.reserve(owner,request,now);
    const id=this.ledger.reserve(request,now);this.db.sql.exec("INSERT OR IGNORE INTO pra_budget_owners VALUES(?,?)",id,owner);
-   return{ok:true as const,id,budget:this.ledger.snapshot(now)};
+   return{ok:true as const,id,budget:this.snapshot(now)};
   });}catch(e){if(e instanceof Problem&&BUDGET_STOPS.has(e.code))return{ok:false as const,error:e.code};throw e;}
  }
  settle(owner:string,id:string,usage?:ModelUsage){
   if(this.db.sql.exec<{owner:string}>("SELECT owner FROM pra_budget_owners WHERE id=?",id).toArray()[0]?.owner!==owner)throw new Problem("UNKNOWN_RESERVATION",404);
-  const result=this.ledger.settle(id,usage);return{...result,budget:this.ledger.snapshot()};
+  return this.db.transactionSync(()=>{
+   const result=this.ledger.settle(id,usage);
+   // Preserve an unknown settlement even if a late receipt includes smaller usage.
+   this.validation.settle(owner,id,result.status==="unknown"?undefined:usage);
+   return{...result,budget:this.snapshot()};
+  });
  }
+ snapshot(now=Date.now()){return{...this.ledger.snapshot(now),validation:this.validation.snapshot(),scope:"application" as const};}
  calls(owner:string,after="",limit=50){
   if(!Number.isSafeInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
   const items=this.db.sql.exec<any>("SELECT c.* FROM pra_model_calls c JOIN pra_budget_owners o ON o.id=c.id WHERE o.owner=? AND c.id>? ORDER BY c.id LIMIT ?",owner,after,limit+1).toArray();

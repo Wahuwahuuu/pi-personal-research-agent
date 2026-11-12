@@ -24,9 +24,23 @@ export class IdentityRegistry extends DurableObject<Env> {
  async claimDiscovery(owner:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");return this.discovery.claim(owner);}
  async releaseDiscovery(owner:string,token:string){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.discovery.release(owner,token);}
  async importBudget(owner:string,rows:any[]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");this.budget.import(owner,rows);}
- async reserveBudget(owner:string,request:Parameters<BudgetLedger["reserve"]>[0]){if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");return this.budget.reserve(owner,request);}
+ async prepareBudgets(){
+  // RPC reads yield safely; the final reserve below is a single synchronous transaction.
+  // No account may spend before every pre-existing account's history is represented.
+  const missing=this.store.db.sql.exec<{id:string}>("SELECT id FROM identity_accounts WHERE id NOT IN (SELECT owner FROM pra_validation_imports) ORDER BY id LIMIT 21").toArray();
+  for(const account of missing.slice(0,20)){
+   const baseline=await this.env.AGENTS.getByName(account.id).budgetBaseline();
+   this.store.db.transactionSync(()=>{this.budget.import(account.id,baseline.rows);this.budget.validation.import(account.id,baseline.usage);});
+  }
+  return !this.store.db.sql.exec("SELECT id FROM identity_accounts WHERE id NOT IN (SELECT owner FROM pra_validation_imports) LIMIT 1").toArray().length;
+ }
+ async reserveBudget(owner:string,request:Parameters<BudgetLedger["reserve"]>[0]){
+  if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");
+  if(!await this.prepareBudgets())return{ok:false as const,error:"VALIDATION_MIGRATION_REQUIRED"};
+  return this.budget.reserve(owner,request);
+ }
  async settleBudget(owner:string,id:string,usage?:ModelUsage){return this.budget.settle(owner,id,usage);}
- async budgetSnapshot(){return {...this.budget.ledger.snapshot(),scope:"application"};}
+ async budgetSnapshot(){return this.budget.snapshot();}
  async budgetCalls(owner:string,after:string,limit:number){return this.budget.calls(owner,after,limit);}
  async authenticate(hash:string){return this.store.session(hash)??null;}
  async deviceOwner(hash:string){return this.store.deviceOwner(hash)??null;}
