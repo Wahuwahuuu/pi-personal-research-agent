@@ -9,6 +9,7 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { liveModels } from "../src/live-model.ts";
 import { deletePiConversation, deleteConversationState, DeletionStore } from "../src/deletion.ts";
+import {deletionImpact} from "../src/deletion-lineage.ts";
 import { initialState, submit } from "../src/domain.ts";
 import type { StateStorage } from "../src/state-store.ts";
 function port(db:DatabaseSync):StateStorage {
@@ -25,9 +26,18 @@ test("real Pi SQLite transcript is removed; a separate conversation survives and
   const a=await harness.createConversation({agent,ownership:{kind:"ownerless"}},context),b=await harness.createConversation({agent,ownership:{kind:"ownerless"}},context);
   await(await a.submit({type:"input",content:"DELETION_CANARY_ALPHA"},context)).wait(context);
   await(await b.submit({type:"input",content:"SURVIVING_BETA"},context)).wait(context);
+  const derived=await harness.createConversation({agent,ownership:{kind:"ownerless"}},context);
+  await(await derived.submit({type:"input",content:"DERIVED_PRIVATE_CANARY"},context)).wait(context);
   await harness.close(context);
   const db=new DatabaseSync(path),storage=port(db);
-  deletePiConversation(storage,String(a.id));deletePiConversation(storage,String(a.id));
+  const state=initialState(),root=submit(state,"source","source","chat"),child=submit(state,"follow-up","follow-up","chat");
+  root.conversationId="source";root.sessionId=String(a.id);child.conversationId="child";child.sessionId=String(derived.id);
+  state.conversations=[{id:"source",sessionId:String(a.id),projectId:"default",title:"source",scope:[],created:0,history:[]},{id:"child",sessionId:String(derived.id),projectId:"default",title:"child",scope:[],created:0,history:[]}];
+  state.cloudMemory={enabled:true,entries:[],deletedSlots:[],dependencies:{[child.id]:{memories:[],turns:[root.id],lineageVersion:1}}};
+  for(const session of deletionImpact(state,"source").sessions)deletePiConversation(storage,session);
+  deletePiConversation(storage,String(a.id));
+  assert.equal(db.prepare("SELECT id FROM pi_conversations WHERE id=?").all(derived.id).length,0);
+  for(const row of db.prepare("SELECT record FROM pi_entries").all())assert.ok(!String(row.record).includes("DERIVED_PRIVATE_CANARY"));
   assert.equal(db.prepare("SELECT id FROM pi_conversations WHERE id=?").all(Number(a.id)).length,0);
   for(const table of ["pi_entries","pi_tasks","pi_submissions","pi_documents"]) {
     const all=JSON.stringify(db.prepare("SELECT record FROM "+table).all());

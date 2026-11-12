@@ -41,6 +41,7 @@ export class Artifacts {
  }
  versions(id:string){this.get(id);return this.db.sql.exec("SELECT version,editor,created FROM pra_artifact_versions WHERE id=? ORDER BY version DESC",id).toArray();}
  delete(id:string){this.get(id);this.db.transactionSync(()=>{this.db.sql.exec("DELETE FROM pra_artifact_versions WHERE id=?",id);this.db.sql.exec("DELETE FROM pra_artifacts WHERE id=?",id);});}
+ deleteTasks(tasks:readonly string[]){const ids=this.db.sql.exec<{id:string}>("SELECT id FROM pra_artifacts WHERE task_id IN (SELECT value FROM json_each(?))",JSON.stringify(tasks)).toArray().map(r=>r.id);for(const id of ids)this.delete(id);return ids;}
  deleteConversation(id:string){const ids=this.db.sql.exec<{id:string}>("SELECT id FROM pra_artifacts WHERE conversation_id=?",id).toArray().map(r=>r.id);for(const a of ids)this.delete(a);return ids;}
 }
 const escape=(v:string)=>v.replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]!));

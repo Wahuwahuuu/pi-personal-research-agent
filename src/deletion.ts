@@ -1,4 +1,4 @@
-import {invalidateMemoryInputs} from "../packages/research/cloud-memory.ts";
+import {deletionImpact,emptyImpact,removeConversationContent,invalidateDeletedSources,type DeletionImpact} from "./deletion-lineage.ts";
 import { Problem, cancel, type State } from "./domain.ts";
 import type { StateStorage } from "./state-store.ts";
 
@@ -13,6 +13,7 @@ export class DeletionStore {
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deletions(id TEXT PRIMARY KEY,session_id TEXT,status TEXT NOT NULL,created INTEGER NOT NULL,error TEXT,local_pending INTEGER NOT NULL)");
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deleted_operations(id TEXT PRIMARY KEY,deletion_id TEXT NOT NULL,purged INTEGER NOT NULL DEFAULT 0)");
     storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_deleted_operations_deletion ON pra_deleted_operations(deletion_id)");
+    storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deletion_lineage(deletion_id TEXT NOT NULL,kind TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(deletion_id,kind,id))");
   }
   get(id:string) {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE id=?",id).toArray()[0];}
   pending() {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE status='pending' ORDER BY created").toArray();}
@@ -22,12 +23,30 @@ export class DeletionStore {
   request(state:State,id:string) {
     const prior=this.get(id);if(prior&&prior.status!=="failed")return prior;
     const c=state.conversations?.find(c=>c.id===id);if(!c)throw new Problem("UNKNOWN_CONVERSATION",404);
-    const tasks=state.tasks.filter(t=>t.conversationId===id),ids=new Set(tasks.map(t=>t.id));
-    const operations=state.operations.filter(o=>ids.has(o.taskId));
-    this.storage.sql.exec("INSERT INTO pra_deletions VALUES(?,?, 'pending',?,NULL,?) ON CONFLICT(id) DO UPDATE SET status='pending',error=NULL",id,c.sessionId??null,Date.now(),operations.length?1:0);
-    for(const op of operations)this.storage.sql.exec("INSERT OR IGNORE INTO pra_deleted_operations(id,deletion_id) VALUES(?,?)",op.id,id);
-    for(const t of tasks)cancel(state,t.id);
+    this.storage.sql.exec("INSERT INTO pra_deletions VALUES(?,?, 'pending',?,NULL,0) ON CONFLICT(id) DO UPDATE SET status='pending',error=NULL",id,c.sessionId??null,Date.now());
+    this.capture(state,id);
     return this.get(id)!;
+  }
+  lineage(id:string) {
+    const impact=emptyImpact();
+    for(const r of this.storage.sql.exec<{kind:keyof DeletionImpact;id:string}>("SELECT kind,id FROM pra_deletion_lineage WHERE deletion_id=?",id).toArray())
+      if(r.kind in impact)impact[r.kind].push(r.id);
+    return impact;
+  }
+  blocksConversation(id:string){
+    return !!this.storage.sql.exec("SELECT l.id FROM pra_deletion_lineage l JOIN pra_deletions d ON d.id=l.deletion_id WHERE l.kind='conversations' AND l.id=? AND d.status IN ('pending','failed') LIMIT 1",id).toArray().length;
+  }
+  capture(state:State,id:string){
+    const prior=this.lineage(id),impact=deletionImpact(state,id,prior);
+    for(const kind of Object.keys(impact) as (keyof DeletionImpact)[]){
+      const known=new Set(prior[kind]);
+      for(const value of impact[kind])if(!known.has(value))this.storage.sql.exec("INSERT OR IGNORE INTO pra_deletion_lineage VALUES(?,?,?)",id,kind,value);
+    }
+    for(const op of impact.operations)if(!this.deletedOperation(op))this.storage.sql.exec("INSERT OR IGNORE INTO pra_deleted_operations(id,deletion_id) VALUES(?,?)",op,id);
+    if(this.operationIds(id).length)this.storage.sql.exec("UPDATE pra_deletions SET local_pending=1 WHERE id=? AND local_pending=0",id);
+    for(const t of state.tasks)if(impact.turns.includes(t.id))cancel(state,t.id);
+    invalidateDeletedSources(state,id,impact);
+    return impact;
   }
   cloudDone(id:string) {
     this.storage.sql.exec("UPDATE pra_deletions SET status=CASE WHEN local_pending=1 THEN 'cloud_complete' ELSE 'completed' END,error=NULL WHERE id=?",id);
@@ -86,24 +105,5 @@ export function deletePiConversation(storage:StateStorage,sessionId:string) {
     storage.sql.exec("DELETE FROM pi_conversations WHERE id IN (SELECT value FROM json_each(?))",ids);
   });
 }
-/** Remove application-owned conversation content; immutable paper-library originals are not conversations. */
-export function deleteConversationState(state:State,id:string) {
-  const tasks=state.tasks.filter(t=>t.conversationId===id),ids=new Set(tasks.map(t=>t.id));
-  const c=state.conversations?.find(c=>c.id===id),turns=new Set([...(c?.history.map(h=>h.turn_id)??[]),...ids]);
-  const removed=state.cloudMemory?.entries.filter(m=>m.source_session===id||turns.has(m.source_turn))??[];
-  if(state.cloudMemory) {
-    invalidateMemoryInputs(state.cloudMemory,removed.map(m=>m.id),[...turns]);
-    state.cloudMemory.deletedSlots=[...new Set([...state.cloudMemory.deletedSlots,...removed.map(m=>m.slot)])];
-    state.cloudMemory.invalidatedTurns=[...new Set([...(state.cloudMemory.invalidatedTurns??[]),...turns])];
-  }
-  state.memories=state.memories.filter(m=>!removed.some(r=>r.id===m.id)&&m.source!==id);
-  state.conversations=state.conversations?.filter(c=>c.id!==id);
-  for(const other of state.conversations??[])if(other.domain) {
-    other.domain.user_constraints=other.domain.user_constraints.filter(v=>!turns.has(v.source_turn));
-    other.domain.reading_notes=other.domain.reading_notes?.filter(v=>!turns.has(v.source_turn));
-    other.domain.conclusions=other.domain.conclusions.filter(v=>!turns.has(v.source_turn));
-  }
-  state.tasks=state.tasks.filter(t=>!ids.has(t.id));
-  state.operations=state.operations.filter(o=>!ids.has(o.taskId));
-  state.notices=state.notices.filter(n=>![...ids].some(t=>n.id==="task:"+t||n.id==="budget:"+t));
-}
+/** Immutable paper-library originals are not conversation content. */
+export const deleteConversationState = removeConversationContent;

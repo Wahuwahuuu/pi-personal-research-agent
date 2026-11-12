@@ -216,6 +216,12 @@ try {
   assert.equal(editedArtifact.version,2);assert.equal((await api("artifacts/"+savedArtifact.id+"?version=1")).content,researchDone.answer);
   const exported=await fetch(base+"/api/artifacts/"+savedArtifact.id+"/export?format=md",{headers:{Cookie:cookie}});assert.ok((await exported.text()).includes("Evidence."));
   checks.push("research artifacts preserve versioned original evidence, reject destructive edits and export source-bearing content");
+  const derivedTask=await api("tasks/"+pauseWaiting.id);
+  const lineage=(await api("state")).cloudMemory.dependencies[derivedTask.id];
+  assert.equal(lineage.lineageVersion,1);assert.ok(lineage.turns.includes(research.id));
+  const derivedArtifact=await api("artifacts","POST",{requestId:"derived-artifact",taskId:derivedTask.id,kind:"reading",title:"Derived review"});
+  await api("artifacts/"+derivedArtifact.id,"PATCH",{requestId:"derived-artifact-edit",version:1,content:"DERIVED_ARTIFACT_DELETE_CANARY"});
+
   checks.push(
     "real DO registered research tools; preparation, research and memory synthesis reused one session across two validated observations",
   );
@@ -485,7 +491,7 @@ try {
     "cancelled",
   );
   checks.push("offline cancellation durable");
-  const removedOps=(await api("state")).operations.filter((o:any)=>o.taskId===research.id).map((o:any)=>o.id);
+  const removedOps=(await api("state")).operations.filter((o:any)=>[research.id,derivedTask.id].includes(o.taskId)).map((o:any)=>o.id);
   await api("conversations/"+research.conversationId,"DELETE");
   await until(async()=> (await api("deletions/"+research.conversationId)).status==="cloud_complete");
   const purgeNode=child(["local/node.ts",config],{...process.env,PRA_DEVICE_TOKEN:pair.token});
@@ -495,6 +501,15 @@ try {
   localDb.close();
   checks.push("offline deletion waited for node reconnect and purged real outbox with persistent replay tombstones");
   assert.equal((await fetch(base+"/api/artifacts/"+savedArtifact.id,{headers:{Cookie:cookie}})).status,404);
+  assert.equal((await fetch(base+"/api/artifacts/"+derivedArtifact.id,{headers:{Cookie:cookie}})).status,404);
+  const redacted=await api("tasks/"+derivedTask.id);assert.equal(redacted.error,"CONTEXT_SOURCE_DELETED");assert.equal(redacted.answer,undefined);assert.equal(redacted.calls,derivedTask.calls);assert.equal(redacted.workflow,undefined);
+  const remaining=(await api("state")).conversations.find((c:any)=>c.id===derivedTask.conversationId);
+  assert.equal(remaining.sessionId,undefined);assert.ok(remaining.history.some((h:any)=>h.turn_id===derivedTask.id&&h.user_text===derivedTask.input&&h.final_answer===""));
+  const newTurn=await api("tasks","POST",{requestId:"clean-context-after-delete",conversationId:derivedTask.conversationId,kind:"chat",input:"continue with a clean context"});
+  await until(async()=>(await api("tasks/"+newTurn.id)).status==="completed");
+  assert.notEqual((await api("tasks/"+newTurn.id)).sessionId,derivedTask.sessionId);
+  checks.push("source deletion removes another conversation's derived answer, workflow and artifact versions while preserving its user question and reopening clean Pi context");
+
   await api("device/revoke", "POST", {});
   await until(async () => !(await api("state")).deviceOnline);
   checks.push("device revocation immediately enforced");
@@ -567,11 +582,24 @@ try {
           "device secret persisted",
         );
         for(const secret of authReport.secrets)assert.ok(!bytes.includes(Buffer.from(secret)),"authentication secret persisted");
+        if(path.endsWith(".sqlite")){
+          const db=new DatabaseSync(path,{readOnly:true});
+          try{
+            const tables=db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r:any)=>r.name);
+            if(tables.includes("pra_identity")&&db.prepare("SELECT user_id FROM pra_identity WHERE singleton=1").get()?.user_id===isolated.vars.OWNER_ID){
+              if(tables.includes("pi_conversations"))for(const id of [researchDone.sessionId,derivedTask.sessionId])
+                assert.equal(db.prepare("SELECT id FROM pi_conversations WHERE id=?").all(Number(id)).length,0);
+              for(const name of ["pra_artifact_versions","pra_mutations"])if(tables.includes(name))
+                assert.ok(!JSON.stringify(db.prepare("SELECT * FROM "+name).all()).includes("DERIVED_ARTIFACT_DELETE_CANARY"));
+            }
+          }finally{db.close();}
+        }
         scanned++;
       }
     }
   }
   await scan(directory);
+  checks.push("online SQLite rows contain neither deleted source/derived Pi sessions nor their artifact revisions and idempotency response copies");
   checks.push(
     `raw local persistence credential scan: ${scanned} files, zero plaintext credential hits`,
   );

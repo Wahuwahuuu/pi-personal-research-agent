@@ -492,8 +492,7 @@ export class ResearchBatches {
       .toArray()
       .map((r) => read<ResearchBatch>(r)!);
     for (const b of batches) {
-      for (const id of b.selectedIds ?? []) {
-        const c = this.candidate(id);
+      for (const {id} of this.db.sql.exec<{id:string}>("SELECT id FROM pra_research_candidates WHERE batch_id=?",b.id).toArray()) {
         this.updateCandidate(id, {
           phase: "cancelled",
           reason: "研究会话已删除",
@@ -507,12 +506,15 @@ export class ResearchBatches {
         status: "completed",
         error: "RESEARCH_DELETED",
         taskId: undefined,
+        screenTaskId: undefined,
+        summaryTaskId: undefined,
         conversationId: undefined,
         artifactId: undefined,
         selectedIds: [],
         coverageGaps: [],
       });
     }
+    return batches.map(b=>b.id);
   }
   removePlan(planId: string) {
     const batches = this.db.sql

@@ -42,6 +42,8 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  DELETION_PENDING:"这个会话的来源仍在清理，请先完成数据删除；其他独立会话可以继续使用。",
+  CONTEXT_SOURCE_DELETED:"这次回答使用的来源已删除，相关结果已清除。你可以在当前会话重新提问。",
   PAIRING_REVOKED:"这次配对已撤销，请重新生成配对凭证。",
   PAIRING_EXPIRED:"这次配对已过期，请重新生成配对凭证。",
   PAIRING_KEY_CHANGED:"配对配置已更新，请重新生成配对凭证；已安装的有效设备仍可连接。",

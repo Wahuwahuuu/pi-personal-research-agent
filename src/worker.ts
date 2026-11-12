@@ -141,7 +141,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.libraryJobs = new LibraryJobs(this.database);
     this.researchBatches = new ResearchBatches(this.database);
     this.proactive = new ProactiveResearch({state:()=>this.state,batches:this.researchBatches,imports:this.libraryJobs,workspace:this.workspace,artifacts:this.artifacts,
-      catalog:()=>{const d=this.device()?.deserializeAttachment();return d?.catalogReady?this.catalog(d.indexVersion):undefined;},save:()=>this.save(),deletedConversation:id=>!!this.deletions.get(id)});
+      catalog:()=>{const d=this.device()?.deserializeAttachment();return d?.catalogReady?this.catalog(d.indexVersion):undefined;},save:()=>this.save(),deletedConversation:id=>!!this.deletions.get(id)||this.deletions.blocksConversation(id)});
 
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_billing_outbox(id TEXT PRIMARY KEY,usage TEXT NOT NULL)");
     if(env.MODEL_MODE!=="mock")this.budgetLedger.importLegacy(this.state.usage);
@@ -576,6 +576,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if(prior&&b.mode!==undefined&&(b.mode==="long")!==!!prior.goal)throw new Problem("REQUEST_CONFLICT",409);
       const conversationId = typeof b.conversationId === "string" ? text(b.conversationId,128) : prior?.conversationId ?? crypto.randomUUID();
       if(this.deletions.get(conversationId))throw new Problem("CONVERSATION_DELETED",410);
+      if(this.deletions.blocksConversation(conversationId))throw new Problem("DELETION_PENDING",409);
       this.state.conversations ??= [];
       let conversation = this.state.conversations.find(c => c.id === conversationId);
       if (b.conversationId && !conversation) throw new Problem("UNKNOWN_CONVERSATION",404);
@@ -603,6 +604,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const translateMatch=path.match(/^\/api\/tasks\/([^/]+)\/translate$/);
     if(translateMatch&&r.method==="POST"){
       const sourceTask=getTask(this.state,translateMatch[1]),b=await this.body(r);
+      if(sourceTask.conversationId&&this.deletions.blocksConversation(sourceTask.conversationId))throw new Problem("DELETION_PENDING",409);
       if(sourceTask.engine!=="durable"||sourceTask.runOpen||!["completed","waiting_user"].includes(sourceTask.status)||!sourceTask.researchIndex)throw new Problem("SOURCE_TASK_NOT_READY",409);
       const ids=b.sourceIds;
       if(!Array.isArray(ids)||ids.length<1||ids.length>2||new Set(ids).size!==ids.length)throw new Problem("INVALID_SOURCES");
@@ -1382,7 +1384,7 @@ export class PersonalAgent extends DurableObject<Env> {
       )
     )
       return;
-    const t = orderedTasks(this.state).find(
+    const t = orderedTasks(this.state).filter(t=>!t.conversationId||!this.deletions.blocksConversation(t.conversationId)).find(
       (t) =>
         !t.pauseRequested&&this.proactive.allowed(t)&&t.proactive?.stage!=="imports"&&t.engine === "durable" &&
         (t.status === "queued" ||
@@ -1489,26 +1491,38 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   async processDeletion() {
     const d=this.deletions.pending()[0];if(!d)return false;
+    const impact=this.database.transactionSync(()=>{const value=this.deletions.capture(this.state,d.id);this.save();return value;});
+    const readerCancellations:string[]=[];
     if(this.state.tasks.some(t=>t.runOpen||t.status==="running"))return true;
-    if(d.session_id&&(await this.harness.pending({session:d.session_id})).length)return true;
+    const piExists=this.database.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='pi_conversations'").toArray().length;
+    if(piExists)for(const session of impact.sessions)
+      if(this.database.sql.exec("SELECT id FROM pi_conversations WHERE id=?",Number(session)).toArray().length&&(await this.harness.pending({session})).length)return true;
     await this.ctx.blockConcurrencyWhile(async()=>{
       try {
         await this.harness.dispose();this.runtime=undefined;
         this.database.transactionSync(()=>{
-          if(d.session_id)deletePiConversation(this.database,d.session_id);
-          this.workspace.forgetEntity(d.id);
-          for(const id of this.artifacts.deleteConversation(d.id))this.workspace.forgetEntity(id);
-          for(const task of this.state.tasks.filter(t=>t.conversationId===d.id))this.proactive.cancel(task);
-          this.readerRequests.invalidate({conversationId:d.id});
-          this.researchBatches.clearResearch(d.id);
-          deleteConversationState(this.state,d.id);this.save();this.deletions.cloudDone(d.id);
+          for(const session of impact.sessions)deletePiConversation(this.database,session);
+          for(const id of [...impact.conversations,...impact.turns])this.workspace.forgetEntity(id);
+          const artifacts=[...this.artifacts.deleteTasks(impact.turns),...this.artifacts.deleteConversation(d.id)];
+          for(const id of artifacts)this.workspace.forgetEntity(id);
+          this.state.notices=this.state.notices.filter(n=>!n.artifactId||!artifacts.includes(n.artifactId));
+          for(const task of this.state.tasks.filter(t=>impact.turns.includes(t.id)))this.proactive.cancel(task);
+          for(const conversationId of impact.conversations){
+            readerCancellations.push(...this.readerRequests.invalidate({conversationId}));
+            const batches=this.researchBatches.clearResearch(conversationId);
+            this.state.notices=this.state.notices.filter(n=>!n.batchId||!batches.includes(n.batchId));
+          }
+          deleteConversationState(this.state,d.id,impact);this.save();this.deletions.cloudDone(d.id);
         });
       } catch(error) {
         this.state=this.repository.load();
         this.deletions.fail(d.id,error instanceof Problem?error.code:"DELETION_FAILED");
       }
     });
-    for(const ws of this.ctx.getWebSockets("device"))this.sendPurges(ws);
+    for(const ws of this.ctx.getWebSockets("device")){
+      if(this.deletions.get(d.id)?.status!=="failed")for(const id of readerCancellations)this.send(ws,{type:"reader_cancel",id});
+      this.sendPurges(ws);
+    }
     this.publish();
     return true;
   }

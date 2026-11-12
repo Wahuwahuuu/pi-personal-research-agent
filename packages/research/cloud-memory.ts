@@ -11,13 +11,14 @@ export interface CloudMemoryOptions {projectId?:string;recall?:(query:string,pap
 const tombstoneSlot=(e:{slot:string;projectId?:string})=>(e.projectId?e.projectId+":":"")+e.slot;
 export interface CloudMemoryState {
   entries:CloudMemoryEntry[]; deletedSlots:string[]; enabled:boolean; invalidatedTurns?:string[];
-  dependencies?:Record<string,{memories:string[];turns:string[]}>;
+  dependencies?:Record<string,{memories:string[];turns:string[];lineageVersion?:1}>;
 }
 export const newCloudMemory=():CloudMemoryState=>({entries:[],deletedSlots:[],enabled:true});
 /** Conservative lineage tracks inputs, never hidden reasoning or a second copy of content. */
 export function recordMemoryInputs(state:CloudMemoryState,turn:string,ids:readonly string[],turns:readonly string[]){
  const d=state.dependencies??={};const prior=d[turn];
- d[turn]={memories:[...new Set([...(prior?.memories??[]),...ids])],turns:[...new Set([...(prior?.turns??[]),...turns.filter(id=>id!==turn)])]};
+ const sources=state.entries.filter(e=>ids.includes(e.id)).map(e=>e.source_turn).filter(Boolean);
+ d[turn]={memories:[...new Set([...(prior?.memories??[]),...ids])],turns:[...new Set([...(prior?.turns??[]),...turns,...sources].filter(id=>id!==turn))],lineageVersion:prior&&prior.lineageVersion!==1?undefined:1};
 }
 export function invalidateMemoryInputs(state:CloudMemoryState,memoryIds:readonly string[],sourceTurns:readonly string[],preserve:readonly string[]=[]){
  const ids=new Set(memoryIds),turns=new Set([...(state.invalidatedTurns??[]),...sourceTurns]),keep=new Set(preserve);
