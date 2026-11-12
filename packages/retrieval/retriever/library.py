@@ -53,6 +53,15 @@ def metadata(value):
         result[key] = text.strip()
     return result
 
+def unicode_text(value: str) -> str:
+    # Some PDF ToUnicode maps expose UTF-16 code units instead of scalar values.
+    # Join valid pairs; a missing half has no reliable original character.
+    try:
+        return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le")
+    except UnicodeError:
+        raise LibraryError("PDF_TEXT_ENCODING_INVALID") from None
+
+
 def extract_pdf(path: Path, paper_id: str, meta: dict):
     from pypdf import PdfReader
     reader = PdfReader(path, strict=False)
@@ -65,7 +74,7 @@ def extract_pdf(path: Path, paper_id: str, meta: dict):
         content = page.get_contents()
         if content and len(content.get_data()) > 10 * 1024 * 1024:
             raise LibraryError("PDF_PAGE_CONTENT_LIMIT")
-        text = page.extract_text() or ""
+        text = unicode_text(page.extract_text() or "")
         text = text.replace("\0", "")
         if len(text) > 1000000:
             raise LibraryError("PDF_PAGE_TEXT_LIMIT")
@@ -78,12 +87,12 @@ def extract_pdf(path: Path, paper_id: str, meta: dict):
         sections.append({"section_name": "Page " + str(number), "paragraphs": [text]})
     if len(gaps) == len(reader.pages):
         raise LibraryError("TEXT_LAYER_REQUIRED")
-    title = meta["title"] or str((reader.metadata or {}).get("/Title") or paper_id).strip()
+    title = unicode_text(meta["title"] or str((reader.metadata or {}).get("/Title") or paper_id).strip())
     return {
         "paper": {"paper_id": paper_id, "title": title[:2000], "abstract": meta["abstract"], "full_text": sections},
         "metadata": {**meta, "title": title[:2000], "pages": len(reader.pages),
                      "unreadablePages": gaps, "coverage": "partial" if gaps else "text",
-                     "parser": "pypdf-7.0.1", "structure": "page-text"},
+                     "parser": "pypdf-7.0.1-unicode-v1", "structure": "page-text"},
     }
 
 def download_arxiv(identifier: str, target: Path, cancelled=lambda: None):

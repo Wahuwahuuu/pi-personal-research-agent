@@ -36,6 +36,11 @@ try{
  checks.push("pause and resume use the real bridge contract");
  await page.getByRole("button",{name:"选择本机 PDF"}).click();
  await expect(page.getByText("正在建立索引",{exact:true})).toBeVisible();
+ await page.evaluate(()=>{const job=(window as any).__desktopState.imports[0];job.status="failed";job.error="PDF_TEXT_ENCODING_INVALID";});
+ await expect(page.getByText("这份 PDF 的文字映射不完整，暂时无法可靠解析。请尝试论文的其他公开版本。",{exact:true})).toBeVisible({timeout:12000});
+ await page.evaluate(()=>{const job=(window as any).__desktopState.imports[0];job.status="indexing";delete job.error;});
+ await expect(page.getByText("正在建立索引",{exact:true})).toBeVisible({timeout:12000});
+ checks.push("invalid PDF text mappings remain an explicit failure with an actionable explanation");
  await page.getByRole("button",{name:"取消",exact:true}).click();
  await expect(page.getByText("已取消",{exact:true})).toBeVisible();
  await page.getByRole("button",{name:"重试",exact:true}).click();

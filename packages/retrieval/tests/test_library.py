@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 from pypdf import PdfWriter
 from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
 from retriever.library import Library, LibraryError, extract_pdf, canonical, sha
@@ -149,6 +150,30 @@ class LibraryTests(unittest.TestCase):
             self.library.register_pdf("same", self.second)
         self.assertEqual(len(self.library.jobs()), 1)
         self.assertNotIn(str(self.first), json.dumps(self.library.job(a["id"])))
+
+    def test_pdf_surrogate_pairs_become_exact_unicode_scalar_evidence(self):
+        raw = "A\ud835\udc3b \U0001f600 中文"
+        expected = "A\U0001d43b \U0001f600 中文"
+        self.library.register_pdf("unicode-scalar", self.first)
+        with patch("pypdf._page.PageObject.extract_text", return_value=raw):
+            self.assertEqual(self.run_job()["status"], "published")
+        active = self.library.active(verify)
+        _, paragraphs, _ = load_source(self.library.path(active["corpus"]))
+        paragraph = next(iter(paragraphs.values()))
+        self.assertEqual(paragraph["text"], expected)
+        self.assertEqual(len(paragraph["text"]), len(expected))
+        self.assertNotIn("\ufffd", paragraph["text"])
+        self.assertEqual(canonical(paragraph).decode("utf8").count("\U0001d43b"), 1)
+
+    def test_pdf_unpaired_surrogates_fail_explicitly_without_fabricated_text(self):
+        row = self.library.register_pdf("unpaired", self.first)
+        with patch("pypdf._page.PageObject.extract_text", return_value="unknown \ud835 character"):
+            result = self.run_job()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"], "PDF_TEXT_ENCODING_INVALID")
+        self.assertIsNone(self.library.active(verify))
+        self.library.retry(row["id"])
+        self.assertEqual(self.run_job()["status"], "published")
 
     def test_scanned_pdf_never_becomes_a_successful_reading(self):
         scan = self.root / "scan.pdf"
