@@ -2,19 +2,22 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { StateRepository, type StateStorage } from "../src/state-store.ts";
+import {conversationPage} from "../src/workspace.ts";
 import { initialState, submit } from "../src/domain.ts";
 function fixture() {
   const db = new DatabaseSync(":memory:");
   let fail = false;
+  const queries:Array<{sql:string;rows:number}>=[];
   const storage: StateStorage = {
     sql: { exec<T>(q: string, ...b: any[]) {
       if (fail && q.startsWith("INSERT INTO pra_changes")) throw Error("INJECTED_DISK_FAILURE");
       const stmt=db.prepare(q), rows=(stmt.columns().length ? stmt.all(...b) : (stmt.run(...b), [])) as T[];
+      queries.push({sql:q,rows:rows.length});
       return {toArray:()=>rows};
     } },
     transactionSync<T>(fn:()=>T) { db.exec("BEGIN"); try {const result=fn();db.exec("COMMIT");return result;} catch(e) {db.exec("ROLLBACK");throw e;} }
   };
-  return { db, storage, setFail:(v:boolean)=>{fail=v;} };
+  return { db, storage, queries, setFail:(v:boolean)=>{fail=v;} };
 }
 test("legacy migration preserves tasks, unconfirmed operations, memory and conversation turns without duplicate legacy payload", () => {
   const f=fixture(), s=initialState(), t=submit(s,"synthetic question","r","research");
@@ -73,4 +76,61 @@ test("unknown schema and malformed old state are never overwritten", () => {
   const g=fixture();g.db.exec("CREATE TABLE pra_state(id INTEGER PRIMARY KEY,value TEXT); INSERT INTO pra_state VALUES(1,'{}')");
   assert.throws(()=>new StateRepository(g.storage),/INVALID_LEGACY_STATE/);
   assert.equal(g.db.prepare("SELECT value FROM pra_state").get()!.value,"{}");g.db.close();
+});
+
+function conversations(count:number,turns:number){return Array.from({length:count},(_,i)=>({
+ id:"c"+i,title:"Conversation "+i,projectId:"p",scope:[],created:i,
+ history:Array.from({length:turns},(_,j)=>({turn_id:"t"+j,user_text:"question "+j,final_answer:"answer "+j}))
+}));}
+const bodyReads=(f:ReturnType<typeof fixture>)=>f.queries.filter(q=>/^SELECT \* FROM pra_data_messages/.test(q.sql)).reduce((sum,q)=>sum+q.rows,0);
+
+test("cold startup, normal saves and conversation lists do not hydrate 10000 archived turns",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(100,100);store.save(s);
+ const cold=new StateRepository(f.storage);f.queries.length=0;const loaded=cold.load();
+ assert.equal(bodyReads(f),0);assert.equal(cold.save(loaded).writes,0);assert.equal(bodyReads(f),0);
+ const page=conversationPage(loaded,{limit:30},cold);assert.equal(page.items.length,30);assert.ok(page.items.every(c=>c.turns===100));assert.equal(bodyReads(f),0);
+ assert.equal(loaded.conversations![17].history.length,100);assert.equal(bodyReads(f),100);
+ loaded.conversations![17].history.push({turn_id:"new",user_text:"next",final_answer:"done"});
+ assert.equal(cold.save(loaded).writes,1);assert.equal(bodyReads(f),100);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM pra_data_messages").get()!.n,10001);
+ assert.equal(new StateRepository(f.storage).load().conversations![17].history.at(-1)!.turn_id,"new");f.db.close();
+});
+
+test("deleting an unloaded conversation removes every turn without hydrating other histories",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(3,20);store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();f.queries.length=0;loaded.conversations=loaded.conversations!.filter(c=>c.id!=="c1");
+ cold.save(loaded);assert.equal(bodyReads(f),0);assert.equal(cold.page("messages","",100,"c1").items.length,0);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM pra_data_messages").get()!.n,40);
+ assert.equal(f.db.prepare("SELECT * FROM pra_history_counts WHERE conversation_id='c1'").get(),undefined);
+ assert.equal(new StateRepository(f.storage).load().conversations![1].history.length,20);f.db.close();
+});
+
+test("cold history replacement and failed transaction preserve unloaded partitions and counts",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(3,10);store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();
+ // Replace the object without reading its history getter.
+ loaded.conversations![1]={id:"c1",title:"replacement",projectId:"p",scope:[],created:1,history:[{turn_id:"replacement",user_text:"new",final_answer:"new"}]};
+ const cursor=cold.cursor();f.setFail(true);assert.throws(()=>cold.save(loaded),/INJECTED/);
+ assert.equal(cold.cursor(),cursor);assert.equal(f.db.prepare("SELECT turns FROM pra_history_counts WHERE conversation_id='c1'").get()!.turns,10);
+ f.setFail(false);cold.save(loaded);
+ const reopened=new StateRepository(f.storage),fresh=reopened.load();assert.equal(reopened.historyCount(fresh.conversations![1]),1);
+ assert.equal(fresh.conversations![1].history[0].turn_id,"replacement");assert.equal(fresh.conversations![2].history.length,10);
+ assert.equal(f.db.prepare("SELECT COUNT(*) AS n FROM pra_data_messages").get()!.n,21);f.db.close();
+});
+
+test("schema one history counts migrate atomically without rewriting legacy message positions",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(2,3);store.save(s);
+ f.db.exec("UPDATE pra_app_schema SET version=1; DROP TABLE pra_history_counts; UPDATE pra_data_messages SET position=position+1000 WHERE parent='c1'");
+ const cold=new StateRepository(f.storage),loaded=cold.load();assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,2);
+ assert.equal(cold.historyCount(loaded.conversations![1]),3);assert.equal(loaded.conversations![1].history[0].turn_id,"t0");
+ assert.equal(cold.save(loaded).writes,0);loaded.conversations![1].history.push({turn_id:"new",user_text:"q",final_answer:"a"});
+ assert.equal(cold.save(loaded).writes,1);
+ assert.deepEqual(f.db.prepare("SELECT position FROM pra_data_messages WHERE parent='c1' ORDER BY position").all().map(r=>r.position),[1000,1001,1002,1003]);f.db.close();
+});
+
+test("explicit body search and legacy JSON export still include complete histories",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(2,5);s.conversations[1].history[0].user_text="中文特征及 ÄBC";store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();
+ assert.equal(conversationPage(loaded,{q:"äbc"},cold).items[0].id,"c1");
+ const exported=JSON.parse(JSON.stringify(loaded));assert.equal(exported.conversations[0].history.length,5);assert.equal(exported.conversations[1].history.length,5);f.db.close();
 });

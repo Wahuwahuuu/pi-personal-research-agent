@@ -58,12 +58,12 @@ export function taskSummary(t:Task){
  const {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin}=t;
  return {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin,amendments:t.amendments,runOpen:t.runOpen,priority:t.priority,goal:t.goal,pauseRequested:t.pauseRequested,progress:t.workflow?.progress??null};
 }
-export function conversationPage(s:State,options:{q?:string;projectId?:string;archived?:boolean;after?:number;limit?:number}={}){
+export function conversationPage(s:State,options:{q?:string;projectId?:string;archived?:boolean;after?:number;limit?:number}={},reader?:{historyCount:(c:NonNullable<State["conversations"]>[number])=>number}){
  const after=options.after??0,limit=options.limit??30;if(!Number.isInteger(after)||after<0||!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
  const q=(options.q??"").toLocaleLowerCase();
  const filtered=(s.conversations??[]).filter(c=>Boolean(c.archived)===Boolean(options.archived)&&(!options.projectId||c.projectId===options.projectId)&&(!q||c.title.toLocaleLowerCase().includes(q)||c.history.some(h=>(h.user_text+" "+h.final_answer).toLocaleLowerCase().includes(q))))
  .sort((a,b)=>Number(b.pinned??false)-Number(a.pinned??false)||(b.updated??b.created)-(a.updated??a.created)||a.id.localeCompare(b.id));
- return {items:filtered.slice(after,after+limit).map(({domain,history,...c})=>({...c,turns:history.length})),nextCursor:filtered.length>after+limit?after+limit:null};
+ return {items:filtered.slice(after,after+limit).map(c=>({...(Object.fromEntries(Object.keys(c).filter(k=>k!=="history"&&k!=="domain").map(k=>[k,(c as any)[k]])) as Omit<NonNullable<State["conversations"]>[number],"history"|"domain">),turns:reader?reader.historyCount(c):c.history.length})),nextCursor:filtered.length>after+limit?after+limit:null};
 }
 
 export function taskPage(s:State,options:{conversationId?:string;status?:string;before?:string;limit?:number}={}){

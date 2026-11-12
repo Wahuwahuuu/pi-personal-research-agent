@@ -643,7 +643,7 @@ export class PersonalAgent extends DurableObject<Env> {
     if(path==="/api/conversations"&&r.method==="GET"){
       const p=new URL(r.url).searchParams;
       if(!p.has("limit"))return json(this.state.conversations??[]);
-      return json(conversationPage(this.state,{q:p.get("q")??"",projectId:p.get("project")??undefined,archived:p.get("archived")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit"))}));
+      return json(conversationPage(this.state,{q:p.get("q")??"",projectId:p.get("project")??undefined,archived:p.get("archived")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit"))},this.repository));
     }
     const conversationMatch=path.match(/^\/api\/conversations\/([^/]+)$/);
     if(conversationMatch && r.method==="DELETE") {
@@ -878,7 +878,7 @@ export class PersonalAgent extends DurableObject<Env> {
     if(memoryRevision&&r.method==="GET")return json(this.memoryIndex.revisions(memoryRevision[1]));
     if(path==="/api/overview"&&r.method==="GET")return json({
       build:this.env.BUILD_ID??"development",settings:this.workspace.settings(),
-      projects:this.workspace.projects({limit:50}),conversations:conversationPage(this.state,{limit:30}),
+      projects:this.workspace.projects({limit:50}),conversations:conversationPage(this.state,{limit:30},this.repository),
       tasks:[...this.state.tasks].sort((a,b)=>b.created-a.created).slice(0,50).map(t=>({...taskSummary(t),answer:t.answer?.slice(0,240)})),
       notices:[...this.state.notices].sort((a,b)=>b.created-a.created).slice(0,50),plans:this.state.plans,
       memoryCount:this.state.cloudMemory!.entries.length,deviceOnline:!!this.device(),deviceState:this.deviceState(),cursor:this.repository.cursor(),
@@ -925,7 +925,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const project=path.match(/^\/api\/projects\/([^/]+)$/);
     if(project){
       const id=project[1];
-      if(r.method==="GET"){const value=this.workspace.getProject(id);return json({...value,conversations:conversationPage(this.state,{projectId:id}),tasks:this.state.tasks.filter(t=>this.state.conversations?.some(c=>c.id===t.conversationId&&c.projectId===id)).map(taskSummary)});}
+      if(r.method==="GET"){const value=this.workspace.getProject(id);return json({...value,conversations:conversationPage(this.state,{projectId:id},this.repository),tasks:this.state.tasks.filter(t=>this.state.conversations?.some(c=>c.id===t.conversationId&&c.projectId===id)).map(taskSummary)});}
       if(r.method==="PATCH"){const b=await this.body(r);const result=this.workspace.once(b.requestId,"project:"+id,b,()=>this.workspace.updateProject(id,b));this.publish();return json(result);}
       if(r.method==="DELETE"){
         const b=await this.body(r);
