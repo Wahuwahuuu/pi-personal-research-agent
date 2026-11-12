@@ -1,3 +1,4 @@
+import {controlKey,requestStop} from "./lifecycle.ts";
 import {ReaderQueue} from "./reader-queue.ts";
 import {CloudImports} from "./cloud-imports.ts";
 import {timingSafeEqual,randomUUID} from "node:crypto";
@@ -428,7 +429,7 @@ localHandler=async(req,res)=>{
  try{
   if(req.method==="GET"&&path==="/local/status"){
    if(library&&building)importJobs=await library.jobs();
-   reply({connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
+   reply({instanceId:controlKey(configPath),connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
   }
   if(req.method==="GET"&&path==="/local/library"){
    const params=new URL(req.url!,"http://127.0.0.1").searchParams;
@@ -453,7 +454,7 @@ localHandler=async(req,res)=>{
    if(value.action==="pause"){paused=true;unavailable("paused");}
    else if(value.action==="resume"){paused=false;void announceReady();}
    else if(value.action==="reconnect"){socket?.terminate();}
-   else if(value.action==="shutdown"){reply({accepted:true});setTimeout(stop,25);return true;}
+   else if(value.action==="shutdown"){await requestStop(configPath,config.dataDir);reply({accepted:true,instanceId:controlKey(configPath)});setTimeout(stop,25);return true;}
    else throw Error("ACTION_DENIED");
    reply({accepted:true});return true;
   }

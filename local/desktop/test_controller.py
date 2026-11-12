@@ -53,4 +53,29 @@ class ControllerTests(unittest.TestCase):
             with patch.object(controller,"request",return_value={"valid":False}):
                 self.assertFalse(controller.reader_valid("request"))
 
+    def test_intentional_stop_blocks_recovery_until_a_new_tray_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"node.json";path.write_text(json.dumps({"endpoint":"https://cloud.example","dataDir":temp}),encoding="utf8")
+            c=Controller(path);c.begin_tray()
+            receipt=json.loads((c.control_directory/"tray.json").read_text(encoding="utf8"))
+            self.assertEqual(receipt["pid"],os.getpid())
+            (c.control_directory/"stop").write_text("{}",encoding="utf8")
+            self.assertTrue(c.stop_requested())
+            with patch.object(c,"status") as status:
+                with self.assertRaisesRegex(LocalError,"LOCAL_STOP_REQUESTED"):c.start()
+                status.assert_not_called()
+            c.end_tray()
+            self.assertFalse((c.control_directory/"tray.json").exists())
+            c.begin_tray();self.assertFalse(c.stop_requested());c.end_tray()
+
+    def test_tray_cleanup_never_removes_a_newer_session_receipt(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"node.json";path.write_text(json.dumps({"endpoint":"https://cloud.example","dataDir":temp}),encoding="utf8")
+            a=Controller(path);b=Controller(path)
+            a.begin_tray();b.begin_tray();a.end_tray()
+            self.assertTrue((b.control_directory/"tray.json").exists())
+            b.end_tray()
+            other=Path(temp)/"other.json";other.write_text(path.read_text(encoding="utf8"),encoding="utf8")
+            self.assertNotEqual(a.control_directory,Controller(other).control_directory)
+
 if __name__=="__main__":unittest.main()

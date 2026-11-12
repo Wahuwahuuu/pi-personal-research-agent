@@ -29,6 +29,7 @@ def main():
             controller.data.mkdir(parents=True,exist_ok=True)
             (controller.data/"tray-open").touch()
         return
+    controller.begin_tray()
     done=threading.Event()
     view=None
     icon=None
@@ -82,17 +83,19 @@ def main():
     def pause():
         state=controller.status()
         result(lambda:controller.control("resume" if state.get("paused") else "pause"))
+    def close_windows():
+        done.set()
+        icon.stop()
+        for window in list(webview.windows):
+            try:window.destroy()
+            except Exception:pass
     def quit_node():
         reply=result(lambda:controller.control("shutdown"))
         if not reply["ok"]:
             view.show()
             view.evaluate_js("error("+json.dumps(reply["error"])+");")
             return
-        done.set()
-        icon.stop()
-        for window in list(webview.windows):
-            try:window.destroy()
-            except Exception:pass
+        close_windows()
     # Authored application mark; no external assets or brand material.
     mark=Image.new("RGBA",(64,64),(0,0,0,0));draw=ImageDraw.Draw(mark)
     draw.rounded_rectangle((4,4,60,60),radius=12,fill="#226d5b")
@@ -107,11 +110,13 @@ def main():
         pystray.MenuItem("停止本机服务并退出",quit_node)
     ))
     def run_background():
+        if controller.stop_requested():close_windows();return
         if args.show:view.show()
         result(controller.start)
         threading.Thread(target=icon.run,daemon=True).start()
         failures=0
         while not done.wait(3):
+            if controller.stop_requested():close_windows();return
             if (controller.data/"tray-open").exists():
                 (controller.data/"tray-open").unlink(missing_ok=True);view.show()
             state=controller.status()
@@ -148,5 +153,6 @@ def main():
         for path in list(reader_files):
             try:path.unlink(missing_ok=True)
             except OSError:pass
+        controller.end_tray()
         kernel.CloseHandle.argtypes=[ctypes.c_void_p];kernel.CloseHandle(mutex)
 if __name__=="__main__":main()

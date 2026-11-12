@@ -1,6 +1,7 @@
 """Restricted desktop control. Credentials never cross the JavaScript bridge."""
 from __future__ import annotations
 import json
+import hashlib
 import os
 from pathlib import Path
 import re
@@ -40,10 +41,29 @@ class Controller:
         if type(self.port) is not int or not 1024 <= self.port <= 65535: raise LocalError("INVALID_LOCAL_PORT")
         self.data = self.resolve(self.config["dataDir"])
         self.secret = self.resolve(self.config.get("localSecretFile", str(self.data/"local.secret")))
+        key = str(self.path).lower() if os.name == "nt" else str(self.path)
+        self.control_directory = self.data/".control"/hashlib.sha256(key.encode()).hexdigest()
+        self._tray_instance = None
         self._token = None
         self._node = None
         self._lock = threading.Lock()
         self._http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    def begin_tray(self):
+        # Only called after acquiring the per-config mutex.
+        self.control_directory.mkdir(parents=True,exist_ok=True)
+        (self.control_directory/"stop").unlink(missing_ok=True)
+        self._tray_instance = str(uuid.uuid4())
+        temporary=self.control_directory/("tray-"+self._tray_instance+".tmp")
+        temporary.write_text(json.dumps({"pid":os.getpid(),"instance":self._tray_instance}),encoding="utf8")
+        temporary.replace(self.control_directory/"tray.json")
+    def end_tray(self):
+        path=self.control_directory/"tray.json"
+        try:
+            value=json.loads(path.read_text(encoding="utf8"))
+            if value.get("instance")==self._tray_instance:path.unlink(missing_ok=True)
+        except (OSError,ValueError):pass
+    def stop_requested(self):
+        return (self.control_directory/"stop").exists()
     def resolve(self, value):
         p = Path(value)
         return (p if p.is_absolute() else ROOT/p).resolve()
@@ -84,6 +104,7 @@ class Controller:
         except LocalError as error: return {"ok":False,"connected":False,"ready":False,"phase":"stopped","error":str(error)}
     def start(self):
         with self._lock:
+            if self.stop_requested(): raise LocalError("LOCAL_STOP_REQUESTED")
             if self.status()["ok"]: return {"accepted":True,"existing":True}
             if self._node and self._node.poll() is None: return {"accepted":True,"starting":True}
             # A fixed executable and entry point; selected papers can never become process arguments.
