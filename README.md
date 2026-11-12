@@ -46,7 +46,7 @@ node scripts/deploy-free.ts
 
 ## 本地节点
 
-可运行 `node scripts/setup-node.ts` 自动配对由本仓库部署的 Worker，生成 `.local/node.json`。也可复制 `local/node.example.json` 后在网页配对，运行 `scripts/store-secret.ps1` 保存设备凭证。默认模板使用显式空论文库：配置 Python、模型和 libraryRoot 路径后即可启动，首次导入后才建立索引并加载检索模型。已有索引可使用 local/node-existing-index.example.json，填入论文库、索引路径和 YOUR_INDEX_VERSION；CPU/CUDA 身份必须与原构建一致。缺失的已有索引不会静默改成空库，已有本机配置也不会自动覆盖。
+先复制 `local/node.example.json` 到 `.local/node-install.json`，填入云端地址、本机 Python、模型和论文库目录，再运行 `powershell -NoProfile -File scripts/setup-node.ps1`。脚本先检查 Python 3.12、固定依赖、CUDA（如选用）、模型文件及已有索引，再以隐藏输入接收网页设置中生成的设备凭证。支持已启用 Passkey 的账户，不读取管理员密码或模型密钥。凭证经只读接口验证后使用 Windows DPAPI 保存，配置写入 `.local/node.json`；已有配置、密钥和数据目录不会被覆盖。独立安装可指定 `-Template` 与 `-Config`。默认模板使用显式空论文库：配置 Python、模型和 libraryRoot 路径后即可启动，首次导入后才建立索引并加载检索模型。已有索引可使用 local/node-existing-index.example.json，填入论文库、索引路径和 YOUR_INDEX_VERSION；CPU/CUDA 身份必须与原构建一致。缺失的已有索引不会静默改成空库，已有本机配置也不会自动覆盖。
 
 ```powershell
 node local/node.ts .local/node.json

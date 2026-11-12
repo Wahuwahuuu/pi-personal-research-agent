@@ -427,9 +427,13 @@ export class PersonalAgent extends DurableObject<Env> {
   async route(r: Request) {
     const path = new URL(r.url).pathname;
     if (!sameOrigin(r)) throw new Problem("ORIGIN_DENIED", 403);
-    if (path === "/api/device/connect") {
+    if (path === "/api/device/connect" || path === "/api/device/verify") {
       if (!(await this.authorized(r, "device")))
         throw new Problem("UNAUTHORIZED", 401);
+      if(path==="/api/device/verify"){
+        if(r.method!=="GET")throw new Problem("METHOD_DENIED",405);
+        return json({protocol:1,accountScope:await digest(this.ownerId),build:this.env.BUILD_ID??"development"});
+      }
       return this.upgrade(r, "device", await digest(bearer(r)!));
     }
     if (!(await this.authorized(r, "user")))
@@ -1761,7 +1765,7 @@ export default {
       if(!env.OWNER_ID)return json({error:"OWNER_NOT_CONFIGURED"},503);
       const identities=env.IDENTITIES.getByName("accounts:"+env.OWNER_ID);
       if(url.pathname==="/api/login"||url.pathname.startsWith("/api/auth/"))return identities.fetch(r);
-      if(url.pathname==="/api/device/connect"){
+      if(url.pathname==="/api/device/connect"||url.pathname==="/api/device/verify"){
         const value=bearer(r);if(!value)return json({error:"UNAUTHORIZED"},401);
         const userId=await identities.deviceOwner(await digest(value));
         // Existing deployment credentials remain valid only in the original owner's DO.

@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { PythonBridge, type PythonConfig } from "./python.ts";
 import { validateEvidence, type Operation } from "../src/domain.ts";
 interface Config {
+  configurationVersion?:1;
   endpoint: string;
   secretFile?: string;
   dataDir: string;
@@ -34,6 +35,7 @@ interface Config {
 }
 const configPath = resolve(process.argv[2] ?? ".local/node.json");
 const config = JSON.parse(await readFile(configPath, "utf8")) as Config;
+if(config.configurationVersion!==undefined&&config.configurationVersion!==1)throw Error("CONFIGURATION_VERSION_UNSUPPORTED");
 const url = new URL(config.endpoint);
 if (
   url.protocol !== "https:" &&

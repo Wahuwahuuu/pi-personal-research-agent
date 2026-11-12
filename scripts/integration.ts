@@ -191,6 +191,10 @@ try {
   );
   assert.equal(researchDone.engine, "durable");
   assert.equal(researchDone.calls, 5);
+  const verification=await fetch(base+"/api/device/verify",{headers:{Authorization:"Bearer "+pair.token}});
+  assert.equal(verification.status,200);assert.equal((await verification.json() as any).protocol,1);
+  assert.equal((await api("state")).deviceOnline,true);
+  checks.push("read-only installation credential verification preserves the already-connected research node");
   assert.equal(researchDone.tools, 2);
   assert.equal(researchDone.resumeSeq, 5);
   assert.match(researchDone.answer, /cite:fixture-chunk/);
