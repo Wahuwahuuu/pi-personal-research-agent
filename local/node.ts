@@ -434,8 +434,9 @@ localHandler=async(req,res)=>{
  const reply=(value:unknown,status=200)=>{res.writeHead(status,{"Content-Type":"application/json","Cache-Control":"no-store"});res.end(JSON.stringify(value));};
  try{
   if(req.method==="GET"&&path==="/local/status"){
-   if(library&&building)importJobs=await library.jobs();
-   reply({instanceId:controlKey(configPath),connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:importJobs,libraryEnabled:!!library});return true;
+   // Return this read, not the scheduler cache: a completed retry must not show an older cancellation.
+   const currentImports=library?await library.jobs():importJobs;
+   reply({instanceId:controlKey(configPath),connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:currentImports,libraryEnabled:!!library});return true;
   }
   if(req.method==="GET"&&path==="/local/library"){
    const params=new URL(req.url!,"http://127.0.0.1").searchParams;
