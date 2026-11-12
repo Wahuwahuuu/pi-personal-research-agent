@@ -68,6 +68,16 @@ export async function verifyIdentity(base:string,initialCookie:string,admin:stri
  assert.ok(!JSON.stringify(memberState.value).includes("OWNER_MEMORY_CANARY"));
  assert.ok((await ok("state",ownerCookie)).value.memories.some((m:any)=>m.id===mem.value.id));
  checks.push("two separately authenticated passkeys routed to isolated DOs; 100 cross-user mutation attempts denied");
+ const ownDeletion=await ok("conversations",ownerCookie,"POST",{requestId:crypto.randomUUID(),title:"Deletion privacy fixture"});
+ await ok("conversations/"+ownDeletion.value.id,ownerCookie,"DELETE");
+ const ownerDeletions=await ok("deletions?limit=50",ownerCookie);
+ assert.ok(ownerDeletions.value.items.some((d:any)=>d.id===ownDeletion.value.id));
+ const memberDeletions=await ok("deletions?limit=50",memberCookie);
+ assert.ok(!memberDeletions.value.items.some((d:any)=>d.id===ownDeletion.value.id));
+ assert.equal((await request("deletions/"+ownDeletion.value.id,memberCookie)).r.status,404);
+ assert.equal((await request("deletions?limit=50","")).r.status,401);
+ checks.push("deletion record list and detail remain account-isolated and reject unauthenticated access");
+
  const pairId=crypto.randomUUID();
  const pairBody={label:"Owner device A",requestId:pairId};
  const devA=await ok("device/pair",ownerCookie,"POST",pairBody);

@@ -1,3 +1,4 @@
+import {DeletionRecords} from "./DeletionRecords.tsx";
 import {deviceView} from "./device-state.ts";
 import { useEffect, useState } from "react";
 import { startRegistration } from "@simplewebauthn/browser";
@@ -511,11 +512,7 @@ export function SettingsView({
           >
             导出在线数据
           </button>
-          <h3 className="section-heading">删除记录</h3>
-          <p>
-            在会话菜单中选择“删除会话”，会清理关联的在线会话和成果。本地结果和关联阅读器缓存将在原节点上线后清理；确认前会保留待清理状态。
-          </p>
-          <button onClick={() => navigate("chat")}>管理会话</button>
+          <DeletionRecords revision={revision} run={run} />
           <details className="diagnostics">
             <summary>诊断详情</summary>
             <dl className="key-values">

@@ -1,3 +1,4 @@
+import {verifyDeletionBrowser} from "./deletion-browser.ts";
 import {verifyReaderBrowser} from "./reader-browser.ts";
 import {freezeWorker} from "./freeze-worker.ts";
 import WebSocket from "ws";
@@ -88,8 +89,17 @@ async function route(hash: string) {
 async function screenshot(name: string) {
   await page.screenshot({
     path: resolve(shots, name + ".png"),
-    fullPage: name.startsWith("imports-")||name.startsWith("reader-"),
+    fullPage: name.startsWith("imports-")||name.startsWith("reader-")||name.startsWith("deletions-"),
   });
+  if(name.startsWith("deletions-")){
+    const workspace=page.locator(".workspace"),position=await workspace.evaluate(e=>e.scrollTop);
+    assert.equal(await workspace.evaluate(e=>e.scrollWidth<=e.clientWidth),true,"workspace overflow "+name);
+    if(await workspace.evaluate(e=>e.scrollHeight>e.clientHeight+10)){
+      await workspace.evaluate(e=>{e.scrollTop=e.scrollHeight;});
+      await page.screenshot({path:resolve(shots,name+"-details.png"),fullPage:true});
+      await workspace.evaluate((e,y)=>{e.scrollTop=y;},position);
+    }
+  }
   assert.equal(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -184,7 +194,11 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
-  if(process.env.PRA_BROWSER_SCOPE==="reader"){
+  if(process.env.PRA_BROWSER_SCOPE==="deletions"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    checks.push(...await verifyDeletionBrowser(base,page,context,api,screenshot));
+  }else if(process.env.PRA_BROWSER_SCOPE==="reader"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...await verifyReaderBrowser(base,page,context,api,screenshot));
@@ -620,14 +634,14 @@ try {
     kind: "local-browser-product-flows",
     timestamp: new Date().toISOString(),
     checks,
-    deviceFixture:process.env.PRA_BROWSER_SCOPE==="reader",nativeWindowObserved:false,
-    browser: ["imports","reader"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
+    deviceFixture:["reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??""),nativeWindowObserved:false,
+    browser: ["imports","reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
     viewports: ["1440x900", "390x844"],
     paidCalls: 0,
     cloudDeployment: false,
   };
   await writeFile(
-    process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
+    process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

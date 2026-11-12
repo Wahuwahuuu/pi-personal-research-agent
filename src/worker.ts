@@ -546,7 +546,11 @@ export class PersonalAgent extends DurableObject<Env> {
       this.cancelReaders(id);
       for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});
       if(deletion.session_id)this.ctx.waitUntil(this.harness.abort({session:deletion.session_id}).catch(()=>{}));
-      await this.maintenance.arm();return json(deletion,deletion.status==="completed"?200:202);
+      await this.maintenance.arm();this.publish();return json(deletion,deletion.status==="completed"?200:202);
+    }
+    if(path==="/api/deletions"&&r.method==="GET"){
+      const p=new URL(r.url).searchParams;
+      return json(this.deletions.records({limit:p.has("limit")?Number(p.get("limit")):undefined,after:p.get("after")??undefined}));
     }
     const deletionMatch=path.match(/^\/api\/deletions\/([^/]+)$/);
     if(deletionMatch&&r.method==="GET") {

@@ -8,6 +8,10 @@ export interface Deletion {
   id:string; session_id:string|null; status:"pending"|"cloud_complete"|"completed"|"failed";
   created:number; error:string|null; local_pending:number;
 }
+export interface DeletionRecord {
+  id:string; status:Deletion["status"]; created:number; error:string|null;
+  pendingDevices:number; pendingResults:number; pendingReaders:number; unverifiedOperations:number;
+}
 export class DeletionStore {
   storage:StateStorage;
   readers:ReaderPurges;
@@ -20,10 +24,38 @@ export class DeletionStore {
     storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_deleted_operations_deletion ON pra_deleted_operations(deletion_id)");
     storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_deletion_lineage(deletion_id TEXT NOT NULL,kind TEXT NOT NULL,id TEXT NOT NULL,PRIMARY KEY(deletion_id,kind,id))");
     this.custody=new OperationCustody(storage);
+    storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_deletions_created ON pra_deletions(created DESC,id DESC)");
+    storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_deleted_readers_deletion ON pra_deleted_readers(deletion_id,purged,device_hash)");
     // Legacy global acknowledgments do not prove which offline devices were actually cleared.
     for(const r of storage.sql.exec<{id:string}>("SELECT d.id FROM pra_deletions d WHERE d.status='completed' AND EXISTS(SELECT 1 FROM pra_deleted_operations o LEFT JOIN pra_operation_purge_scopes s ON s.id=o.id WHERE o.deletion_id=d.id AND COALESCE(s.verified,0)=0)").toArray())this.refreshLocal(r.id);
   }
   get(id:string) {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE id=?",id).toArray()[0];}
+  records(options:{limit?:number;after?:string}={}) {
+    const limit=options.limit??20,after=options.after??"";
+    if(!Number.isInteger(limit)||limit<1||limit>50||after.length>700)throw new Problem("INVALID_PAGE");
+    let cursor:[number,string]|undefined;
+    if(after){
+      try{const v=JSON.parse(after);
+        if(!Array.isArray(v)||v.length!==2||!Number.isSafeInteger(v[0])||v[0]<0||typeof v[1]!=="string"||!v[1]||v[1].length>512)throw Error();
+        cursor=[v[0],v[1]];
+      }catch{throw new Problem("INVALID_CURSOR");}
+    }
+    const rows=this.storage.sql.exec<Pick<DeletionRecord,"id"|"status"|"created"|"error">>(
+      "SELECT id,status,created,error FROM pra_deletions"+(cursor?" WHERE created<? OR (created=? AND id<?)":"")+" ORDER BY created DESC,id DESC LIMIT ?",
+      ...(cursor?[cursor[0],cursor[0],cursor[1]]:[]),limit+1).toArray();
+    const items:DeletionRecord[]=rows.slice(0,limit).map(r=>{
+      const count=(q:string,...b:(string|number)[])=>this.storage.sql.exec<{n:number}>(q,...b).toArray()[0].n;
+      return {...r,
+        error:r.error&&/^[A-Z][A-Z0-9_]{0,79}$/.test(r.error)?r.error:r.error?"DELETION_FAILED":null,
+        pendingDevices:count("SELECT COUNT(*) AS n FROM (SELECT h.device_hash FROM pra_operation_holders h JOIN pra_deleted_operations o ON o.id=h.id WHERE o.deletion_id=? AND h.purged=0 UNION SELECT device_hash FROM pra_deleted_readers WHERE deletion_id=? AND purged=0)",r.id,r.id),
+        pendingResults:count("SELECT COUNT(*) AS n FROM pra_operation_holders h JOIN pra_deleted_operations o ON o.id=h.id WHERE o.deletion_id=? AND h.purged=0",r.id),
+        pendingReaders:count("SELECT COUNT(*) AS n FROM pra_deleted_readers WHERE deletion_id=? AND purged=0",r.id),
+        unverifiedOperations:count("SELECT COUNT(*) AS n FROM pra_deleted_operations o LEFT JOIN pra_operation_purge_scopes s ON s.id=o.id WHERE o.deletion_id=? AND COALESCE(s.verified,0)=0",r.id),
+      };
+    });
+    const last=items.at(-1);
+    return {items,nextCursor:rows.length>limit&&last?JSON.stringify([last.created,last.id]):null};
+  }
   pending() {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE status='pending' ORDER BY created").toArray();}
   localPending() {return this.storage.sql.exec<Deletion>("SELECT * FROM pra_deletions WHERE local_pending=1 AND status IN ('cloud_complete','completed')").toArray();}
   operationIds(id:string,hash?:string) {return this.custody.pending(id,hash);}

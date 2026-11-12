@@ -66,3 +66,35 @@ test("application deletion cancels tasks, removes derived memory and leaves dura
  assert.equal(deletions.get("c")!.status,"cloud_complete");assert.equal(deletions.deletedOperation("op"),true);
  deletions.localDone("c",["op"],"original-device");assert.equal(deletions.request(s,"c").status,"completed");db.close();
 });
+
+test("deletion records paginate stable equal timestamps, refuse malformed cursors and expose no deleted content",()=>{
+ const db=new DatabaseSync(":memory:"),store=new DeletionStore(port(db));
+ for(let i=0;i<23;i++)db.prepare("INSERT INTO pra_deletions VALUES(?,?, 'completed',?,NULL,0)").run("id-"+String(i).padStart(3,"0"),"private-pi-session",100);
+ const first=store.records({limit:10});assert.equal(first.items.length,10);
+ assert.equal(first.items[0].id,"id-022");assert.ok(first.nextCursor);
+ db.prepare("INSERT INTO pra_deletions VALUES('newer','private', 'completed',101,NULL,0)").run();
+ const second=store.records({limit:10,after:first.nextCursor!}),last=store.records({limit:10,after:second.nextCursor!});
+ assert.equal(new Set([...first.items,...second.items,...last.items].map(v=>v.id)).size,23);
+ assert.equal(last.items.length,3);assert.equal(last.nextCursor,null);
+ const encoded=JSON.stringify(first);assert.ok(!encoded.includes("session"));assert.ok(!encoded.includes("private"));
+ for(const limit of [0,51,NaN,1.5])assert.throws(()=>store.records({limit}),/INVALID_PAGE/);
+ for(const after of ["x","[]",'[1,""]','[-1,"id"]','[1,{}]','[1,"id",0]'])assert.throws(()=>store.records({after}),/INVALID_CURSOR/);
+ assert.throws(()=>store.records({after:"x".repeat(701)}),/INVALID_PAGE/);
+ db.close();
+});
+test("deletion record counts cover all device copies beyond a protocol batch and retain unknown legacy custody",()=>{
+ const db=new DatabaseSync(":memory:"),store=new DeletionStore(port(db));
+ db.prepare("INSERT INTO pra_deletions VALUES('c',NULL,'cloud_complete',100,NULL,1)").run();
+ for(let i=0;i<250;i++){
+   const op={id:"op-"+i,deliveryVersion:1} as any;store.custody.dispatch(op,"device-a");if(i===0)store.custody.dispatch(op,"device-b");store.custody.capture(op.id,"c",op);
+ }
+ store.readers.record("reader-a","c","device-a");store.readers.record("reader-c","c","device-c");
+ store.custody.capture("legacy","c",undefined);store.refreshLocal("c");
+ const record=store.records().items[0];
+ assert.equal(record.pendingDevices,3);assert.equal(record.pendingResults,251);assert.equal(record.pendingReaders,2);
+ assert.equal(record.unverifiedOperations,1);assert.equal(record.error,"LEGACY_DEVICE_OWNERSHIP_UNKNOWN");
+ assert.ok(!JSON.stringify(record).includes("device-a"));
+ store.localDone("c",["op-0"],"device-b");assert.equal(store.records().items[0].pendingDevices,2);
+ const other=new DatabaseSync(":memory:"),isolated=new DeletionStore(port(other));assert.deepEqual(isolated.records().items,[]);
+ db.close();other.close();
+});
