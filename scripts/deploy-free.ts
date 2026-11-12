@@ -1,3 +1,5 @@
+import {verifyCloudflareOrigin} from "./cloudflare-origin.ts";
+import {acquireDeploymentLock} from "./deployment-lock.ts";
 import {execFileSync} from "node:child_process";
 import {mkdir,readFile,writeFile,cp,rename} from "node:fs/promises";
 import {resolve,sep} from "node:path";
@@ -25,10 +27,13 @@ const secret=(path:string)=>{
 const optionalSecret=async(path:string)=>{try{await readFile(path);return secret(path);}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw error;}};
 const who=JSON.parse(cli(["whoami","--json"]));if(!who.loggedIn||who.accounts.length!==1)throw Error("ONE_AUTHENTICATED_ACCOUNT_REQUIRED");
 const auth=JSON.parse(cli(["auth","token","--json"])),name="pi-personal-research-agent";
+const unlock=await acquireDeploymentLock(who.accounts[0].id,name);
+try{
 const response=await fetch("https://api.cloudflare.com/client/v4/accounts/"+who.accounts[0].id+"/workers/scripts",{headers:{Authorization:"Bearer "+auth.token},redirect:"error",signal:AbortSignal.timeout(20000)});
 const listing=await response.json() as any;if(!response.ok||!listing.success)throw Error("CANNOT_CHECK_EXISTING_WORKER");
 const verified=await optionalJson(".local/deployment.json"),pending=await optionalJson(".local/deployment-pending.json");
 const previous=verified??pending;
+if(previous)await verifyCloudflareOrigin(who.accounts[0].id,name,previous.url,auth.token);
 if(previous&&(previous.name!==name||!/^https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev$/.test(previous.url)))throw Error("UNRECOGNIZED_DEPLOYMENT_RECORD");
 if(listing.result.some((s:any)=>s.id===name)&&!previous)throw Error("REFUSING_TO_OVERWRITE_UNRECOGNIZED_WORKER");
 await mkdir(".local",{recursive:true});
@@ -73,7 +78,7 @@ const output=cli(["deploy","--config",file]);
 await verifyFrozenRelease(resolve(".local/releases"),frozen);
 const url=output.match(/https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev/)?.[0];
 if(!url||(previous&&url!==previous.url))throw Error("DEPLOYED_URL_MISMATCH");
-const record={name,url,mode:effectiveMode,modelId:effectiveModel?.modelId??"deterministic-v1",thinking:"off",freePlanConfirmedByUser:true,build,release,releaseContract:RELEASE_CONTRACT,artifactDigest:frozen.digest,verificationTimeoutMs,deployed:new Date().toISOString(),servingBuildVerified:false,initialProvisioning:!verified&&(!previous||!!pending?.initialProvisioning)};
+const record={accountId:who.accounts[0].id,name,url,mode:effectiveMode,modelId:effectiveModel?.modelId??"deterministic-v1",thinking:"off",freePlanConfirmedByUser:true,build,release,releaseContract:RELEASE_CONTRACT,artifactDigest:frozen.digest,verificationTimeoutMs,deployed:new Date().toISOString(),servingBuildVerified:false,initialProvisioning:!verified&&(!previous||!!pending?.initialProvisioning)};
 await writeFile(".local/deployment-pending.json",JSON.stringify(record,null,2));
 if(!previous)cli(["secret","bulk","--config",file],JSON.stringify({ADMIN_TOKEN:token}));
 access??=await deploymentAccess(url,{bootstrapToken:token});
@@ -83,3 +88,5 @@ const completed={...record,servingBuildVerified:true,verified:new Date().toISOSt
 await writeFile(resolve(release,"verification.json"),JSON.stringify(completed,null,2));
 const temporary=".local/deployment."+crypto.randomUUID()+".tmp";await writeFile(temporary,JSON.stringify(completed,null,2));await rename(temporary,".local/deployment.json");
 console.log(JSON.stringify({url,mode:record.mode,modelId:record.modelId,thinking:"off",adminCredential:"DPAPI protected .local/admin.secret",planChanged:false,build,servingBuildVerified:true,verification:access.kind}));
+
+}finally{await unlock();}

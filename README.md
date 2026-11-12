@@ -210,3 +210,13 @@ npx wrangler dev --var RESEARCH_ENGINE:durable
 Cloudflare 默认允许活跃 Durable Object 延后最多 300 秒更新代码。普通发布保留这个宽限期，按配置延迟加确认窗口等待实际构建切换；未确认时仍保存为待核实发布。可在 Wrangler 配置的 durable_objects.code_update_strategy 中调整策略，详见 [官方代码更新说明](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)。
 
 发布会固定实际生效的非秘密模型配置，并通过鉴权接口 `GET /api/deployment` 核对构建与兼容契约。契约包含应用/Pi 存储版本、节点协议、锁定运行时依赖以及独立维护的回滚兼容族；部署记录和冻结目录中的校验收据保存在本地。未知或不匹配的契约不能标记为验证成功。相同数据库结构不代表旧代码能保留新的删除、计费及恢复语义；破坏这些语义的升级必须更换兼容族。旧构建没有声明契约时不自动认定为可回退版本。代码版本回退不恢复数据，平台边界见 [Cloudflare 回滚说明](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)。
+
+回退云端代码时，先预览经过验证的旧发布目录：
+
+```powershell
+node scripts/rollback-release.ts --record .local/deployment.json --target ".local/releases/BUILD-TIMESTAMP" --session-file .local/deployment-session.secret
+```
+
+将目录替换为原始冻结发布目录；确认输出的来源和目标构建后，在同一命令末尾加 `--apply` 执行。也可用 `--device-secret-file` 指定独立设备的 DPAPI 凭证文件，不传明文密钥。命令核验实际 Cloudflare 账户域名、当前构建、两版完整兼容契约、冻结摘要和全部有效配置；模型、绑定或兼容族不同均拒绝。未保存契约和账户归属的旧发布不能自动回退。
+
+执行会重新发布目标目录中的已验证代码与静态资源，不重新编译、不改数据库、不更新 Secret 或套餐。正常发布与回退对同一账户/Worker 使用本机系统锁，进程退出后自动释放；跨电脑或控制台发布仍需由维护者协调。上传与确认失败会在部署记录旁留下 `deployment-rollback-pending.json`；恢复凭证或网络后用原命令重试，已在服务的目标只补做确认，不重复上传。只有实际构建和契约确认通过才推进部署记录；回退之后可用同一工具重新发布原来的较新冻结目录。该功能覆盖云端代码和网页，本地节点源码升级、跨数据版本回退不在此命令范围内。

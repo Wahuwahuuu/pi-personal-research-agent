@@ -42,6 +42,7 @@ childProcess.execFileSync=(exe,args,options={})=>{
 syncBuiltinESMExports();
 globalThis.fetch=async(raw,init={})=>{
  const target=new URL(raw);event("HTTP "+target.pathname);
+ if(target.hostname==="api.cloudflare.com"&&target.pathname.endsWith("/workers/subdomain"))return Response.json({success:true,result:{subdomain:"validation"}});
  if(target.hostname==="api.cloudflare.com")return Response.json({success:true,result:scenario==="initial"?[]:[{id:"pi-personal-research-agent"}]});
  if(target.origin!==url)throw Error("UNEXPECTED_ORIGIN");
  if(target.pathname==="/api/device/verify"){
