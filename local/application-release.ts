@@ -21,7 +21,7 @@ function allowed(path:string) {
     !/(^|\/)(?:tests?|__pycache__|node_modules|\.local|\.git)(\/|$)/.test(path) &&
     !/(?:^|\/)(?:AGENTS|CLAUDE)\.md$/i.test(path) &&
     !/(?:^|\/)test_[^/]*$|\.(?:test|spec)\.[^/]+$/.test(path) &&
-    /\.(?:ts|py|html|json|ps1|toml|lock|md)$/.test(path);
+    /(?:\.(?:ts|js|mjs|cjs|css|py|html|json|ps1|toml|lock|md)|\/LICENSE)$/.test(path);
 }
 function safeRelative(path:string) {
   return path!==""&&!path.includes("\\")&&!path.includes(":")&&!path.startsWith("/")&&
@@ -81,6 +81,7 @@ export async function prepareApplicationRelease(controls:ApplicationReleaseContr
  const local=join(root,".local");await mkdir(local,{recursive:true});await owned(root,local);
  const parent=join(local,"node-releases");await mkdir(parent,{recursive:true});await owned(local,parent);
  const directory=join(parent,build+"-"+randomUUID());await mkdir(directory);await owned(parent,directory);
+ let phase="copying-source";
  try{
   for(const path of paths){
    if(!safeRelative(path))throw Error("LOCAL_RELEASE_PATH_ESCAPE");
@@ -89,19 +90,23 @@ export async function prepareApplicationRelease(controls:ApplicationReleaseContr
   }
   const npmCli=controls.npmCli??join(dirname(process.execPath),"node_modules/npm/bin/npm-cli.js");
   const env={...workerEnvironment(),HTTPS_PROXY:process.env.HTTPS_PROXY,HTTP_PROXY:process.env.HTTP_PROXY};
-  for(const cwd of [directory,join(directory,"packages/research")])
+  for(const cwd of [directory,join(directory,"packages/research")]){
+    phase=cwd===directory?"installing-host-dependencies":"installing-research-dependencies";
     await run({executable:process.execPath,args:[npmCli,"ci","--omit=dev","--ignore-scripts","--no-audit","--no-fund"],cwd,env,timeout:300000});
+  }
+  phase="checking-imports";
   // Imports execute the real installed dependencies without opening a node, file library or cloud session.
   await run({executable:process.execPath,args:["--input-type=module","-e",
    'await import("ws");await import("https-proxy-agent");await import("./packages/research/core.ts");await import("./local/catalog.ts");'],
    cwd:directory,env:workerEnvironment(),timeout:30000});
-  clean();
+  clean();phase="sealing-files";
   const files=await inventory(directory),digest=sha(JSON.stringify(files));
   const manifest:ApplicationManifest={format:1,status:"ready",build,created:new Date().toISOString(),contract:APPLICATION_CONTRACT,sourceFiles:paths.length,files,digest,
    packageLock:sha(await readFile(join(directory,"package-lock.json"))),pythonLock:sha(await readFile(join(directory,"packages/retrieval/uv.lock")))};
   await writeAtomic(join(directory,"release.json"),JSON.stringify(manifest,null,2));
   return verifyApplicationRelease(root,directory);
  }catch{
+  await writeFile(join(directory,"failure.json"),JSON.stringify({status:"failed",phase,at:new Date().toISOString(),build})).catch(()=>{});
   // Keep an incomplete directory for diagnosis; without a ready manifest it cannot be selected.
   throw Error("LOCAL_APPLICATION_PREPARATION_FAILED");
  }

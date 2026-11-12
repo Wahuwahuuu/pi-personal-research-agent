@@ -17,6 +17,7 @@ async function fixture(t:any){
   "local/desktop/main.py":"pass","local/check-runtime.py":"pass",
   "packages/research/package.json":'{"type":"module"}',"packages/research/package-lock.json":'{"lockfileVersion":3}',
   "src/domain.ts":"export {};","packages/research/core.ts":"export {};","local/catalog.ts":"export {};",
+  "packages/research/internal/web/answer-format.js":"export {};","packages/research/LICENSE":"License",
   "packages/retrieval/uv.lock":"version = 1","packages/retrieval/pyproject.toml":"[project]",
   "local/test_sample.py":"assert True","tests/test.ts":"private test fixture",
   "docs/specs/development.md":"not a product input","scripts/read-secret.ps1":"# DPAPI reader"
@@ -41,6 +42,8 @@ test("application preparation freezes committed product files and installed depe
  const f=await fixture(t),release=await prepareApplicationRelease(f.controls);
  assert.equal(release.manifest.build,f.git(["rev-parse","HEAD"]).toString().trim());
  assert.ok(release.manifest.files.some(v=>v.path==="node_modules/example/index.js"));
+ assert.ok(release.manifest.files.some(v=>v.path==="packages/research/internal/web/answer-format.js"));
+ assert.ok(release.manifest.files.some(v=>v.path==="packages/research/LICENSE"));
  assert.ok(!release.manifest.files.some(v=>/private|docs\/|tests\/|test_sample/.test(v.path)));
  assert.ok(f.calls[0].args.includes("--ignore-scripts"));assert.ok(f.calls[0].args.includes("--omit=dev"));
  assert.equal(f.calls[0].env.PIPAPER_API_KEY,undefined);
