@@ -301,7 +301,7 @@ function connect() {
       indexVersion,
       retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
-      capabilities: ["reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
+      capabilities: ["scoped-search-v1", "reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
       readerPort: config.port ?? 48731,
     });
   });

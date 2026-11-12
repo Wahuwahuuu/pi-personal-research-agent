@@ -78,6 +78,8 @@ export async function verifyProactiveBrowser(
   };
   try {
     await inbox();
+    const planPermissions=async()=> (await api("overview")).plans.map((p:any)=>({id:p.id,enabled:p.enabled,autoProcess:p.autoProcess})).sort((a:any,b:any)=>a.id.localeCompare(b.id));
+    const beforeDraft=await planPermissions();
     await page
       .getByRole("button", { name: "新建关注计划", exact: true })
       .click();
@@ -93,11 +95,8 @@ export async function verifyProactiveBrowser(
         { exact: true },
       ),
     ).toBeVisible();
-    assert.equal(
-      (await api("overview")).plans.length,
-      3,
-      "draft cannot enable a plan",
-    );
+    assert.deepEqual(await planPermissions(),beforeDraft,"draft cannot create or enable a plan");
+    assert.ok(!requests.some(r=>r.method==="POST"&&r.path==="/api/plans"),"draft must not submit a plan mutation");
     await page
       .getByLabel("想持续关注什么", { exact: true })
       .fill(

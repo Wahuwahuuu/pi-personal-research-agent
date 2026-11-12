@@ -229,7 +229,7 @@ export function Chat({
                   ) : (
                     <p className="muted">
                       {t.status === "waiting_device"
-                        ? "已保存这项研究。电脑上线后会继续读取论文。"
+                        ? (t.error==="NODE_SCOPE_UPDATE_REQUIRED"?"已保存这项研究，正在等待本机节点更新。":"已保存这项研究。电脑上线后会继续读取论文。")
                         : t.status === "cancelled"
                           ? "这项工作已停止。"
                           : t.status === "failed"

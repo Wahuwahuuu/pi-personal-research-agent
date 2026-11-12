@@ -11,6 +11,7 @@ import {
   validatePaperParams,
   executionFromOutput,
   withAbstractReading,
+  withPaperScope,
   type ToolContext,
 } from "../packages/research/core.ts";
 import type { ResearchCatalog } from "./research-catalog.ts";
@@ -27,8 +28,8 @@ export function failResearch(s: State, t: Task, code: string) {
   ))
     op.state = "cancelled";
 }
-export function researchContext(c: ResearchCatalog): ToolContext {
-  return {
+export function researchContext(c: ResearchCatalog,scope?:unknown): ToolContext {
+  return withPaperScope({
     knownPaperIds: new Set(c.papers.map((p) => p.paper_id)),
     getScope: () => [],
     getLedger: () => {
@@ -53,10 +54,10 @@ export function researchContext(c: ResearchCatalog): ToolContext {
           }
         : {}),
     }),
-  };
+  },scope);
 }
-export function checkedResult(op: Operation, raw: unknown, c: ResearchCatalog) {
-  const ctx = researchContext(c);
+export function checkedResult(op: Operation, raw: unknown, c: ResearchCatalog,scope?:readonly string[]) {
+  const ctx = researchContext(c,op.params.allowed_paper_ids??scope);
   if (
     c.indexVersion !== op.indexVersion ||
     (raw as any)?.index_version !== c.indexVersion
@@ -87,8 +88,10 @@ export function acceptResearchResult(
   const t = s.tasks.find((t) => t.id === op.taskId)!;
   if (terminal(t) || op.state === "cancelled") return "discarded";
   if (op.state === "done") return "duplicate";
-  const checked = checkedResult(op, raw, catalog(op.indexVersion));
-  const result = acceptResult(s, id, version, raw, Date.now(), executionMs);
+  const scope=s.conversations?.find(c=>c.id===t.conversationId)?.scope;
+  const checked = checkedResult(op, raw, catalog(op.indexVersion),scope);
+  const stored = "papers" in checked ? checked : raw;
+  const result = acceptResult(s, id, version, stored, Date.now(), executionMs);
   if ("chunks" in checked) {
     const evidence = new Map(
       (t.researchEvidence ?? []).map((e) => [e.chunk_id, e]),
@@ -143,12 +146,15 @@ export function createResearchPorts(
       if(t.pauseRequested)throw new Problem("TASK_PAUSED");
       if (r.indexVersion !== t.researchIndex)
         throw new Problem("INDEX_CHANGED");
+      const scope=s.conversations?.find(c=>c.id===t.conversationId)?.scope??[];
+      const params={...r.params,allowed_paper_ids:[...scope]};
+      validatePaperParams(r.tool,params,researchContext(catalog(r.indexVersion),scope));
       let op = s.operations.find((o) => o.id === r.operationId);
       if (
         op &&
         (op.taskId !== t.id ||
           op.tool !== r.tool ||
-          JSON.stringify(op.params) !== JSON.stringify(r.params))
+          JSON.stringify({...op.params,allowed_paper_ids:op.params.allowed_paper_ids??scope}) !== JSON.stringify(params))
       )
         throw new Problem("OPERATION_CONFLICT");
       if (!op) {
@@ -158,7 +164,7 @@ export function createResearchPorts(
           id: r.operationId,
           taskId: t.id,
           tool: r.tool,
-          params: r.params,
+          params,
           indexVersion: r.indexVersion,
           state: "pending",
           deadline: 0,
@@ -167,6 +173,7 @@ export function createResearchPorts(
         t.tools++;
       }
       if (op.state === "cancelled") throw new Problem("TASK_CLOSED");
+      op.params.allowed_paper_ids??=[...scope];
       t.operationId = op.id;
       t.researchWaiting = true;
       t.modelStoppedAt ??= Date.now();
@@ -207,7 +214,7 @@ export function resumePrompt(
       observations: completed.map((o) => ({
         operationId: o.id,
         tool: o.tool,
-        result: checkedResult(o, o.result, catalog(o.indexVersion)),
+        result: checkedResult(o, o.result, catalog(o.indexVersion),s.conversations?.find(c=>c.id===t.conversationId)?.scope),
       })),
     }),
   };

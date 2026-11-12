@@ -1,0 +1,57 @@
+import {test} from "node:test";
+import assert from "node:assert/strict";
+import {mkdtemp} from "node:fs/promises";
+import {join} from "node:path";
+import {tmpdir} from "node:os";
+import {createLocalReading} from "../packages/research/local-reading.ts";
+import {initialState,submit} from "../src/domain.ts";
+import {createResearchPorts,acceptResearchResult,resumePrompt} from "../src/research-coordinator.ts";
+import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "../src/research-device.ts";
+const papers=[{paper_id:"outside",title:"Outside",abstract:"Outside original."},{paper_id:"inside",title:"Inside",abstract:"Inside original."}];
+const catalog={papers,evidence:[],indexVersion:"scoped-test"};
+test("local original module filters before ranking and does not share scope between requests",async()=>{
+ const calls:any[]=[];
+ const reading=await createLocalReading({root:await mkdtemp(join(tmpdir(),"pra-scoped-reading-")),indexVersion:catalog.indexVersion,papers,evidence:[],
+  worker:{async request(tool,params){calls.push({tool,params});return{backend:"fixture",index_version:catalog.indexVersion,papers:papers.filter(p=>params.allowed_paper_ids?.includes(p.paper_id)).slice(0,("limit" in params?params.limit:undefined)??5)};}}});
+ const signal=new AbortController().signal;
+ const result=await reading.execute("search_papers",{query:"method",limit:1,allowed_paper_ids:["inside"]},signal);
+ assert.deepEqual((result.result as any).papers.map((p:any)=>p.paper_id),["inside"]);
+ assert.deepEqual(calls[0].params.allowed_paper_ids,["inside"]);
+ await assert.rejects(()=>reading.execute("retrieve_chunks",{paper_ids:["outside"],section:"abstract",allowed_paper_ids:["inside"]},signal),/scope/);
+ const abstract=await reading.execute("retrieve_chunks",{paper_ids:["inside"],section:"abstract",allowed_paper_ids:["inside"]},signal);
+ assert.equal((abstract.result as any).chunks[0].paper_id,"inside");
+ const all=await reading.execute("search_papers",{query:"method",limit:1},signal);assert.ok("papers" in all.result);assert.deepEqual(all.result.papers.map(p=>p.paper_id),["outside"]);
+ for(const allowed_paper_ids of [["unknown"],["inside","inside"],"inside",null])await assert.rejects(()=>reading.execute("search_papers",{query:"method",allowed_paper_ids},signal));
+ assert.equal(calls.length,2);
+});
+test("host scope replaces model parameters, survives delayed results, and sanitizes persisted searches",async()=>{
+ const s=initialState(),t=submit(s,"Read scoped paper","scoped-request","research");
+ t.conversationId="conversation";t.engine="durable";t.sessionId="pi";t.researchIndex=catalog.indexVersion;t.status="running";t.runOpen=true;
+ s.conversations=[{id:"conversation",title:"Research",projectId:"project",scope:["inside"],created:0,history:[]}];
+ const ports=createResearchPorts(()=>s,()=>catalog,()=>{});
+ const request={operationId:"search",conversationId:"pi",tool:"search_papers" as const,params:{query:"method",allowed_paper_ids:["outside"]},indexVersion:catalog.indexVersion};
+ await ports.execute(request,new AbortController().signal);
+ assert.deepEqual(s.operations[0].params.allowed_paper_ids,["inside"]);
+ await ports.execute(request,new AbortController().signal);assert.equal(t.tools,1);
+ assert.equal(acceptResearchResult(s,"search",catalog.indexVersion,{backend:"fixture",index_version:catalog.indexVersion,papers},()=>catalog),"accepted");
+ assert.deepEqual((s.operations[0].result as any).papers.map((p:any)=>p.paper_id),["inside"]);
+ const restored=JSON.parse(JSON.stringify(s));
+ const observation=JSON.parse(resumePrompt(restored,restored.tasks[0],()=>catalog).prompt);
+ assert.deepEqual(observation.observations[0].result.papers.map((p:any)=>p.paper_id),["inside"]);
+ s.operations.push({...s.operations[0],id:"legacy",params:{query:"method"},result:{backend:"fixture",index_version:catalog.indexVersion,papers}});
+ assert.ok(!resumePrompt(s,t,()=>catalog).prompt.includes('"outside"'));
+ await assert.rejects(()=>ports.execute({...request,operationId:"bad-read",tool:"retrieve_chunks",params:{query:"method",paper_ids:["outside"]} as any},new AbortController().signal),/scope/);
+ assert.equal(t.tools,1);
+ const old={...s.operations[0],id:"old-in-flight",params:{query:"method"},state:"pending" as const,result:undefined};
+ s.operations.push(old);
+ await ports.execute({...request,operationId:old.id,params:{query:"method"}},new AbortController().signal);
+ assert.deepEqual((old.params as Record<string,unknown>).allowed_paper_ids,["inside"]);assert.equal(t.tools,1);
+});
+test("legacy nodes wait for a scope-aware upgrade without spending or resetting the task budget",()=>{
+ const t=submit(initialState(),"Scoped research","scope-gate","research");t.workflow={phase:"agent",warnings:[]};t.calls=2;t.tools=1;
+ for(let i=0;i<20;i++)assert.equal(requireScopedResearchNode(t,["inside"],["abstract-v1"]),false);
+ assert.equal(t.status,"waiting_device");assert.equal(t.error,SCOPED_RESEARCH_UPDATE);assert.equal(t.calls,2);assert.equal(t.tools,1);
+ assert.equal(requireScopedResearchNode(t,["inside"],[SCOPED_RESEARCH_CAPABILITY]),true);assert.equal(t.error,undefined);assert.equal(t.calls,2);
+ assert.equal(requireScopedResearchNode(t,[],[]),true);
+ t.workflow={phase:"memory",warnings:[]};assert.equal(requireScopedResearchNode(t,["inside"],[]),true);
+});

@@ -26,6 +26,7 @@ import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
 import { StateRepository, type StateStorage } from "./state-store.ts";
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/research/cloud-memory.ts";
+import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
 import {managedRuntimeSettings} from "./runtime-settings.ts";
 import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
@@ -1045,7 +1046,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.capabilities = Array.isArray(m.capabilities)
           ? m.capabilities.filter((v: unknown) =>
-              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1", "reader-purge-v1"].includes(
+              [SCOPED_RESEARCH_CAPABILITY, "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1", "reader-purge-v1"].includes(
                 String(v),
               ),
             )
@@ -1500,7 +1501,7 @@ export class PersonalAgent extends DurableObject<Env> {
       attachment.catalogReady &&
       !this.state.operations.some((o) => o.state === "sent")
     ) {
-      const op = orderedTasks(this.state).filter(t=>!t.pauseRequested&&this.proactive.allowed(t)&&(t.origin!=="schedule"||!this.resources.blocked)).flatMap(t=>this.state.operations.filter(o=>o.taskId===t.id)).find(
+      const op = orderedTasks(this.state).filter(t=>!t.pauseRequested&&this.proactive.allowed(t)&&(t.error!==SCOPED_RESEARCH_UPDATE||attachment.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY))&&(t.origin!=="schedule"||!this.resources.blocked)).flatMap(t=>this.state.operations.filter(o=>o.taskId===t.id)).find(
         (o) =>
           o.state === "pending" &&
           this.state.tasks.some(
@@ -1509,6 +1510,8 @@ export class PersonalAgent extends DurableObject<Env> {
       );
       if (op) {
         const t = getTask(this.state, op.taskId);
+        const scope=this.state.conversations?.find(c=>c.id===t.conversationId)?.scope??[];
+        if(!requireScopedResearchNode(t,scope,attachment.capabilities)) { this.save(); return; }
         if (!this.deviceIndexes.supports(attachment.hash,op.indexVersion,attachment.indexVersion))
           failResearch(this.state, t, "INDEX_CHANGED");
         else if ((op.attempts ?? 0) >= 3)
@@ -1538,10 +1541,11 @@ export class PersonalAgent extends DurableObject<Env> {
       (t) =>
         !t.pauseRequested&&this.proactive.allowed(t)&&(t.origin!=="schedule"||!this.resources.blocked)&&t.proactive?.stage!=="imports"&&t.engine === "durable" &&
         (t.status === "queued" ||
-          (t.status === "waiting_device" && !t.sessionId && dev)) &&
+          (t.status === "waiting_device" && (!t.sessionId||t.error===SCOPED_RESEARCH_UPDATE) && dev && (t.error!==SCOPED_RESEARCH_UPDATE||attachment.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY)))) &&
         !this.state.tasks.some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
     );
     if (!t) return;
+    if(dev&&!requireScopedResearchNode(t,this.state.conversations?.find(c=>c.id===t.conversationId)?.scope??[],attachment.capabilities)){this.save();return;}
     if(!t.researchIndex&&t.workflow?.cloudOnly)t.researchIndex=attachment?.catalogReady?attachment.indexVersion:this.state.conversations?.find(c=>c.id===t.conversationId)?.domain?.index_version??this.state.tasks.findLast(previous=>previous.researchIndex&&previous.researchIndex!=="cloud-only")?.researchIndex??"cloud-only";
     if (!t.researchIndex) {
       if (!dev || !attachment.catalogReady) {

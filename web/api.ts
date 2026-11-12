@@ -111,6 +111,8 @@ const messages: Record<string, string> = {
   PAUSE_PENDING: "当前步骤尚未结束，请在进度保存后继续。",
   PAUSE_REQUIRED: "请先暂停任务，待当前步骤结束后再调整方向。",
   TASK_NOT_PAUSED: "任务尚未暂停，请刷新查看最新状态。",
+  NODE_SCOPE_UPDATE_REQUIRED: "这项研究需要更新本机科研节点。更新并重新连接后，会从已有进度继续。",
+  INVALID_SCOPE: "部分论文不在当前可用资料中，请检查项目论文范围。",
   MODEL_BUDGET: "本次任务已达到调用上限，可查看已有结果和未完成部分。",
   NOT_FOUND: "这条记录不存在或已删除。",
   RESOURCE_DELETED: "这条记录已删除，不能重新提交原操作。",

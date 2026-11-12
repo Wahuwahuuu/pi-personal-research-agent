@@ -249,7 +249,7 @@ async function connect() {
     deviceId: "proactive-fixture",
     indexVersion: "proactive-fixture",
     tools: ["search_papers", "retrieve_chunks"],
-    capabilities: ["library-v1"],
+    capabilities: ["library-v1","scoped-search-v1"],
   });
 }
 async function batchTask(planId: string) {

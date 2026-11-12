@@ -539,8 +539,31 @@ try {
   checks.push(
     "cancelled in-flight retrieval discarded late result without restarting model",
   );
-  controlled!.close();
-  await until(async () => !(await api("state")).deviceOnline);
+  const scopeProject=await api("projects","POST",{requestId:"scope-project",title:"Scoped tools",paperIds:["fixture-paper"]});
+  const scopeConversation=await api("conversations","POST",{requestId:"scope-conversation",projectId:scopeProject.id});
+  const scoped=await api("tasks","POST",{requestId:"scope-old-node",conversationId:scopeConversation.id,kind:"research",input:"Search the scoped paper and retrieve its method evidence. Explain the main method with citations."});
+  const oldWaiting=await until(async()=>{const t=await api("tasks/"+scoped.id);return t.error==="NODE_SCOPE_UPDATE_REQUIRED"?t:false;});
+  assert.equal(oldWaiting.calls,0);assert.equal(oldWaiting.tools,0);
+  const independent=await api("tasks","POST",{requestId:"scope-independent-chat",kind:"chat",input:"hello while a node update is pending"});
+  await until(async()=>(await api("tasks/"+independent.id)).status==="completed");
+  assert.equal((await api("tasks/"+scoped.id)).calls,0,"old node wait cannot call the model or block ordinary chat");
+  controlled!.close();await until(async()=>!(await api("state")).deviceOnline);
+  const scopedNode=child(["local/node.ts",config],{...process.env,PRA_DEVICE_TOKEN:pair.token,PRA_LOCAL_TOKEN:localControl});
+  const resumedScoped=await until(async()=>{const t=await api("tasks/"+scoped.id);return t.status==="completed"?t:false;},45000);
+  assert.equal(resumedScoped.calls,5);assert.equal(resumedScoped.tools,2);
+  for(let turn=0;turn<2;turn++){
+    const next=await api("tasks","POST",{requestId:"scope-follow-"+turn,conversationId:scopeConversation.id,kind:"research",input:"Search the scoped paper and retrieve its method evidence. Explain the main method with citations."});
+    const done=await until(async()=>{const t=await api("tasks/"+next.id);return t.status==="completed"?t:false;});
+    assert.equal(done.calls,5);assert.equal(done.tools,2);assert.equal(done.sessionId,resumedScoped.sessionId);
+    assert.ok(done.researchEvidence.every((e:any)=>e.paper_id==="fixture-paper"));
+  }
+  const scopedState=await api("state");
+  const scopedTasks=new Set(scopedState.tasks.filter((t:any)=>t.conversationId===scopeConversation.id).map((t:any)=>t.id));
+  assert.ok(scopedState.operations.filter((o:any)=>scopedTasks.has(o.taskId)).every((o:any)=>JSON.stringify(o.params.allowed_paper_ids)==='["fixture-paper"]'));
+  await api("projects/"+scopeProject.id,"DELETE",{requestId:"scope-cleanup"});
+  await until(async()=>(await api("deletions/"+scopeConversation.id)).status==="completed");
+  await stopChild(scopedNode);await until(async()=>!(await api("state")).deviceOnline);
+  checks.push("legacy scoped research waits without model calls or blocking chat; upgraded node resumes and three same-session turns each use five calls with persisted paper boundaries");
   const waiting = await api("tasks", "POST", {
     input: "cancel while offline",
     kind: "research",
