@@ -7,13 +7,15 @@ import {
   type AssistantMessage,
   type ToolCall,
   type ProviderStreams,
+  type Message,
 } from "@earendil-works/pi-ai";
 export const MODEL = { provider: "pra", id: "deterministic-v1" };
 export function mockModels(
-  before: () => void | Promise<void>,
+  before: (messages:readonly Message[]) => void | Promise<void>,
   after: (input: number, output: number) => void | Promise<void>,
   onFailure?: (code: string) => void,
 ) {
+  let active=false;
   const stream: ProviderStreams["stream"] = (model, context) => {
     const events = createAssistantMessageEventStream();
     const message: AssistantMessage = {
@@ -34,8 +36,11 @@ export function mockModels(
       timestamp: Date.now(),
     };
     queueMicrotask(async () => {
+      let ownsSlot=false;
       try {
-        await before();
+        if(active)throw Error("MODEL_CONCURRENCY");
+        active=true;ownsSlot=true;
+        await before(context.messages);
         const source = JSON.stringify(projectProviderMessages(context.messages));
         const input = Math.ceil(new TextEncoder().encode(source).length / 3);
         const names = getCurrentTools(context.messages).map((t) => t.name);
@@ -134,14 +139,14 @@ export function mockModels(
         events.push({ type: "done", reason: "stop", message });
         events.end(message);
       } catch (error) {
-        const safe = new Set([...BUDGET_STOPS, "MODEL_BUDGET", "CONTEXT_CHANGED", "PLAN_PAUSED", "TASK_CLOSED"]);
+        const safe = new Set([...BUDGET_STOPS, "MODEL_BUDGET", "MODEL_CONCURRENCY", "MODEL_SUBMISSION_MISMATCH", "CONTEXT_CHANGED", "PLAN_PAUSED", "TASK_CLOSED"]);
         const code = error instanceof Error && safe.has(error.message) ? error.message : "MODEL_REQUEST_FAILED";
         onFailure?.(code);
         message.stopReason = "error";
         message.errorMessage = "MODEL_ADMISSION_DENIED";
         events.push({ type: "error", reason: "error", error: message });
         events.end(message);
-      }
+      }finally{if(ownsSlot)active=false;}
     });
     return events;
   };

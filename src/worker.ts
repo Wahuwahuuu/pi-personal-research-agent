@@ -27,6 +27,7 @@ import { StateRepository, type StateStorage } from "./state-store.ts";
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
+import {assertModelSubmission} from "./provider-context.ts";
 import {managedRuntimeSettings} from "./runtime-settings.ts";
 import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
@@ -194,11 +195,13 @@ export class PersonalAgent extends DurableObject<Env> {
       harness: async ({ storage, context, onWake }) => {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
         const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
-        const before = async () => {
+        const before = async (messages:readonly {role:string;content?:unknown}[]) => {
           if(this.recoveryBlocked)throw new Problem("RECOVERY_IN_PROGRESS",503);
-          if(env.MODEL_MODE!=="mock")await this.syncBudget();
           const t=this.state.tasks.find(t=>t.status==="running"&&t.modelOperation);
           if(!t)throw new Error("NO_ACTIVE_TASK");
+          assertModelSubmission(messages,t.modelPrompt);
+          const operation=t.modelOperation;
+          if(env.MODEL_MODE!=="mock")await this.syncBudget();
           if(t.origin==="schedule"){const status=await this.identityRegistry().platformStatus();if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);}
           if(t.proactive&&!this.proactive.allowed(t)){t.pauseRequested=true;t.proactive.planPaused=true;throw new Problem("PLAN_PAUSED");}
           const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
@@ -213,7 +216,8 @@ export class PersonalAgent extends DurableObject<Env> {
           }
           const previousUsage={...this.state.usage},previousCalls=budget.calls,previousChildCalls=t.calls;
           try {
-            if(t.status!=="running"||t.pauseRequested)throw new Error("TASK_CLOSED");
+            if(t.status!=="running"||t.pauseRequested||t.modelOperation!==operation||!this.state.tasks.includes(t))throw new Error("TASK_CLOSED");
+            assertModelSubmission(messages,t.modelPrompt);
             if(this.state.cloudMemory?.invalidatedTurns?.includes(t.id))throw new Error("CONTEXT_CHANGED");
             this.database.transactionSync(()=>{
               reserve(this.state,budget,52000,reservedOutput);

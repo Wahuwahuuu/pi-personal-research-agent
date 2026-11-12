@@ -9,6 +9,7 @@ import {
   type ToolCall,
   type AssistantMessage,
   type ProviderStreams,
+  type Message,
 } from "@earendil-works/pi-ai";
 export interface LiveConfig {
   authorized: string;
@@ -22,7 +23,7 @@ export interface LiveConfig {
 /** Only visible text crosses this adapter into Pi persistence. Provider-native reasoning is never forwarded. */
 export function liveModels(
   config: LiveConfig,
-  before: () => void | Promise<void>,
+  before: (messages:readonly Message[]) => void | Promise<void>,
   after: (usage?: { input: number; output: number }) => void | Promise<void>,
   fetcher: typeof fetch = fetch,
 ) {
@@ -37,6 +38,7 @@ export function liveModels(
   );
   if (endpoint.protocol !== "https:" || endpoint.username || endpoint.password)
     throw new Error("HTTPS_MODEL_ENDPOINT_REQUIRED");
+  let active=false;
   const stream: ProviderStreams["stream"] = (model, context, options) => {
     const events = createAssistantMessageEventStream();
     const message: AssistantMessage = {
@@ -58,8 +60,10 @@ export function liveModels(
     };
     void (async () => {
       let admitted = false,
-        settled = false, dispatched=false;
+        settled = false, dispatched=false,ownsSlot=false;
       try {
+        if(active)throw Error("MODEL_CONCURRENCY");
+        active=true;ownsSlot=true;
         const tools = getCurrentTools(context.messages);
         const system=getCurrentSystemPrompt(context.messages);
         const messages = projectProviderMessages(context.messages).filter(m=>m.role!=="system").map((m) => {
@@ -78,7 +82,7 @@ export function liveModels(
         const declarations=tools.map(t=>({type:"function",function:{name:t.name,description:t.description,parameters:t.parameters}}));
         if (new TextEncoder().encode(JSON.stringify({messages,tools:declarations})).length > 48000)
           throw new Error("CONTEXT_LIMIT");
-        await before();
+        await before(context.messages);
         admitted = true;
         options?.signal?.throwIfAborted();
         dispatched=true;
@@ -134,8 +138,9 @@ export function liveModels(
           output >= 0
             ? { input, output }
             : undefined;
-        await after(usage);
+        // The callback may commit locally before a later acknowledgement fails.
         settled = true;
+        try{await after(usage);}catch{throw Error("BILLING_UNAVAILABLE");}
         if (
           typeof content !== "string" ||
           (!content.trim() && !calls.length) ||
@@ -164,10 +169,10 @@ export function liveModels(
         events.push({ type: "done", reason: message.stopReason, message });
         events.end(message);
       } catch (error) {
-        const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
+        const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","MODEL_CONCURRENCY","MODEL_SUBMISSION_MISMATCH","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
         const code=error instanceof Error&&known.has(error.message)?error.message:"MODEL_REQUEST_FAILED";
         config.onFailure?.(code);
-        if (admitted && !settled) {try{await after(dispatched?undefined:{input:0,output:0});}catch{config.onFailure?.("BILLING_UNAVAILABLE");}}
+        if (admitted && !settled) {settled=true;try{await after(dispatched?undefined:{input:0,output:0});}catch{config.onFailure?.("BILLING_UNAVAILABLE");}}
         message.stopReason = options?.signal?.aborted ? "aborted" : "error";
         message.errorMessage = "MODEL_REQUEST_FAILED";
         events.push({
@@ -176,7 +181,7 @@ export function liveModels(
           error: message,
         });
         events.end(message);
-      }
+      }finally{if(ownsSlot)active=false;}
     })();
     return events;
   };

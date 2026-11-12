@@ -7,3 +7,10 @@ export function projectProviderMessages<T extends {role:string;content?:unknown}
  try{if(JSON.parse(raw)?.projection==="pra-context-v1")return messages.slice(last);}catch{}
  return [...messages];
 }
+
+/** Unrelated runtime work must not charge a currently active business submission. */
+export function assertModelSubmission(messages:readonly {role:string;content?:unknown}[],expected:unknown):void {
+ const latest=messages.findLast(m=>m.role==="user"),content=latest?.content;
+ const text=typeof content==="string"?content:Array.isArray(content)?content.filter(c=>c?.type==="text").map(c=>c.text).join("\n"):"";
+ if(typeof expected!=="string"||!expected||text!==expected)throw Error("MODEL_SUBMISSION_MISMATCH");
+}
