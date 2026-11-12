@@ -645,6 +645,17 @@ try {
   await api("settings","PATCH",{requestId:"settings-update",agentName:"Synthetic Aster",theme:"dark",onboarded:true});
   assert.equal((await api("overview")).settings.agentName,"Synthetic Aster");
   assert.equal((await api("budget")).scope,"application");
+  const expandedScope=Array.from({length:200},(_,i)=>"paper-"+i);
+  await api("projects/"+project.id,"PATCH",{requestId:"project-full-scope",paperIds:expandedScope});
+  const fullConversation=await api("conversations","POST",{requestId:"conversation-full-scope",title:"Full research scope",projectId:project.id});
+  assert.deepEqual(fullConversation.scope,expandedScope);
+  const implicitScope=await api("tasks","POST",{requestId:"implicit-full-scope",projectId:project.id,kind:"research",input:"Read the project papers"});
+  await until(async()=>(await api("tasks/"+implicitScope.id)).status==="waiting_device");
+  assert.deepEqual((await api("conversations/"+implicitScope.conversationId+"/messages")).conversation.scope,expandedScope);
+  assert.equal((await api("tasks/"+implicitScope.id)).calls,0);
+  assert.deepEqual((await api("conversations/"+newConversation.id+"/messages")).conversation.scope,["paper-a","paper-b"],"existing conversations keep their original project snapshot");
+  await api("tasks/"+implicitScope.id+"/cancel","POST",{});
+  checks.push("all 200 project paper identities survive explicit and implicit conversation creation without changing existing conversation scope");
   await api("projects/"+project.id,"DELETE",{requestId:"project-delete"});
   await until(async()=>(await api("deletions/"+newConversation.id)).status==="completed");
   assert.ok(!(await api("projects")).items.some((p:any)=>p.id===project.id));

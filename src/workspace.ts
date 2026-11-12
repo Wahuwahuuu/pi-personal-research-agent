@@ -4,8 +4,9 @@ import {Problem,text,type State,type Task} from "./domain.ts";
 export interface Project {id:string;title:string;goal:string;paperIds:string[];pinned:boolean;archived:boolean;created:number;updated:number}
 export interface Settings {agentName:string;researchDirection:string;theme:"system"|"light"|"dark";notifications:boolean;onboarded:boolean;timezone:"Asia/Shanghai"}
 export const defaultSettings:Settings={agentName:"Aster",researchDirection:"",theme:"system",notifications:true,onboarded:false,timezone:"Asia/Shanghai"};
+export const MAX_PROJECT_PAPERS=200;
 function projectPaperIds(value:unknown):string[]{
- if(!Array.isArray(value)||value.length>200||value.some((v:unknown)=>typeof v!=="string"||!v||v.length>256))throw new Problem("INVALID_PAPERS");
+ if(!Array.isArray(value)||value.length>MAX_PROJECT_PAPERS||value.some((v:unknown)=>typeof v!=="string"||!v||v.length>256))throw new Problem("INVALID_PAPERS");
  return [...new Set(value)] as string[];
 }
 export class Workspace {

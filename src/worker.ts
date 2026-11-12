@@ -18,7 +18,7 @@ import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries} from "../packages/research/memory.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
-import {Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
+import {MAX_PROJECT_PAPERS,Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
 import { IdentityRegistry } from "./identity.ts";
 export { IdentityRegistry };
 import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
@@ -669,7 +669,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const b=await this.body(r);
       if((b.scope!==undefined||b.projectId!==undefined)&&this.state.tasks.some(t=>t.conversationId===c.id&&!terminal(t)&&t.status!=="waiting_user"))throw new Problem("CONVERSATION_BUSY",409);
       if(b.scope!==undefined){
-        if(!Array.isArray(b.scope)||b.scope.length>20||b.scope.some((id:unknown)=>typeof id!=="string"))throw new Problem("INVALID_SCOPE");
+        if(!Array.isArray(b.scope)||b.scope.length>MAX_PROJECT_PAPERS||b.scope.some((id:unknown)=>typeof id!=="string"))throw new Problem("INVALID_SCOPE");
         const version=this.device()?.deserializeAttachment()?.indexVersion ?? c.domain?.index_version;
         if(!version||b.scope.some((id:string)=>!this.catalog(version).papers.some(p=>p.paper_id===id)))throw new Problem("INVALID_SCOPE");
         c.scope=[...new Set(b.scope as string[])];
@@ -717,7 +717,7 @@ export class PersonalAgent extends DurableObject<Env> {
         try{
           receipt=this.database.transactionSync(()=>{
             if(!conversation){
-              conversation={id:conversationId,title:text(b.input).slice(0,100),projectId:project.id,scope:project.paperIds.slice(0,20),created:Date.now(),history:[]};
+              conversation={id:conversationId,title:text(b.input).slice(0,100),projectId:project.id,scope:[...project.paperIds],created:Date.now(),history:[]};
               this.state.conversations!.push(conversation);
             }
             const result=recordConversationControl(this.state,conversationId,b.input,b.requestId,selected!,{resumeBlocked,cancel:t=>this.proactive.cancel(t)});
@@ -731,7 +731,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const t = submit(this.state, b.input, b.requestId, b.kind);
       if(!prior)configureTask(t,b.mode,b.priority);
       if (!conversation) {
-        conversation = {id:conversationId,title:t.input.slice(0,100),projectId:project.id,scope:project.paperIds.slice(0,20),created:Date.now(),history:[]};
+        conversation = {id:conversationId,title:t.input.slice(0,100),projectId:project.id,scope:[...project.paperIds],created:Date.now(),history:[]};
         this.state.conversations.push(conversation);
       }
       conversation.updated=Date.now();
@@ -975,7 +975,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const b=await this.body(r);
       const result=this.workspace.once(b.requestId,"conversation:create",b,()=>{
         const project=this.workspace.getProject(typeof b.projectId==="string"?b.projectId:"default"),now=Date.now();
-        const c={id:crypto.randomUUID(),title:text(b.title??"新的研究",100),projectId:project.id,scope:project.paperIds.slice(0,20),created:now,updated:now,history:[]};
+        const c={id:crypto.randomUUID(),title:text(b.title??"新的研究",100),projectId:project.id,scope:[...project.paperIds],created:now,updated:now,history:[]};
         this.state.conversations??=[];this.state.conversations.push(c);this.save();return c;
       });this.publish();return json(result,201);
     }
