@@ -56,3 +56,14 @@ test("invalid update strategies fail before deployment instead of silently apply
  for(const strategy of [{mode:"unknown"},{mode:"immediate",max_delay:5},{max_delay:-1},{max_delay:86401},{max_delay:NaN},{max_delay:Infinity},{max_delay:"300"}])
   assert.throws(()=>deploymentVerificationTimeout(strategy as any),/INVALID_CODE_UPDATE_STRATEGY/);
 });
+
+test("a matching build with an absent or incompatible release contract is not a verified deployment",async()=>{
+ const {RELEASE_CONTRACT}=await import("../src/release-contract.ts");
+ const access={kind:"session" as const,path:"/api/deployment",headers:{Cookie:cookie}};
+ for(const release of [undefined,{...RELEASE_CONTRACT,family:"incompatible"}]){
+  let calls=0;
+  await assert.rejects(waitForDeployment(base,access,build,{expectedRelease:RELEASE_CONTRACT,fetcher:(async()=>{calls++;return reply({build,release});}) as any}),/RELEASE_CONTRACT/);
+  assert.equal(calls,1);
+ }
+ await waitForDeployment(base,access,build,{expectedRelease:RELEASE_CONTRACT,fetcher:(async()=>reply({build,release:RELEASE_CONTRACT})) as any});
+});

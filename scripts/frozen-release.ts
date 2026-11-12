@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
+export function assertReleaseVariables(vars: Record<string, unknown> = {}) {
+  if (Object.keys(vars).some(key => /(?:^|_)(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY)$/i.test(key)))
+    throw Error("INLINE_RELEASE_CREDENTIAL_FORBIDDEN");
+}
+
 export interface FrozenRelease {
   directory: string;
   configPath: string;
@@ -38,6 +43,7 @@ export async function inspectFrozenRelease(
   try { config = JSON.parse(bytes.toString("utf8")); } catch { throw Error("FROZEN_RELEASE_CONFIG_INVALID"); }
   if (config.name !== expected.name || config.vars?.BUILD_ID !== expected.build)
     throw Error("FROZEN_RELEASE_IDENTITY_MISMATCH");
+  assertReleaseVariables(config.vars);
   // A frozen upload may not run a new build or select a second environment.
   if (config.build || config.env || typeof config.main !== "string" || !isAbsolute(config.main) ||
       typeof config.assets?.directory !== "string" || !isAbsolute(config.assets.directory))

@@ -208,3 +208,5 @@ npx wrangler dev --var RESEARCH_ENGINE:durable
 科研完成检查沿用原版 AsterCite 的执行状态与论文/片段标识摘要。原文不会在这一检查步骤中重复发送；空结果、未完成与结果未记录分别保留，省略的操作和标识有明确计数。摘要不能代替原文证据或科研正确性验收。
 
 Cloudflare 默认允许活跃 Durable Object 延后最多 300 秒更新代码。普通发布保留这个宽限期，按配置延迟加确认窗口等待实际构建切换；未确认时仍保存为待核实发布。可在 Wrangler 配置的 durable_objects.code_update_strategy 中调整策略，详见 [官方代码更新说明](https://developers.cloudflare.com/durable-objects/deployments/durable-objects-code-updates/)。
+
+发布会固定实际生效的非秘密模型配置，并通过鉴权接口 `GET /api/deployment` 核对构建与兼容契约。契约包含应用/Pi 存储版本、节点协议、锁定运行时依赖以及独立维护的回滚兼容族；部署记录和冻结目录中的校验收据保存在本地。未知或不匹配的契约不能标记为验证成功。相同数据库结构不代表旧代码能保留新的删除、计费及恢复语义；破坏这些语义的升级必须更换兼容族。旧构建没有声明契约时不自动认定为可回退版本。代码版本回退不恢复数据，平台边界见 [Cloudflare 回滚说明](https://developers.cloudflare.com/workers/versions-and-deployments/rollbacks/)。

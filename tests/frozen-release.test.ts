@@ -49,3 +49,13 @@ test("frozen release rejects a junction that would redirect assets outside the r
   await symlink(outside, join(f.release, "assets", "linked"), process.platform === "win32" ? "junction" : "dir");
   await assert.rejects(inspectFrozenRelease(f.root, f.release, f.expected), /PATH_ESCAPE/);
 });
+
+test("frozen release refuses inline credential variables instead of archiving them",async t=>{
+ const f=await fixture(t);
+ for(const key of ["MODEL_API_KEY","ADMIN_TOKEN","PLATFORM_ANALYTICS_TOKEN","PASSWORD","PRIVATE_KEY"]){
+  (f.config.vars as any)[key]="synthetic-sensitive-value";await f.save();
+  await assert.rejects(inspectFrozenRelease(f.root,f.release,f.expected),e=>e instanceof Error&&e.message==="INLINE_RELEASE_CREDENTIAL_FORBIDDEN");
+  delete (f.config.vars as any)[key];
+ }
+ await f.save();await inspectFrozenRelease(f.root,f.release,f.expected);
+});

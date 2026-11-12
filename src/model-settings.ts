@@ -53,3 +53,8 @@ export function modelDeploymentArgs(settings?: ModelSettings): string[] {
     `MODEL_BASE_URL:${settings.baseUrl}`,
   ];
 }
+
+/** Persist effective non-secret variables inside the frozen upload, not ephemeral CLI overrides. */
+export function modelDeploymentVariables(settings?: ModelSettings): Record<string,string> {
+  return settings ? {MODEL_MODE:settings.mode,MODEL_ID:settings.modelId,MODEL_BASE_URL:settings.baseUrl} : {};
+}

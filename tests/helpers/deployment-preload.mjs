@@ -1,4 +1,5 @@
 // Subprocess-only deployment fixture: every external command and network request is intercepted.
+import {RELEASE_CONTRACT} from "../../src/release-contract.ts";
 import childProcess from "node:child_process";
 import {syncBuiltinESMExports} from "node:module";
 import {readFileSync,writeFileSync,mkdirSync} from "node:fs";
@@ -31,6 +32,8 @@ childProcess.execFileSync=(exe,args,options={})=>{
    }
    if(readFileSync(resolve(cfg.assets.directory,"index.html"),"utf8")!=="frozen-assets")throw Error("UNFROZEN_ASSETS");
    if(readFileSync(cfg.main,"utf8")!=="// frozen-worker")throw Error("UNFROZEN_WORKER");
+   if(args.includes("--var"))throw Error("MODEL_VARIABLES_NOT_FROZEN");
+   if(scenario==="live-success"&&(cfg.vars.MODEL_MODE!=="live"||cfg.vars.MODEL_ID!=="qwen3.7-flash"||!cfg.vars.MODEL_BASE_URL))throw Error("FROZEN_MODEL_CONFIG_MISSING");
    event("upload");uploaded=true;return url;
   }
  }
@@ -43,13 +46,13 @@ globalThis.fetch=async(raw,init={})=>{
  if(target.origin!==url)throw Error("UNEXPECTED_ORIGIN");
  if(target.pathname==="/api/device/verify"){
   if(scenario==="denied"||scenario==="resume-initial"||(scenario==="revoked-after-upload"&&uploaded))return Response.json({}, {status:401});
-  return Response.json({protocol:1,accountScope:"f".repeat(64),build:uploaded?build:"old"});
+  return Response.json({protocol:1,accountScope:"f".repeat(64),build:uploaded?build:"old",...(uploaded?{release:scenario==="wrong-contract-after-upload"?{...RELEASE_CONTRACT,family:"different-family"}:RELEASE_CONTRACT}:{})});
  }
  if(target.pathname==="/api/auth/status")return Response.json({bootstrapAvailable:["initial","resume-initial"].includes(scenario)});
  if(target.pathname==="/api/login"){
   if(!["initial","resume-initial"].includes(scenario))throw Error("BOOTSTRAP_MUST_STAY_CLOSED");
   return Response.json({}, {headers:{"set-cookie":"pra_session="+"c".repeat(64)+"; HttpOnly; Secure"}});
  }
- if(target.pathname==="/api/state")return Response.json({build:uploaded?build:"old"});
+ if(["/api/state","/api/deployment"].includes(target.pathname))return Response.json({build:uploaded?build:"old",...(uploaded?{release:scenario==="wrong-contract-after-upload"?{...RELEASE_CONTRACT,family:"different-family"}:RELEASE_CONTRACT}:{})});
  throw Error("UNEXPECTED_EXTERNAL_REQUEST");
 };

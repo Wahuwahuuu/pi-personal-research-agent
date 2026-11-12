@@ -1,3 +1,4 @@
+import {parseReleaseContract,assertReleaseCompatible,type ReleaseContract} from "../src/release-contract.ts";
 export interface DeploymentAccess {kind:"device"|"session";path:string;headers:Record<string,string>}
 export interface DeploymentCredentials {deviceToken?:string;sessionCookie?:string;bootstrapToken?:string}
 type Fetcher=typeof globalThis.fetch;
@@ -14,13 +15,14 @@ async function value(response:Response){
  if(!response.ok)return undefined;
  try{const v=await response.json() as any;return v&&typeof v==="object"?v:undefined;}catch{return undefined;}
 }
-export async function deploymentBuild(url:string,access:DeploymentAccess,fetcher:Fetcher=fetch){
+export async function deploymentInfo(url:string,access:DeploymentAccess,fetcher:Fetcher=fetch){
  const r=await request(url,access.path,{headers:access.headers},fetcher);
  if([401,403].includes(r.status))throw Error("DEPLOYMENT_AUTH_REJECTED");
  const v=await value(r);
  if(!v||typeof v.build!=="string"||v.build.length>128||!v.build||(access.kind==="device"&&(v.protocol!==1||!/^[a-f0-9]{64}$/.test(v.accountScope))))throw Error("DEPLOYMENT_PROBE_UNAVAILABLE");
- return v.build as string;
+ return {build:v.build as string,release:v.release===undefined?undefined:parseReleaseContract(v.release)};
 }
+export async function deploymentBuild(url:string,access:DeploymentAccess,fetcher:Fetcher=fetch){return (await deploymentInfo(url,access,fetcher)).build;}
 export async function deploymentAccess(url:string,credentials:DeploymentCredentials,fetcher:Fetcher=fetch):Promise<DeploymentAccess>{
  origin(url);
  const candidates:DeploymentAccess[]=[];
@@ -56,11 +58,14 @@ export function deploymentVerificationTimeout(strategy?: {mode?:string;max_delay
  if(typeof delay!=="number"||!Number.isFinite(delay)||delay<0||delay>86400)throw Error("INVALID_CODE_UPDATE_STRATEGY");
  return Math.max(120000,Math.ceil(delay*1000)+60000);
 }
-export async function waitForDeployment(url:string,access:DeploymentAccess,build:string,options:{timeoutMs?:number;intervalMs?:number;fetcher?:Fetcher}={}){
+export async function waitForDeployment(url:string,access:DeploymentAccess,build:string,options:{timeoutMs?:number;intervalMs?:number;fetcher?:Fetcher;expectedRelease?:ReleaseContract}={}){
  const until=Date.now()+(options.timeoutMs??deploymentVerificationTimeout()),fetcher=options.fetcher??fetch;
  do{
-  try{if(await deploymentBuild(url,access,fetcher)===build)return;}
-  catch(error){if(error instanceof Error&&error.message==="DEPLOYMENT_AUTH_REJECTED")throw error;}
+  try{
+   const info=await deploymentInfo(url,access,fetcher);
+   if(info.build===build){if(options.expectedRelease)assertReleaseCompatible(options.expectedRelease,info.release);return;}
+  }
+  catch(error){if(error instanceof Error&&["DEPLOYMENT_AUTH_REJECTED","UNKNOWN_RELEASE_CONTRACT","INCOMPATIBLE_RELEASE_CONTRACT"].includes(error.message))throw error;}
   await new Promise(r=>setTimeout(r,options.intervalMs??1500));
  }while(Date.now()<until);
  throw Error("DEPLOYED_BUILD_NOT_SERVING");
