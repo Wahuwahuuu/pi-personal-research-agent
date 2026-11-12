@@ -358,7 +358,9 @@ export class PersonalAgent extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async()=>{
       this.recoveryBlocked=true;
       try{
-        this.recoveryIdle();await this.harness.dispose();this.runtime=undefined;
+        this.recoveryIdle();
+        // Pi opens lazily. Pin its schema before the bookmark, even for an account with no model runs.
+        await this.harness.pi();await this.harness.dispose();this.runtime=undefined;
         let bookmark:string;try{bookmark=await this.ctx.storage.getCurrentBookmark();}catch{throw new Problem("CHECKPOINT_UNAVAILABLE",503);}
         const c=await registry.addRecoveryCheckpoint(this.ownerId,{id:crypto.randomUUID(),requestId,label,bookmark,build:this.env.BUILD_ID??"development",schema:recoverySchema(this.database),created:Date.now()});
         const{bookmark:_,schema,...view}=c;return json(view,201);

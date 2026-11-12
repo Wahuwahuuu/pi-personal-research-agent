@@ -127,6 +127,14 @@ try {
     403,
   );
   checks.push("cross-origin request rejected");
+  const coldCheckpoint=await api("recovery/checkpoints","POST",{requestId:"cold-checkpoint",label:"Before first model"});
+  const coldSchema=await api("recovery/schema");
+  assert.ok(coldSchema.objects.some((o:any)=>o.name==="pi_conversations"));
+  assert.equal((await api("state")).usage.requests,0,"schema initialization cannot spend model calls");
+  assert.equal((await api("recovery")).checkpoints[0].id,coldCheckpoint.id);
+  const coldMemory=await api("memories","POST",{content:"Explicit memory before first model"});
+  await api("memories/"+coldMemory.id,"DELETE");
+  assert.equal((await api("recovery/schema")).fingerprint,coldSchema.fingerprint);
   const chat = await api("tasks", "POST", {
     input: "cloud only",
     kind: "chat",
@@ -140,6 +148,8 @@ try {
   });
   assert.match(done.answer, /模拟模型/);
   assert.equal(done.engine,"durable");
+  assert.equal((await api("recovery/schema")).fingerprint,coldSchema.fingerprint,"first runtime use must not invalidate the cold checkpoint");
+  checks.push("new-account checkpoint initializes Pi schema without model calls; memory deletion and first model use keep the same storage signature");
   const schemaProfile=await api("recovery/schema");
   assert.equal(schemaProfile.build,"development");
   assert.match(schemaProfile.fingerprint,/^[a-f0-9]{64}$/);
