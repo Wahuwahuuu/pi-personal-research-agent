@@ -256,3 +256,13 @@ test("mock preserves known admission denials without leaking arbitrary errors or
   assert.ok(!JSON.stringify(result).includes("private exception content"));
  }
 });
+
+test("mock follows validated retrieval suggestions after an empty scoped discovery", async()=>{
+ const {mockModels,MODEL}=await import("../src/model.ts");
+ const models=mockModels(()=>{},()=>{});
+ const tools=[{name:"search_papers",description:"search",parameters:{type:"object"}},{name:"retrieve_chunks",description:"read",parameters:{type:"object"}}];
+ const frame={stage:"agent",frame:{ordered_targets:[]},retrieval_suggestions:{queries:[{query:"full original question",paper_ids:["known-scoped-paper"]}]},observations:[{result:{papers:[]}}]};
+ const answer=await models.stream(models.getModel(MODEL.provider,MODEL.id)!,{messages:[{role:"user",content:JSON.stringify(frame),timestamp:0}],tools}).result();
+ const call=answer.content.find(c=>c.type==="toolCall");
+ assert.equal(call?.name,"retrieve_chunks");assert.deepEqual(call?.arguments.paper_ids,["known-scoped-paper"]);
+});

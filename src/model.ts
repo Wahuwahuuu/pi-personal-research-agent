@@ -51,7 +51,9 @@ export function mockModels(
           Boolean(frame?.evidence?.length) || current.includes('"chunks"') || current.includes('\\\"chunks\\\"');
         const observedIds = (Array.isArray(frame?.observations) ? frame.observations : [])
           .flatMap((o: any) => o.result?.papers ?? []).map((p: any) => p.paper_id);
-        const candidates: unknown[] = observedIds.length ? observedIds : frame?.frame?.ordered_targets ?? [];
+        const preparedIds=frame?.frame?.ordered_targets??[];
+        const suggestedIds=(Array.isArray(frame?.retrieval_suggestions?.queries)?frame.retrieval_suggestions.queries:[]).flatMap((q:any)=>Array.isArray(q.paper_ids)?q.paper_ids:[]);
+        const candidates: unknown[] = observedIds.length ? observedIds : preparedIds.length ? preparedIds : suggestedIds;
         const targetIds = [...new Set(candidates.filter((id): id is string => typeof id === "string" && id.length > 0))].slice(0,3);
         const emptySearch = research && hasSearch && !hasChunks && !targetIds.length;
         if (research && !hasChunks && !emptySearch) {
