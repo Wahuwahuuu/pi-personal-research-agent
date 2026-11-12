@@ -31,7 +31,7 @@ section{margin-bottom:26px}.status{display:flex;justify-content:space-between;al
 <div id="papers"><p class="empty">正在读取论文目录。</p></div>
 <div class="pagination"><button id="previous" disabled>上一页</button><span id="page-label" class="muted"></span><button id="next" disabled>下一页</button></div>
 </div>
-<footer><p>关闭窗口后节点继续运行。需要停止服务时，请从系统托盘菜单退出。</p><div class="actions"><button id="diagnostics">导出脱敏诊断</button><span class="muted">不含凭证、论文原文或本机路径</span></div></footer>
+<footer><p>关闭窗口后节点继续运行。需要停止服务时，请从系统托盘菜单退出。</p><div class="actions"><button id="diagnostics">导出脱敏诊断</button><span class="muted">不含凭证、论文原文或本机路径</span></div><details><summary>版本信息</summary><p id="application-version">运行版本尚未确认。</p></details></footer>
 </main>
 <script>
 "use strict";
@@ -45,7 +45,7 @@ function error(value){$("error-text").textContent=message(value);$("alert").hidd
 function clearError(){$("alert").hidden=true;}
 function node(tag,text,cls){const el=document.createElement(tag);if(text!==undefined)el.textContent=text;if(cls)el.className=cls;return el;}
 function controls(){const ok=!!state.ok;
- $("start").hidden=ok;$("start").disabled=busy||!connectedBridge;
+ $("start").hidden=ok||!!state.starting;$("start").disabled=busy||!connectedBridge||!!state.starting;
  for(const id of ["pause","reconnect"])$(id).disabled=!ok||busy;
  for(const id of ["import-pdf","import-arxiv"])$(id).disabled=!ok||!state.libraryEnabled||busy;
  $("pause").textContent=state.paused?"恢复处理":"暂停处理";
@@ -72,16 +72,20 @@ function renderJobs(){
   $("jobs").append(row);
  }
 }
+function renderVersion(){const build=state.application?.build;
+ $("application-version").textContent=!state.ok&&!state.starting?"服务尚未就绪，运行版本未确认。":/^[a-f0-9]{40}$/.test(build??"")?"正在运行版本 "+build.slice(0,8):build==="development"?"当前运行开发工作副本。":"该节点暂未提供版本信息。";
+}
 async function refresh(){
  if(!connectedBridge||polling)return;polling=true;
  try{state=await call("status");$("phase").textContent=phases[state.phase]||"正在检查节点";
  $("connection").textContent=state.connected?(state.phase==="empty"?"论文库还是空的。添加论文后，会建立索引并加载检索模型。":state.ready?"云端已连接，可以接收科研任务。":"云端已连接；待本机就绪后继续科研任务。"):"云端暂未连接，节点会自动重连；本机已有资料仍可查看。";
- if(!state.ok)$("connection").textContent=message(state.error);
+ if(state.starting)$("connection").textContent="正在加载本机科研服务，完成后会自动连接云端。";
+ else if(!state.ok)$("connection").textContent=message(state.error);
  else if(state.error)$("connection").textContent=message(state.error);
  renderJobs();controls();
  if(pageVisible==="papers"&&paperVersion&&state.indexVersion!==paperVersion)await loadPapers();
  }catch{state={ok:false};$("phase").textContent="本机服务尚未就绪";$("connection").textContent=message("LOCAL_SERVICE_UNAVAILABLE");controls();}
- finally{polling=false;}
+ finally{renderVersion();polling=false;}
 }
 async function loadPapers(){
  try{const reply=await call("library",$("query").value,paperOffset);if(!reply.ok){error(reply.error);return;}

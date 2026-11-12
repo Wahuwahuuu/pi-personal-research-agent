@@ -7,6 +7,20 @@ from unittest.mock import patch
 from controller import Controller, LocalError, safe_environment, safe_endpoint
 
 class ControllerTests(unittest.TestCase):
+    def test_starting_node_is_not_reported_as_stopped_or_given_control_permissions(self):
+        from io import BytesIO
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"node.json";path.write_text(json.dumps({"endpoint":"https://cloud.example","dataDir":temp}),encoding="utf8")
+            c=Controller(path)
+            for valid in (True,False):
+                value={"instanceId":c.control_directory.name if valid else "other","apiReady":False,"application":{"build":"a"*40}}
+                with patch.object(c,"request",side_effect=LocalError("LOCAL_REQUEST_FAILED")),patch.object(c._http,"open",return_value=BytesIO(json.dumps(value).encode())):
+                    state=c.status()
+                    self.assertFalse(state["ok"])
+                    self.assertEqual(state["phase"],"loading" if valid else "stopped")
+                    self.assertEqual(state.get("starting",False),valid)
+
+
     def test_browser_bridge_cannot_supply_arbitrary_web_endpoints_or_commands(self):
         for value in ["file:///C:/private", "http://remote.example", "https://token@host/path", "https://host/?token=secret"]:
             with self.assertRaises(LocalError):safe_endpoint(value)

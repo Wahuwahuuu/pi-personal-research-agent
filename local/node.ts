@@ -97,7 +97,7 @@ const lock = createServer(async (req, res) => {
     }
     if (req.url === "/health") {
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ ready: !!reading,instanceId:controlKey(configPath),application }));
+      res.end(JSON.stringify({ ready: !!reading,apiReady:!!localHandler,instanceId:controlKey(configPath),application }));
       return;
     }
     const match = req.url?.match(/^\/papers\/(\d{4}\.\d{4,5}(?:v[1-9]\d{0,3})?)$/);

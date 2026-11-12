@@ -100,9 +100,17 @@ class Controller:
             raise LocalError(code if isinstance(code,str) and re.fullmatch("[A-Z_]{1,80}",code) else "LOCAL_REQUEST_FAILED") from None
         except (OSError,ValueError) as error:
             raise LocalError("LOCAL_SERVICE_UNAVAILABLE") from None
+    def startup_status(self):
+        # Health carries no papers or credentials. It only identifies this still-initializing process.
+        try:
+            with self._http.open("http://127.0.0.1:"+str(self.port)+"/health",timeout=2) as response:
+                data=json.loads(response.read(4097))
+            if data.get("instanceId")!=self.control_directory.name or data.get("apiReady") is not False:return None
+            return {"ok":False,"starting":True,"connected":False,"ready":False,"phase":"loading","application":data.get("application")}
+        except (OSError,ValueError,AttributeError):return None
     def status(self):
         try: return {"ok":True,**self.request("status")}
-        except LocalError as error: return {"ok":False,"connected":False,"ready":False,"phase":"stopped","error":str(error)}
+        except LocalError as error: return self.startup_status() or {"ok":False,"connected":False,"ready":False,"phase":"stopped","error":str(error)}
     def start(self):
         with self._lock:
             if self.stop_requested(): raise LocalError("LOCAL_STOP_REQUESTED")
@@ -185,9 +193,12 @@ class Controller:
         return self.request("reader/result",{"id":identifier,"opened":bool(opened)})
     def diagnostics(self):
         state=self.status()
+        application=state.get("application")
+        build=application.get("build") if isinstance(application,dict) else None
+        if not isinstance(build,str) or not re.fullmatch(r"[a-f0-9]{40}|development",build):build=None
         return {"protocol":1,"connected":bool(state.get("connected")),"ready":bool(state.get("ready")),
                 "paused":bool(state.get("paused")),"phase":state.get("phase"),"error":state.get("error"),
-                "applicationBuild":state.get("application",{}).get("build"),
+                "applicationBuild":build,
                 "indexVersion":state.get("indexVersion"),"libraryEnabled":bool(state.get("libraryEnabled")),
                 "importStates":{status:sum(j.get("status")==status for j in state.get("imports",[])) for status in
                                 ("queued","acquiring","parsing","indexing","validating","published","failed","cancelled")}}
