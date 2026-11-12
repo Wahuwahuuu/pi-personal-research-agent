@@ -42,6 +42,10 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  PAIRING_REVOKED:"这次配对已撤销，请重新生成配对凭证。",
+  PAIRING_EXPIRED:"这次配对已过期，请重新生成配对凭证。",
+  PAIRING_KEY_CHANGED:"配对配置已更新，请重新生成配对凭证；已安装的有效设备仍可连接。",
+  PAIRING_NOT_CONFIGURED:"云端配对配置尚未就绪，请检查部署设置。",
   READER_UNAVAILABLE:"本机阅读器尚未就绪，请打开 Windows 托盘、确认连接后重试。",
   READER_EXPIRED:"阅读请求已过期。确认本机在线后，可以再次打开。",
   READER_INTERRUPTED:"阅读器启动过程被中断。请检查本机窗口后再决定是否重试。",

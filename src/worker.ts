@@ -1,3 +1,4 @@
+import { DevicePairings } from "./device-pairings.ts";
 import type {Chunk} from "../packages/research/core.ts";
 import {ReaderRequests,readerView} from "./reader-requests.ts";
 import { handleModelBudget } from "./task-control.ts";
@@ -104,6 +105,7 @@ export class PersonalAgent extends DurableObject<Env> {
   budgetLedger: BudgetLedger;
   deletions: DeletionStore;
   deviceIndexes: DeviceIndexes;
+  devicePairings: DevicePairings;
   readerRequests: ReaderRequests;
   libraryJobs: LibraryJobs;
   researchBatches: ResearchBatches;
@@ -153,6 +155,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.ownerId=ctx.storage.sql.exec<{user_id:string}>("SELECT user_id FROM pra_identity WHERE singleton=1").toArray()[0]?.user_id??env.OWNER_ID;
     ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_devices(id TEXT PRIMARY KEY,hash TEXT UNIQUE NOT NULL,label TEXT NOT NULL,created INTEGER NOT NULL,expires INTEGER NOT NULL,revoked INTEGER NOT NULL DEFAULT 0)");
     ctx.storage.sql.exec("INSERT OR IGNORE INTO pra_devices(id,hash,label,created,expires) SELECT hash,hash,'Existing device',0,expires FROM pra_auth WHERE kind='device'");
+    this.devicePairings = new DevicePairings(this.database);
 
     if(!this.state.cloudMemory){
       this.state.cloudMemory=newCloudMemory();
@@ -511,13 +514,12 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if(path==="/api/devices"&&r.method==="GET")return json(this.ctx.storage.sql.exec("SELECT id,label,created,expires,revoked FROM pra_devices ORDER BY created DESC").toArray());
     if (path === "/api/device/pair" && r.method === "POST") {
-      const b=await this.body(r),token=crypto.randomUUID()+crypto.randomUUID(),hash=await digest(token),id=crypto.randomUUID(),now=Date.now(),expires=now+90*86400000;
-      this.database.transactionSync(()=>{
-        this.ctx.storage.sql.exec("INSERT INTO pra_auth VALUES(?,'device',?)",hash,expires);
-        this.ctx.storage.sql.exec("INSERT INTO pra_devices(id,hash,label,created,expires) VALUES(?,?,?,?,?)",id,hash,text(b.label??"Windows",80),now,expires);
-      });
-      await this.env.IDENTITIES.getByName("accounts:"+this.env.OWNER_ID).bindDevice(hash,this.ownerId);
-      return json({token,id,expiresInDays:90});
+      const b = await this.body(r);
+      const pair = await this.devicePairings.issue(this.ownerId, this.env.ADMIN_TOKEN, b);
+      await this.env.IDENTITIES.getByName("accounts:"+this.env.OWNER_ID).bindDevice(pair.hash,this.ownerId);
+      // A revocation can arrive while the registry RPC yields. Never revive its credential.
+      this.devicePairings.active(pair.id, pair.hash);
+      return json({token:pair.token,id:pair.id,expires:pair.expires,expiresInDays:pair.expiresInDays});
     }
     if (path === "/api/device/revoke" && r.method === "POST") {
       const b=await this.body(r),id=b.id?text(b.id,128):undefined;
