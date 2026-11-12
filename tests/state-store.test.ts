@@ -1,3 +1,4 @@
+import {resolveConversationControl,recordConversationControl} from "../src/conversation-control.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -133,4 +134,19 @@ test("explicit body search and legacy JSON export still include complete histori
  const cold=new StateRepository(f.storage),loaded=cold.load();
  assert.equal(conversationPage(loaded,{q:"äbc"},cold).items[0].id,"c1");
  const exported=JSON.parse(JSON.stringify(loaded));assert.equal(exported.conversations[0].history.length,5);assert.equal(exported.conversations[1].history.length,5);f.db.close();
+});
+
+test("a failed control commit cannot persist a cancellation without its receipt or duplicate history on retry",()=>{
+ const f=fixture(),store=new StateRepository(f.storage);
+ let s=store.load();s.conversations=conversations(1,0);
+ const target=submit(s,"read evidence","original","research");target.conversationId="c0";store.save(s);
+ const cursor=store.cursor(),selection=resolveConversationControl(s,"c0","取消当前研究")!;
+ f.setFail(true);
+ try{recordConversationControl(s,"c0","取消当前研究","control",selection);store.save(s);assert.fail("must fail");}
+ catch(e){assert.match(String(e),/INJECTED/);s=store.load();}
+ assert.equal(s.tasks[0].status,"queued");assert.equal(s.tasks.length,1);assert.equal(s.conversations![0].history.length,0);assert.equal(store.cursor(),cursor);
+ f.setFail(false);recordConversationControl(s,"c0","取消当前研究","control",selection);store.save(s);
+ const restored=new StateRepository(f.storage).load();assert.equal(restored.tasks[0].status,"cancelled");assert.equal(restored.tasks.length,2);assert.equal(restored.conversations![0].history.length,1);
+ recordConversationControl(restored,"c0","取消当前研究"," control ",selection);
+ assert.equal(restored.conversations![0].history.length,1);f.db.close();
 });

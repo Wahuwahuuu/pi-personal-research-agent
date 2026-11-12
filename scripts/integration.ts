@@ -1,3 +1,4 @@
+import {verifyConversationControls} from "./conversation-control-integration.ts";
 import {verifyPlanRecords} from "./plan-integration.ts";
 import {freezeWorker} from "./freeze-worker.ts";
 import {verifyLibraryQueue} from "./library-integration.ts";
@@ -185,6 +186,7 @@ try {
   await new Promise((r) => setTimeout(r, 1500));
   assert.equal((await api("state")).usage.requests, before);
   checks.push("offline retrieval paused without new model calls");
+  checks.push(...await verifyConversationControls(api));
   const pair = await api("device/pair", "POST", {});
   const config = resolve(directory, "node.json");
   await writeFile(

@@ -596,7 +596,7 @@ export function Activity({ data, revision, run, refresh }: Props) {
                   >
                     查看讨论
                   </button>
-                  {!["completed", "failed", "cancelled"].includes(t.status) && (
+                  {!t.control && !["completed", "failed", "cancelled"].includes(t.status) && (
                     <button
                       className="text-button"
                       onClick={() =>

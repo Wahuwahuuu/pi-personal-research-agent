@@ -14,6 +14,7 @@ export function TaskControls({
 }) {
   const [editing, setEditing] = useState(false),
     [direction, setDirection] = useState("");
+  if(t.control)return null;
   const terminal = ["completed", "failed", "cancelled"].includes(t.status),
     paused = t.status === "paused";
   const control = (action: string, body: Record<string, unknown> = {}) =>

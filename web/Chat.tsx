@@ -58,7 +58,7 @@ export function Chat({
   const rows = [...older, ...(messages.value?.items ?? [])],
     conversation = messages.value?.conversation,
     active = rows.filter(
-      (t) => !["completed", "failed", "cancelled"].includes(t.status),
+      (t) => !t.control && !["completed", "failed", "cancelled"].includes(t.status),
     );
   async function send() {
     if (!draft.trim() || busy) return;
@@ -233,7 +233,11 @@ export function Chat({
                           ? "这项工作已停止。"
                           : t.status === "failed"
                             ? "这次未能完成，可以补充要求后继续讨论。"
-                            : "正在处理你的要求…"}
+                            : t.status === "paused"
+                              ? (t.runOpen ? "正在完成当前步骤，随后暂停。" : "任务已暂停，已有进度已保留。")
+                              : t.status === "queued"
+                                ? "已排队，轮到这项工作后会开始处理。"
+                                : "正在处理你的要求…"}
                     </p>
                   )}
                   {t.error && (
@@ -271,7 +275,7 @@ export function Chat({
                         查看 {t.researchEvidence.length} 处原文
                       </button>
                     ) : null}
-                    {t.answer && (
+                    {!t.control && t.answer && (
                       <button
                         className="text-button"
                         onClick={() =>
@@ -291,7 +295,7 @@ export function Chat({
                         保存为研究成果
                       </button>
                     )}
-                    {!["completed", "failed", "cancelled"].includes(
+                    {!t.control && !["completed", "failed", "cancelled"].includes(
                       t.status,
                     ) && (
                       <button
@@ -311,7 +315,7 @@ export function Chat({
                         className="text-button"
                         onClick={() => input.current?.focus()}
                       >
-                        补充要求
+                        {t.control ? "选择任务" : "补充要求"}
                       </button>
                     )}
                   </div>

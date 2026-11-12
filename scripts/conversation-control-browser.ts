@@ -1,0 +1,44 @@
+import { expect, type Page } from "@playwright/test";
+import assert from "node:assert/strict";
+export async function verifyConversationControlBrowser(base:string,page:Page,api:(path:string,method?:string,body?:any)=>Promise<any>,shot:(name:string)=>Promise<void>){
+  const until=async(fn:()=>Promise<boolean>)=>{const end=Date.now()+20000;while(Date.now()<end){if(await fn())return;await new Promise(r=>setTimeout(r,100));}throw new Error("CONTROL_BROWSER_TIMEOUT");};
+  const a=await api("tasks","POST",{requestId:crypto.randomUUID(),input:"离线研究软件场景甲",kind:"research"});
+  await until(async()=>(await api("tasks/"+a.id)).status==="waiting_device");
+  const initial=(await api("state")).usage.requests;
+  await page.goto(base+"/#chat/"+a.conversationId);
+  const send=async(input:string)=>{
+    await page.getByLabel("消息",{exact:true}).fill(input);
+    await page.getByRole("button",{name:"发送消息",exact:true}).click();
+    const turn=page.locator("article.turn").filter({has:page.locator(".user-message",{hasText:input})}).last();
+    await expect(turn.locator(".markdown")).not.toBeEmpty();return turn;
+  };
+  const paused=await send("暂停当前研究");
+  await expect(paused).toContainText("任务已暂停");
+  await expect(paused.getByRole("button",{name:"暂停任务",exact:true})).toHaveCount(0);
+  await expect(paused.getByRole("button",{name:"保存为研究成果",exact:true})).toHaveCount(0);
+  assert.equal((await api("tasks/"+a.id)).status,"paused");
+  await shot("control-paused-desktop");
+  const b=await api("tasks","POST",{requestId:crypto.randomUUID(),input:"离线研究软件场景乙",kind:"research",conversationId:a.conversationId});
+  const clarification=await send("取消当前任务");
+  await expect(clarification).toContainText("这个会话有多项任务");
+  await expect(clarification.getByRole("button",{name:"继续执行",exact:true})).toHaveCount(0);
+  await expect(clarification.getByRole("button",{name:"停止这项工作",exact:true})).toHaveCount(0);
+  await expect(clarification.getByRole("button",{name:"保存为研究成果",exact:true})).toHaveCount(0);
+  await clarification.getByRole("button",{name:"选择任务",exact:true}).click();
+  await expect(page.getByLabel("消息",{exact:true})).toBeFocused();
+  await shot("control-selection-desktop");
+  await page.setViewportSize({width:390,height:844});
+  await shot("control-selection-mobile");
+  await send("第二个");
+  assert.equal((await api("tasks/"+a.id)).status,"cancelled");
+  await until(async()=>(await api("tasks/"+b.id)).status==="waiting_device");
+  const status=await send("现在做到哪了");
+  await expect(status).toContainText("等待你的电脑");
+  await shot("control-status-mobile");
+  assert.equal((await api("state")).usage.requests,initial);
+  await page.reload();
+  await expect(page.locator("article.turn").filter({has:page.locator(".user-message",{hasText:"第二个"})})).toContainText("任务已取消");
+  await api("tasks/"+b.id+"/cancel","POST");
+  await api("conversations/"+a.conversationId,"DELETE");
+  return ["desktop natural-language pause persists a real task change with no model calls or misleading artifact button","multiple tasks require selection; waiting receipt has no resume control and keyboard focus returns to the composer","mobile ordinal selection, live progress and page reload preserve the same task outcome without horizontal overflow"];
+}

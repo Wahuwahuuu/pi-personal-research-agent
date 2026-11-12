@@ -42,6 +42,8 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  CONTROL_REQUIRES_MESSAGE: "请在会话中回复任务序号或重新发送操作要求。控制回执不能作为科研任务继续执行。",
+  CONTROL_TARGET_CHANGED: "任务状态已变化，尚未执行操作。请重新发送要求，确认当前任务。",
   RECOVERY_REQUEST_STORAGE: "浏览器无法保存本次请求标识。请允许此站点使用会话存储后重试，当前尚未发起恢复。",
   RECOVERY_BUSY: "当前仍有模型、工具或入库步骤执行。请等待完成，或先暂停任务，再保存或恢复检查点。",
   CHECKPOINT_EXPIRED: "检查点已过期。请刷新列表，选择仍在有效期内的检查点。",

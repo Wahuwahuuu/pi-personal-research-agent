@@ -1,3 +1,4 @@
+import type {ControlReceipt} from "./conversation-control.ts";
 import type {ProactiveState} from "./proactive-research.ts";
 import type {LongGoal} from "./task-control.ts";
 import type {CloudMemoryState} from "../packages/research/cloud-memory.ts";
@@ -19,6 +20,7 @@ export interface Task {
   input: string;
   kind: "chat" | "research" | "auto";
   origin?: "user" | "schedule";
+  control?: ControlReceipt;
   platformWait?: "queued" | "waiting_device";
   proactive?: ProactiveState;
   status: Status;

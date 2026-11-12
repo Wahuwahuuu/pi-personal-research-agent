@@ -1,3 +1,4 @@
+import {resolveConversationControl, recordConversationControl} from "./conversation-control.ts";
 import type {RecoveryJob} from "./recovery-store.ts";
 import {initRecovery,captureRecovery,applyRecovery,recoverySchema,recoverySchemaDetails} from "./recovery-data.ts";
 import { DevicePairings } from "./device-pairings.ts";
@@ -680,11 +681,12 @@ export class PersonalAgent extends DurableObject<Env> {
     }
     if (path === "/api/tasks" && r.method === "POST") {
       const b = await this.body(r);
+      b.requestId=text(b.requestId,128);
       if(b.mode!==undefined&&!["normal","long"].includes(b.mode as string))throw new Problem("INVALID_TASK_MODE");
       if(b.priority!==undefined&&![0,1,2].includes(b.priority as number))throw new Problem("INVALID_PRIORITY");
       if(this.database.sql.exec("SELECT id FROM pra_recovery_requests WHERE id=? UNION ALL SELECT request_id AS id FROM pra_task_tombstones WHERE request_id=?",text(b.requestId,128),text(b.requestId,128)).toArray().length)throw new Problem("RESOURCE_DELETED",410);
       const prior = this.state.tasks.find(t => t.requestId === b.requestId);
-      if(prior&&b.mode!==undefined&&(b.mode==="long")!==!!prior.goal)throw new Problem("REQUEST_CONFLICT",409);
+      if(prior&&!prior.control&&b.mode!==undefined&&(b.mode==="long")!==!!prior.goal)throw new Problem("REQUEST_CONFLICT",409);
       const conversationId = typeof b.conversationId === "string" ? text(b.conversationId,128) : prior?.conversationId ?? crypto.randomUUID();
       if(this.deletions.get(conversationId))throw new Problem("CONVERSATION_DELETED",410);
       if(this.deletions.blocksConversation(conversationId))throw new Problem("DELETION_PENDING",409);
@@ -693,6 +695,39 @@ export class PersonalAgent extends DurableObject<Env> {
       if (b.conversationId && !conversation) throw new Problem("UNKNOWN_CONVERSATION",404);
       if (prior && prior.conversationId !== conversationId) throw new Problem("REQUEST_CONFLICT",409);
       const project=this.workspace.getProject(conversation?.projectId??(typeof b.projectId==="string"?text(b.projectId,128):"default"));
+      if(prior?.control){submit(this.state,b.input,b.requestId,b.kind);return json(prior,202);}
+      let selected=!prior&&b.kind==="auto"?resolveConversationControl(this.state,conversationId,text(b.input)):undefined;
+      if(selected){
+        let resumeBlocked:string|undefined;
+        if(selected.action==="resume"&&this.state.tasks.find(t=>t.id===selected?.targetId)?.origin==="schedule"){
+          const status=await this.identityRegistry().platformStatus();
+          if(status.blocked)resumeBlocked=status.reason??"PLATFORM_METRICS_UNAVAILABLE";
+          // An awaited registry RPC can interleave another request or deletion.
+          const repeated=this.state.tasks.find(t=>t.requestId===b.requestId);
+          if(repeated?.control){
+            if(repeated.conversationId!==conversationId)throw new Problem("REQUEST_CONFLICT",409);
+            submit(this.state,b.input,b.requestId,b.kind);return json(repeated,202);
+          }
+          if(this.deletions.get(conversationId)||this.deletions.blocksConversation(conversationId))throw new Problem("CONVERSATION_DELETED",410);
+          const fresh=resolveConversationControl(this.state,conversationId,text(b.input));
+          if(!fresh||fresh.targetId!==selected.targetId||fresh.action!==selected.action)throw new Problem("CONTROL_TARGET_CHANGED",409);
+          selected=fresh;
+        }
+        let receipt:Task;
+        try{
+          receipt=this.database.transactionSync(()=>{
+            if(!conversation){
+              conversation={id:conversationId,title:text(b.input).slice(0,100),projectId:project.id,scope:project.paperIds.slice(0,20),created:Date.now(),history:[]};
+              this.state.conversations!.push(conversation);
+            }
+            const result=recordConversationControl(this.state,conversationId,b.input,b.requestId,selected!,{resumeBlocked,cancel:t=>this.proactive.cancel(t)});
+            this.save();return result;
+          });
+        }catch(e){this.state=this.repository.load();throw e;}
+        if(receipt.control?.action==="cancel"&&receipt.control.outcome==="applied"&&receipt.control.targetId)
+          this.notifyTaskCancellation(getTask(this.state,receipt.control.targetId));
+        await this.maintenance.arm();this.publish();return json(receipt,202);
+      }
       const t = submit(this.state, b.input, b.requestId, b.kind);
       if(!prior)configureTask(t,b.mode,b.priority);
       if (!conversation) {
@@ -736,6 +771,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const control=path.match(/^\/api\/tasks\/([^/]+)\/(pause|resume|amend|priority)$/);
     if(control&&r.method==="POST"){
       const t=getTask(this.state,control[1]),b=await this.body(r);
+      if(t.control)throw new Problem("CONTROL_REQUIRES_MESSAGE",409);
       if(control[2]==="resume"&&t.origin==="schedule"){const status=await this.identityRegistry().platformStatus();if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);}
       const value=this.workspace.once(b.requestId??crypto.randomUUID(),"task:"+control[1]+":"+control[2],b,()=>{
         if(control[2]==="pause"){pauseTask(t);if(t.proactive)t.proactive.planPaused=false;}
@@ -749,18 +785,10 @@ export class PersonalAgent extends DurableObject<Env> {
     const match = path.match(/^\/api\/tasks\/([^/]+)\/(cancel|continue)$/);
     if (match && r.method === "POST") {
       const t = getTask(this.state, match[1]);
+      if(t.control&&match[2]!=="cancel")throw new Problem("CONTROL_REQUIRES_MESSAGE",409);
       if (match[2] === "cancel") {
         this.proactiveStep(()=>{cancel(this.state, t.id);this.proactive.cancel(t);});
-        this.dispatchImports();
-        for (const ws of this.ctx.getWebSockets("device"))
-          for (const op of this.state.operations.filter(
-            (o) => o.taskId === t.id && o.state === "cancelled",
-          ))
-            this.send(ws, { type: "cancel", operationId: op.id });
-        if (t.sessionId)
-          this.ctx.waitUntil(
-            this.harness.abort({ session: t.sessionId }).catch(() => {}),
-          );
+        this.notifyTaskCancellation(t);
       } else if (
         ["failed", "waiting_device", "waiting_user"].includes(t.status)
       ) {
@@ -1662,6 +1690,13 @@ export class PersonalAgent extends DurableObject<Env> {
     if(t.proactive?.stage!=="research"||t.status!=="completed")return;
     try{this.proactiveStep(()=>this.proactive.afterReading(t));}
     catch{throw new Problem("PROACTIVE_PERSIST_RETRY",503);}
+  }
+  notifyTaskCancellation(t:Task){
+    this.dispatchImports();
+    for(const ws of this.ctx.getWebSockets("device"))
+      for(const op of this.state.operations.filter(o=>o.taskId===t.id&&o.state==="cancelled"))
+        this.send(ws,{type:"cancel",operationId:op.id});
+    if(t.sessionId)this.ctx.waitUntil(this.harness.abort({session:t.sessionId}).catch(()=>{}));
   }
   proactiveStep(fn:()=>void){
     try{this.database.transactionSync(()=>{fn();this.save();});}
