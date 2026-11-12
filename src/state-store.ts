@@ -1,3 +1,4 @@
+import { stableEntityPositions } from "./row-order.ts";
 import { appendChanges, changeCursor, readChanges } from "./change-feed.ts";
 import { initialState, Problem, type State } from "./domain.ts";
 
@@ -20,6 +21,7 @@ const validCollection = (name: string): name is Collection => collections.includ
  * Historical state hydration is intentionally separate from paginated client reads. */
 export class StateRepository {
   private cached = new Map<string, string>();
+  private positions = new Map<Collection, Map<string, number>>();
   private storage: StateStorage;
   private histories = new Map<string, HistoryPartition>();
   private historyCounts = new Map<string, number>();
@@ -73,12 +75,13 @@ export class StateRepository {
     const meta = new Map<string, string>(), rows = new Map<Collection, Row[]>(), untouched = new Set<string>(), counts = new Map<string,number>();
     const rest: Record<string, any> = { ...state };
     const add = (name: Collection, values: any[], idOf = (v: any) => String(v.id), parentOf = (v: any) => String(v.conversationId ?? v.taskId ?? ""), positionOf?: (v:any,position:number)=>number) => {
-      const ids = new Set<string>();
+      const ids = new Set<string>(), identities = values.map(idOf);
+      const positions = positionOf ? undefined : stableEntityPositions(identities, this.positions.get(name) ?? new Map());
       rows.set(name, values.map((v, position) => {
-        const id = idOf(v);
+        const id = identities[position];
         if (!id || ids.has(id)) throw new Problem("DUPLICATE_STATE_ID", 409);
         ids.add(id);
-        return { id, parent: parentOf(v), position:positionOf?.(v,position)??position, value: serial(v) };
+        return { id, parent: parentOf(v), position:positionOf?.(v,position)??positions![position], value: serial(v) };
       }));
     };
     for (const name of ["tasks", "operations", "memories", "notices", "plans"] as const) { add(name, state[name]); delete rest[name]; }
@@ -135,7 +138,11 @@ export class StateRepository {
   private read(lazy=false): State {
     const state: any = initialState();
     for (const row of this.storage.sql.exec<{ id: string; value: string }>("SELECT id,value FROM pra_meta").toArray()) state[row.id] = parse(row.value);
-    const all = (name: Collection) => this.storage.sql.exec<Row>("SELECT * FROM " + table(name) + " ORDER BY position,id").toArray().map(row => parse<any>(row.value));
+    const all = (name: Collection) => {
+      const rows = this.storage.sql.exec<Row>("SELECT * FROM " + table(name) + " ORDER BY position,id").toArray();
+      if (name !== "messages") this.positions.set(name, new Map(rows.map(row => [row.id, row.position])));
+      return rows.map(row => parse<any>(row.value));
+    };
     for (const name of ["tasks", "operations", "memories", "notices", "plans"] as const) state[name] = all(name);
     state.papers = Object.fromEntries(all("papers").map(v => [v.key, v.paper]));
     if (state.has_conversations) {
@@ -152,7 +159,7 @@ export class StateRepository {
     return state;
   }
   load(): State {
-    this.histories.clear();this.cached.clear();this.messageParents.clear();
+    this.histories.clear();this.cached.clear();this.messageParents.clear();this.positions.clear();
     this.historyCounts=new Map(this.storage.sql.exec<{conversation_id:string;turns:number}>("SELECT conversation_id,turns FROM pra_history_counts").toArray().map(r=>[r.conversation_id,r.turns]));
     const state = this.read(true);
     this.knownConversations=new Set((state.conversations??[]).map(c=>c.id));
@@ -198,6 +205,8 @@ export class StateRepository {
     });
     // Never advance the cache if the transaction failed.
     this.cached = next;
+    for (const [name, rows] of split.rows) if (name !== "messages")
+      this.positions.set(name, new Map(rows.map(row => [row.id, row.position])));
     for(const id of removed){this.histories.delete(id);this.historyCounts.delete(id);}
     for(const [id,count] of split.counts)this.historyCounts.set(id,count);
     for(const row of split.rows.get("messages")??[])this.messageParents.set("messages:"+row.id,row.parent);

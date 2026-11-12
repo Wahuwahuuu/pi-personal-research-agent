@@ -150,3 +150,48 @@ test("a failed control commit cannot persist a cancellation without its receipt 
  recordConversationControl(restored,"c0","取消当前研究"," control ",selection);
  assert.equal(restored.conversations![0].history.length,1);f.db.close();
 });
+
+test("removing one of 10000 tasks does not rewrite the remaining ordered entities",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();
+ const template=submit(s,"Synthetic retained question","first","chat");
+ s.tasks=Array.from({length:10000},(_,i)=>({...template,id:"task-"+i,requestId:"request-"+i}));
+ store.save(s);
+ const before=f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks WHERE id!='task-0' ORDER BY position,id").all();
+ s.tasks.shift();const changed=store.save(s);
+ assert.equal(changed.writes,1);
+ assert.deepEqual(f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks ORDER BY position,id").all(),before);
+ assert.deepEqual(new StateRepository(f.storage).load().tasks.map(t=>t.id),s.tasks.map(t=>t.id));
+ f.db.close();
+});
+
+test("stable entity positions preserve insertion, explicit reorder and transaction retry semantics",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();
+ const template=submit(s,"Ordered task","base","chat");
+ s.tasks=Array.from({length:4},(_,i)=>({...template,id:"t"+i,requestId:"r"+i}));store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();
+ loaded.tasks.splice(2,0,{...template,id:"middle",requestId:"middle"});
+ assert.equal(cold.save(loaded).writes,1);
+ loaded.tasks.unshift({...template,id:"start",requestId:"start"});
+ loaded.tasks.push({...template,id:"end",requestId:"end"});
+ assert.equal(cold.save(loaded).writes,2);
+ const before=f.db.prepare("SELECT id,position FROM pra_data_tasks ORDER BY position,id").all();
+ loaded.tasks.reverse();f.setFail(true);assert.throws(()=>cold.save(loaded),/INJECTED/);
+ assert.deepEqual(f.db.prepare("SELECT id,position FROM pra_data_tasks ORDER BY position,id").all(),before);
+ f.setFail(false);cold.save(loaded);
+ assert.deepEqual(new StateRepository(f.storage).load().tasks.map(t=>t.id),loaded.tasks.map(t=>t.id));
+ assert.equal(cold.save(loaded).writes,0);f.db.close();
+});
+
+test("old contiguous entity positions do not migrate eagerly and rebalance only when an insertion has no gap",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();
+ const template=submit(s,"Legacy position","base","chat");
+ s.tasks=Array.from({length:3},(_,i)=>({...template,id:"t"+i,requestId:"r"+i}));store.save(s);
+ f.db.exec("UPDATE pra_data_tasks SET position=CAST(substr(id,2) AS INTEGER)");
+ const cold=new StateRepository(f.storage),loaded=cold.load();
+ assert.equal(cold.save(loaded).writes,0);
+ loaded.tasks.splice(1,0,{...template,id:"middle",requestId:"middle"});cold.save(loaded);
+ assert.deepEqual(new StateRepository(f.storage).load().tasks.map(t=>t.id),["t0","middle","t1","t2"]);
+ assert.equal(cold.save(loaded).writes,0);
+ loaded.tasks.splice(2,0,{...template,id:"second",requestId:"second"});
+ assert.equal(cold.save(loaded).writes,1);f.db.close();
+});
