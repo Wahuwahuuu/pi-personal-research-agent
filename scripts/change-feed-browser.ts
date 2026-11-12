@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 export async function verifyChangeFeedBrowser(base:string,page:Page,api:(path:string,method?:string,body?:any)=>Promise<any>,shot:(name:string)=>Promise<void>){
  const before=(await api("state")).usage.requests;
  const project=await api("projects","POST",{requestId:crypto.randomUUID(),title:"Before reconnect",goal:"Cursor recovery"});
+ const transportErrors:string[]=[];
  let blocked=false,resets=0,pair:{client:WebSocketRoute;server:WebSocketRoute}|undefined;
  await page.routeWebSocket("**/api/events?*",async client=>{
   if(blocked){await client.close();return;}
@@ -13,10 +14,14 @@ export async function verifyChangeFeedBrowser(base:string,page:Page,api:(path:st
  const changes="**/api/changes?*";
  await page.route(changes,async route=>{
   // Ask the real API for a deliberately invalidated cursor; no fabricated success payload.
-  const url=new URL(route.request().url());url.searchParams.set("after",String(Number.MAX_SAFE_INTEGER));
-  const response=await route.fetch({url:url.href}),body=await response.json();
-  assert.equal(response.status(),200);assert.equal(body.resetRequired,true);assert.deepEqual(body.events,[]);
-  resets++;await route.fulfill({response});
+  try{
+   const body=await api("changes?after="+Number.MAX_SAFE_INTEGER+"&limit=100");
+   assert.equal(body.resetRequired,true);assert.deepEqual(body.events,[]);
+   resets++;await route.fulfill({json:body});
+  }catch{
+   // Playwright request errors may include cookie headers; never log those errors.
+   transportErrors.push("CHANGE_PROBE_FAILED");await route.abort().catch(()=>{});
+  }
  });
  try{
   await page.goto(base+"/#projects/"+project.id);
@@ -37,9 +42,12 @@ export async function verifyChangeFeedBrowser(base:string,page:Page,api:(path:st
    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
    await shot(width===390?"change-feed-mobile":"change-feed-desktop");
   }
+  assert.deepEqual(transportErrors,[]);
   assert.equal((await api("state")).usage.requests,before);
   return ["desktop and mobile reconnect reload authoritative project data after a real cursor reset response; paid and mock model calls unchanged"];
  }finally{
-  blocked=false;await page.unroute(changes);await api("projects/"+project.id,"DELETE",{requestId:crypto.randomUUID()});
+  blocked=true;await pair?.client.close().catch(()=>{});await pair?.server.close().catch(()=>{});
+  await page.unrouteAll({behavior:"wait"});
+  await api("projects/"+project.id,"DELETE",{requestId:crypto.randomUUID()});
  }
 }
