@@ -51,7 +51,16 @@ export async function launchApplication(configPath:string,desktop:boolean,show=f
   }catch(e){
    // Stop only this authenticated configuration. Never terminate processes by their executable names.
    await (controls.stop??stopNode)(configPath).catch(()=>{});
-   if(child.exitCode===null)child.kill();
+   if(child.exitCode===null){
+    // Wait for the owned launcher to exit before the final authenticated cleanup;
+    // it must not create another child after the stop marker was observed.
+    const exited=new Promise<void>((ok,no)=>{
+     const timer=setTimeout(()=>no(Error("LOCAL_APPLICATION_CLEANUP_FAILED")),5000);
+     child.once("exit",()=>{clearTimeout(timer);ok();});
+    });
+    child.kill();await exited;
+   }
+   await (controls.stop??stopNode)(configPath);
    throw e;
   }
  });

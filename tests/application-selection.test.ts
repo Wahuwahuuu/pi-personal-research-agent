@@ -107,3 +107,13 @@ test("wrong or failed startup cannot be reported as running and stops only the s
  await assert.rejects(launchApplication(f.config,true,false,{...f.controls,health:async()=>undefined,spawn:()=>child,stop:async path=>{stopped=path;}}),/START_FAILED/);
  assert.equal(stopped,f.config);
 });
+
+test("a failed launcher cannot create a late orphan after cleanup; final stop runs after the owned parent exits",async t=>{
+ const f=await fixture(t);await selectApplication(f.config,f.first.dir,f.controls);
+ const child=new EventEmitter() as any;child.exitCode=null;
+ const sequence:string[]=[];
+ child.kill=()=>{sequence.push("kill-parent");child.exitCode=1;child.emit("exit",1);return true;};
+ let reads=0;
+ await assert.rejects(launchApplication(f.config,true,false,{...f.controls,health:async()=>++reads===1?undefined:{instanceId:"wrong"},spawn:()=>child,stop:async()=>{sequence.push("stop-config");}}),/RESTART_REQUIRED/);
+ assert.deepEqual(sequence,["stop-config","kill-parent","stop-config"]);
+});
