@@ -44,6 +44,20 @@ node scripts/deploy-free.ts
 
 若本机直连 workers.dev 不可用，可显式使用已有 HTTP 代理。测试脚本的 Node fetch 使用 `HTTPS_PROXY` 和 `NODE_USE_ENV_PROXY=1`；本地 WebSocket 使用配置的 `proxy` 或 `HTTPS_PROXY`。不要关闭 TLS 校验。
 
+## Windows 运行环境安装
+
+准备 uv 0.10.12 和已有的 embedding／重排模型目录后，运行：
+
+```powershell
+node scripts/install-runtime.ts --models "F:\Models\research" --device cuda
+```
+
+使用 CPU 时将 device 改为 cpu。默认由 uv 查找或安装 Python 3.12，也可以通过 --python 指定已有 Python 3.12 的绝对路径；需要代理时显式传入 --proxy http://127.0.0.1:7890，不支持在代理地址中携带凭证。
+
+安装器使用 packages/retrieval/uv.lock，以 --locked 安装检索、PDF 和托盘依赖。每次新建 .local/runtimes 下的独立环境，校验固定依赖、Python、模型资源及 CUDA 可用性后才将 status.json 标记为 ready。返回的 python 路径用于节点模板中的 python.executable 和 libraryPython。模型文件由部署者准备，安装器只读取和校验，不下载或更改它们。
+
+此步骤不启动服务、不修改已有节点配置，也不切换现有 Python 环境。失败会保留 failed 状态和规范错误代码供检查；再次安装会使用新目录。节点版本升级与回滚流程仍需单独执行。
+
 ## 本地节点
 
 先复制 `local/node.example.json` 到 `.local/node-install.json`，填入云端地址、本机 Python、模型和论文库目录，再运行 `powershell -NoProfile -File scripts/setup-node.ps1`。脚本先检查 Python 3.12、固定依赖、CUDA（如选用）、模型文件及已有索引，再以隐藏输入接收网页设置中生成的设备凭证。支持已启用 Passkey 的账户，不读取管理员密码或模型密钥。凭证经只读接口验证后使用 Windows DPAPI 保存，配置写入 `.local/node.json`；已有配置、密钥和数据目录不会被覆盖。独立安装可指定 `-Template` 与 `-Config`。默认模板使用显式空论文库：配置 Python、模型和 libraryRoot 路径后即可启动，首次导入后才建立索引并加载检索模型。已有索引可使用 local/node-existing-index.example.json，填入论文库、索引路径和 YOUR_INDEX_VERSION；CPU/CUDA 身份必须与原构建一致。缺失的已有索引不会静默改成空库，已有本机配置也不会自动覆盖。
