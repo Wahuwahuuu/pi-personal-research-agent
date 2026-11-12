@@ -40,4 +40,17 @@ class ControllerTests(unittest.TestCase):
                 self.assertTrue(file.resolve().is_relative_to(Path(temp).resolve()))
                 self.assertEqual(file.read_bytes(),b"%PDF-synthetic")
 
+    def test_reader_handoff_strips_paths_and_checks_native_page_bounds(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"node.json";path.write_text(json.dumps({"endpoint":"https://cloud.example","dataDir":temp}),encoding="utf8")
+            controller=Controller(path)
+            item={"id":"request","paperId":"paper","indexVersion":"version","page":3,"path":"private/path","command":"shell"}
+            with patch.object(controller,"request",return_value=item):
+                self.assertEqual(controller.reader_poll(),{k:item[k] for k in ("id","paperId","indexVersion","page")})
+            for page in (0,1001,True,"3"):
+                with patch.object(controller,"request",return_value={**item,"page":page}):
+                    with self.assertRaises(LocalError):controller.reader_poll()
+            with patch.object(controller,"request",return_value={"valid":False}):
+                self.assertFalse(controller.reader_valid("request"))
+
 if __name__=="__main__":unittest.main()

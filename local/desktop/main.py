@@ -115,6 +115,28 @@ def main():
             if (controller.data/"tray-open").exists():
                 (controller.data/"tray-open").unlink(missing_ok=True);view.show()
             state=controller.status()
+            if state.get("ok"):
+                request=result(controller.reader_poll)
+                item=request.get("value")
+                if item:
+                    opened=False;path=None;reader=None
+                    try:
+                        path=controller.reader_file(item["paperId"],item["indexVersion"])
+                        if controller.reader_valid(item["id"]):
+                            reader_files.add(path)
+                            reader=webview.create_window("论文全文 · Aster",url=path.as_uri()+"#page="+str(item["page"]),width=1050,height=800,min_size=(640,480),text_select=True)
+                            def clear_reader(path=path):
+                                try:path.unlink(missing_ok=True);reader_files.discard(path)
+                                except OSError:pass
+                            reader.events.closed+=clear_reader
+                            opened=reader.events.shown.wait(10)
+                            if not opened:reader.destroy()
+                        else:path.unlink(missing_ok=True)
+                    except Exception:pass
+                    if not opened and path:
+                        try:path.unlink(missing_ok=True);reader_files.discard(path)
+                        except OSError:pass
+                    result(lambda:controller.reader_result(item["id"],opened))
             failures=0 if state.get("ok") else failures+1
             if failures>=10:result(controller.start);failures=0
             icon.title="Aster · "+("已连接" if state.get("connected") else "等待连接")

@@ -116,6 +116,18 @@ class Controller:
         with tempfile.NamedTemporaryFile(dir=directory,suffix=".pdf",delete=False) as file:
             file.write(data)
             return Path(file.name)
+    def reader_poll(self):
+        item=self.request("reader/poll",{})
+        if item is None:return None
+        if not isinstance(item,dict) or not all(isinstance(item.get(k),str) and 0<len(item[k])<=256 for k in ("id","paperId","indexVersion")):
+            raise LocalError("INVALID_READER_REQUEST")
+        page=item.get("page",1)
+        if type(page) is not int or not 1<=page<=1000:raise LocalError("INVALID_PDF_PAGE")
+        return {"id":item["id"],"paperId":item["paperId"],"indexVersion":item["indexVersion"],"page":page}
+    def reader_valid(self,identifier):
+        return self.request("reader/check",{"id":identifier}).get("valid") is True
+    def reader_result(self,identifier,opened):
+        return self.request("reader/result",{"id":identifier,"opened":bool(opened)})
     def diagnostics(self):
         state=self.status()
         return {"protocol":1,"connected":bool(state.get("connected")),"ready":bool(state.get("ready")),

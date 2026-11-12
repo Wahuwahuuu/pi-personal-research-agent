@@ -1,3 +1,4 @@
+import {verifyReaderBrowser} from "./reader-browser.ts";
 import {freezeWorker} from "./freeze-worker.ts";
 import WebSocket from "ws";
 import {nodeCatalog,catalogPages} from "../local/catalog.ts";
@@ -87,7 +88,7 @@ async function route(hash: string) {
 async function screenshot(name: string) {
   await page.screenshot({
     path: resolve(shots, name + ".png"),
-    fullPage: name.startsWith("imports-"),
+    fullPage: name.startsWith("imports-")||name.startsWith("reader-"),
   });
   assert.equal(
     await page.evaluate(
@@ -183,7 +184,11 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
-  if(process.env.PRA_BROWSER_SCOPE==="imports"){
+  if(process.env.PRA_BROWSER_SCOPE==="reader"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    checks.push(...await verifyReaderBrowser(base,page,context,api,screenshot));
+  }else if(process.env.PRA_BROWSER_SCOPE==="imports"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     await verifyImportBrowser();
@@ -615,13 +620,14 @@ try {
     kind: "local-browser-product-flows",
     timestamp: new Date().toISOString(),
     checks,
-    browser: process.env.PRA_BROWSER_SCOPE==="imports"?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
+    deviceFixture:process.env.PRA_BROWSER_SCOPE==="reader",nativeWindowObserved:false,
+    browser: ["imports","reader"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
     viewports: ["1440x900", "390x844"],
     paidCalls: 0,
     cloudDeployment: false,
   };
   await writeFile(
-    process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
+    process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

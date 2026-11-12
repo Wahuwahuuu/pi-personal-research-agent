@@ -727,7 +727,7 @@ export function ArtifactView({
   run,
   refresh,
   onSource,
-}: Props & { id?: string; onSource: (s: Chunk) => void }) {
+}: Props & { id?: string; onSource: (s: Chunk,artifactId:string) => void }) {
   const list = usePaged<Artifact>("artifacts?limit=30", revision),
     detail = useResource<SavedArtifact>(
       id ? "artifacts/" + id : undefined,
@@ -882,7 +882,7 @@ export function ArtifactView({
               <Markdown
                 text={a.content}
                 sources={a.sources}
-                onCitation={onSource}
+                onCitation={(source)=>onSource(source,a.id)}
               />
             )}
             <div className="section-actions">

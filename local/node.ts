@@ -1,3 +1,4 @@
+import {ReaderQueue} from "./reader-queue.ts";
 import {CloudImports} from "./cloud-imports.ts";
 import {timingSafeEqual,randomUUID} from "node:crypto";
 import {LibraryClient,type ImportJob} from "./library-client.ts";
@@ -159,6 +160,15 @@ let socket: WebSocket | undefined,
 function send(data: unknown) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(data));
 }
+const readerQueue=new ReaderQueue(db);
+let readerHeartbeat=0,readerReadySent=false;
+function readerReady(){return !stopping&&Date.now()-readerHeartbeat<10000;}
+function flushReaders(){
+ if(!catalogAcknowledged||socket?.readyState!==WebSocket.OPEN)return;
+ const ready=readerReady();
+ if(ready!==readerReadySent){send({type:"reader_status",ready});readerReadySent=ready;}
+ for(const result of readerQueue.results())send(result);
+}
 const cloudImports=library?new CloudImports(db,library,send,id=>{if(activeImport===id)importAbort?.abort();}):undefined;
 async function flushImports(force=false){
  if(!cloudImports||stopping||!catalogAcknowledged||socket?.readyState!==WebSocket.OPEN)return;
@@ -286,7 +296,7 @@ function connect() {
       indexVersion,
       retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
-      capabilities: ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
+      capabilities: ["reader-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
       readerPort: config.port ?? 48731,
     });
   });
@@ -306,12 +316,19 @@ function connect() {
         );
         send({ type: "catalog_end" });
       } else if (m.type === "catalog_ack") {
-        catalogAcknowledged=true;
+        catalogAcknowledged=true;readerReadySent=false;flushReaders();
         for (const r of db
           .prepare("SELECT frame FROM outbox WHERE acked=0")
           .all() as { frame: string }[])
           send(JSON.parse(r.frame));
         void announceReady();void flushImports(true);
+      } else if(m.type==="reader_open"){
+        if(!catalogAcknowledged)throw Error("HELLO_REQUIRED");
+        readerQueue.receive(m);flushReaders();
+      } else if(m.type==="reader_cancel"){
+        readerQueue.cancel(m.id);flushReaders();
+      } else if(m.type==="reader_ack"){
+        readerQueue.ack(m.id);
       } else if(["library_import","library_cancel","library_ack"].includes(m.type)) {
         if(!catalogAcknowledged||!cloudImports)throw Error("IMPORT_CAPABILITY_REQUIRED");
         void cloudImports.receive(m).then(()=>{void pollLibrary();}).catch(()=>{lastLocalError="INVALID_IMPORT_COMMAND";});
@@ -333,6 +350,8 @@ function connect() {
   });
   ws.on("error", () => {});
   ws.on("close", () => {
+    catalogAcknowledged=false;readerReadySent=false;
+    for(const r of readerQueue.all())readerQueue.cancel(r.id); // A disconnected open intent must not create a surprise window after reconnect.
     clearInterval(heartbeat);
     if (!stopping)
       timer = setTimeout(
@@ -356,7 +375,7 @@ function stop() {
 process.on("SIGINT", stop);
 process.on("SIGTERM", stop);
 connect();
-const libraryTimer=setInterval(()=>{void pollLibrary();void flushImports();},5000);libraryTimer.unref();
+const libraryTimer=setInterval(()=>{void pollLibrary();void flushImports();flushReaders();},5000);libraryTimer.unref();
 console.log("Local research node started; credentials are never logged.");
 
 async function announceReady(){
@@ -437,6 +456,19 @@ localHandler=async(req,res)=>{
    else if(value.action==="shutdown"){reply({accepted:true});setTimeout(stop,25);return true;}
    else throw Error("ACTION_DENIED");
    reply({accepted:true});return true;
+  }
+  if(path==="/local/reader/poll"){
+   readerHeartbeat=Date.now();flushReaders();
+   const connected=catalogAcknowledged&&socket?.readyState===WebSocket.OPEN;
+   reply(connected?readerQueue.claim():null);return true;
+  }
+  if(path==="/local/reader/check"){
+   const item=readerQueue.get(value.id);
+   reply({valid:catalogAcknowledged&&socket?.readyState===WebSocket.OPEN&&item?.status==="claimed"&&item.expires>Date.now()});return true;
+  }
+  if(path==="/local/reader/result"){
+   if(typeof value.id!=="string"||typeof value.opened!=="boolean")throw Error("INVALID_READER_RESULT");
+   readerQueue.finish(value.id,value.opened);flushReaders();reply({accepted:true});return true;
   }
   if(!library)throw Error("LIBRARY_NOT_CONFIGURED");
   if(path==="/local/import"){

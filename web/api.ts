@@ -42,6 +42,13 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  READER_UNAVAILABLE:"本机阅读器尚未就绪，请打开 Windows 托盘、确认连接后重试。",
+  READER_EXPIRED:"阅读请求已过期。确认本机在线后，可以再次打开。",
+  READER_INTERRUPTED:"阅读器启动过程被中断。请检查本机窗口后再决定是否重试。",
+  READER_CANCELLED:"阅读请求已取消，关联会话或设备权限已有变化。",
+  PDF_UNAVAILABLE:"本机未能打开这份全文，请在 Windows 托盘检查资料是否完整，再重试。",
+  INDEX_UNAVAILABLE:"这条引用使用的资料版本已不在本机，无法准确打开。请重新检索或查看已保存证据。",
+
   SOURCE_UNAVAILABLE:"论文来源暂时无法查询，成功检查位置保持不变。",
   PLAN_CHECK_IN_PROGRESS:"本轮来源检查尚未结束，请在来源恢复并完成检查后再修改关键词或目标。",
   PROACTIVE_IMPORT_FAILED:"所选论文尚未成功入库，请在论文库检查失败原因，重试入库后继续研究任务。",

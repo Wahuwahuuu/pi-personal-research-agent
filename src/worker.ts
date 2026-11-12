@@ -1,3 +1,5 @@
+import type {Chunk} from "../packages/research/core.ts";
+import {ReaderRequests,readerView} from "./reader-requests.ts";
 import { handleModelBudget } from "./task-control.ts";
 import {draftPlan} from "./plan-draft.ts";
 import {ProactiveResearch} from "./proactive-research.ts";
@@ -102,6 +104,7 @@ export class PersonalAgent extends DurableObject<Env> {
   budgetLedger: BudgetLedger;
   deletions: DeletionStore;
   deviceIndexes: DeviceIndexes;
+  readerRequests: ReaderRequests;
   libraryJobs: LibraryJobs;
   researchBatches: ResearchBatches;
   proactive: ProactiveResearch;
@@ -132,6 +135,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.budgetLedger = new BudgetLedger(this.database);
     this.deletions = new DeletionStore(this.database);
     this.deviceIndexes = new DeviceIndexes(this.database);
+    this.readerRequests = new ReaderRequests(this.database);
     this.libraryJobs = new LibraryJobs(this.database);
     this.researchBatches = new ResearchBatches(this.database);
     this.proactive = new ProactiveResearch({state:()=>this.state,batches:this.researchBatches,imports:this.libraryJobs,workspace:this.workspace,artifacts:this.artifacts,
@@ -331,6 +335,26 @@ export class PersonalAgent extends DurableObject<Env> {
       return ws.readyState===WebSocket.OPEN&&a?.catalogReady&&this.validHash(a.hash,"device")&&(!capability||a.capabilities?.includes(capability));
     });
   }
+  readerDevice(version?:string){
+    const ws=this.connectedDevice("reader-v1"),a=ws?.deserializeAttachment();
+    if(!ws||!a.readerReady||(version&&!this.deviceIndexes.supports(a.hash,version,a.indexVersion)))return undefined;
+    return ws;
+  }
+  cancelReaders(conversationId:string){
+    for(const id of this.readerRequests.invalidate({conversationId}))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"reader_cancel",id});
+  }
+  readerLabel(ws:WebSocket){
+    return this.database.sql.exec<{label:string}>("SELECT label FROM pra_devices WHERE hash=?",ws.deserializeAttachment().hash).toArray()[0]?.label??"Windows";
+  }
+  dispatchReaders(ws:WebSocket){
+    const a=ws.deserializeAttachment();
+    if(!a?.readerReady||!this.validHash(a.hash,"device"))return;
+    for(const r of this.readerRequests.pending(a.hash)){
+      if(r.conversationId&&this.deletions.get(r.conversationId)){this.readerRequests.invalidate({conversationId:r.conversationId});this.send(ws,{type:"reader_cancel",id:r.id});continue;}
+      if(this.deviceIndexes.supports(a.hash,r.indexVersion,a.indexVersion))
+        this.send(ws,{type:"reader_open",id:r.id,paperId:r.paperId,indexVersion:r.indexVersion,page:r.page,expires:r.expires});
+    }
+  }
   deviceState(){
     const ws=this.connectedDevice(),a=ws?.deserializeAttachment();
     return{connected:!!ws,ready:!!a?.ready,phase:a?.ready?(a.phase==="empty"?"empty":"ready"):ws?(a?.phase??"loading"):"offline",canImport:!!a?.capabilities?.includes("library-v1")};
@@ -450,6 +474,34 @@ export class PersonalAgent extends DurableObject<Env> {
         })),
       );
     }
+    if(path==="/api/reader/status"&&r.method==="GET"){
+      const version=new URL(r.url).searchParams.get("indexVersion")??undefined;
+      if(version)text(version,256);
+      const ws=this.readerDevice(version);
+      return json({available:!!ws,deviceLabel:ws?this.readerLabel(ws):undefined});
+    }
+    const readerPath=path.match(/^\/api\/reader\/([a-f0-9-]{36})$/i);
+    if(readerPath&&r.method==="GET")return json(readerView(this.readerRequests.get(readerPath[1])));
+    if(path==="/api/reader/open"&&r.method==="POST"){
+      const b=await this.body(r),version=text(b.indexVersion,256),paperId=text(b.paperId,256),c=this.catalog(version);
+      if(!c.papers.some(p=>p.paper_id===paperId))throw new Problem("UNKNOWN_PAPER",404);
+      let source:Chunk|undefined,conversationId:string|undefined;
+      if(b.taskId){
+        const t=getTask(this.state,text(b.taskId,128));conversationId=t.conversationId;
+        if((conversationId&&this.deletions.get(conversationId))||t.researchIndex!==version)throw new Problem("SOURCE_UNAVAILABLE",409);
+        source=t.researchEvidence?.find(e=>e.chunk_id===b.chunkId&&e.paper_id===paperId&&e.index_version===version);
+      }else if(b.artifactId){
+        const a=this.artifacts.get(text(b.artifactId,128));conversationId=a.conversationId;
+        if(this.deletions.get(conversationId))throw new Problem("SOURCE_UNAVAILABLE",409);
+        source=a.sources.find(e=>e.chunk_id===b.chunkId&&e.paper_id===paperId&&e.index_version===version);
+      }else source=c.sources?.find(e=>e.chunk_id===b.chunkId&&e.paper_id===paperId&&e.index_version===version);
+      if(b.chunkId&&!source&&!c.evidence.some(e=>e.chunk_id===b.chunkId&&e.paper_id===paperId))throw new Problem("SOURCE_UNAVAILABLE",409);
+      const match=source?.section.match(/^Page ([1-9]\d{0,2}|1000)$/);
+      const page=match?Number(match[1]):undefined;
+      const ws=this.readerDevice(version);if(!ws)throw new Problem("READER_UNAVAILABLE",409);
+      const result=this.readerRequests.create(text(b.requestId,128),{paperId,indexVersion:version,page,conversationId},ws.deserializeAttachment().hash,this.readerLabel(ws));
+      this.dispatchReaders(ws);return json(readerView(result));
+    }
     if(path==="/api/devices"&&r.method==="GET")return json(this.ctx.storage.sql.exec("SELECT id,label,created,expires,revoked FROM pra_devices ORDER BY created DESC").toArray());
     if (path === "/api/device/pair" && r.method === "POST") {
       const b=await this.body(r),token=crypto.randomUUID()+crypto.randomUUID(),hash=await digest(token),id=crypto.randomUUID(),now=Date.now(),expires=now+90*86400000;
@@ -468,6 +520,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.ctx.storage.sql.exec("DELETE FROM pra_auth WHERE kind='device' AND hash=?",row.hash);
         this.ctx.storage.sql.exec("UPDATE pra_devices SET revoked=1 WHERE hash=?",row.hash);
         this.libraryJobs.revokeDevice(row.hash);
+        this.readerRequests.invalidate({hash:row.hash});
       }});
       for(const ws of this.ctx.getWebSockets("device"))if(rows.some(row=>row.hash===ws.deserializeAttachment()?.hash))ws.close(1008,"revoked");
       this.publish();return json({ok:true});
@@ -481,6 +534,7 @@ export class PersonalAgent extends DurableObject<Env> {
     if(conversationMatch && r.method==="DELETE") {
       const id=conversationMatch[1];
       const deletion=this.database.transactionSync(()=>{const d=this.deletions.request(this.state,id);this.save();return d;});
+      this.cancelReaders(id);
       for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});
       if(deletion.session_id)this.ctx.waitUntil(this.harness.abort({session:deletion.session_id}).catch(()=>{}));
       await this.maintenance.arm();return json(deletion,deletion.status==="completed"?200:202);
@@ -762,7 +816,7 @@ export class PersonalAgent extends DurableObject<Env> {
           for(const c of conversations)this.deletions.request(this.state,c.id);
           this.save();return {id,deletions:conversations.map(c=>c.id)};
         });
-        for(const id of result.deletions){const d=this.deletions.get(id);for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});if(d?.session_id)this.ctx.waitUntil(this.harness.abort({session:d.session_id}).catch(()=>{}));}
+        for(const id of result.deletions){this.cancelReaders(id);const d=this.deletions.get(id);for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});if(d?.session_id)this.ctx.waitUntil(this.harness.abort({session:d.session_id}).catch(()=>{}));}
         this.dispatchImports();await this.maintenance.arm();this.publish();return json(result,202);
       }
     }
@@ -844,7 +898,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.capabilities = Array.isArray(m.capabilities)
           ? m.capabilities.filter((v: unknown) =>
-              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1"].includes(
+              ["abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1"].includes(
                 String(v),
               ),
             )
@@ -859,6 +913,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.deviceIndexes.declare(a.hash,a.indexVersion,m.retainedIndexes);
         a.ready = false;
         a.catalogReady = false;
+        a.readerReady = false;
         if(a.capabilities.includes("library-v1"))this.libraryJobs.reconnect(a.hash);
         ws.serializeAttachment(a);
         this.send(ws, { type: "hello_ack", accountScope:await digest(this.ownerId) });
@@ -943,6 +998,14 @@ export class PersonalAgent extends DurableObject<Env> {
         this.sendPurges(ws);
         this.send(ws, { type: "catalog_ack", indexVersion: c.indexVersion });
         this.dispatchImports();
+      } else if(m.type==="reader_status") {
+        if(!a.catalogReady||!a.capabilities?.includes("reader-v1")||typeof m.ready!=="boolean")throw new Problem("READER_CAPABILITY_REQUIRED");
+        a.readerReady=m.ready;ws.serializeAttachment(a);
+        if(m.ready)this.dispatchReaders(ws);
+      } else if(m.type==="reader_result") {
+        if(!a.catalogReady||!a.capabilities?.includes("reader-v1"))throw new Problem("READER_CAPABILITY_REQUIRED");
+        this.readerRequests.receive(a.hash,text(m.id,128),m.status,m.error);
+        this.send(ws,{type:"reader_ack",id:m.id});
       } else if(m.type==="library_result") {
         if(!a.catalogReady||!a.capabilities?.includes("library-v1"))throw new Problem("IMPORT_CAPABILITY_REQUIRED");
         const importId=text(m.id,128);
@@ -1412,6 +1475,7 @@ export class PersonalAgent extends DurableObject<Env> {
     }
   }
   sendPurges(ws:WebSocket) {
+    for(const d of this.deletions.localPending())for(const id of this.readerRequests.invalidate({conversationId:d.id}))this.send(ws,{type:"reader_cancel",id});
     for(const d of this.deletions.localPending())this.send(ws,{type:"purge_operations",deletionId:d.id,operationIds:this.deletions.operationIds(d.id)});
   }
   async processDeletion() {
@@ -1426,6 +1490,7 @@ export class PersonalAgent extends DurableObject<Env> {
           this.workspace.forgetEntity(d.id);
           for(const id of this.artifacts.deleteConversation(d.id))this.workspace.forgetEntity(id);
           for(const task of this.state.tasks.filter(t=>t.conversationId===d.id))this.proactive.cancel(task);
+          this.readerRequests.invalidate({conversationId:d.id});
           this.researchBatches.clearResearch(d.id);
           deleteConversationState(this.state,d.id);this.save();this.deletions.cloudDone(d.id);
         });

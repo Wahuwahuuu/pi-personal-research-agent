@@ -1,3 +1,4 @@
+import {ReaderAction} from "./ReaderAction.tsx";
 import {deviceView} from "./device-state.ts";
 import { MemoryView } from "./Memory.tsx";
 import {
@@ -42,12 +43,14 @@ const navigation = [
   ["inbox", "收件箱"],
   ["memory", "记忆"],
 ];
-type Evidence = { source?: Chunk; task?: Task; paper?: Paper };
+type Evidence = { source?: Chunk; task?: Task; paper?: Paper;artifactId?:string };
 function SourcePanel({
+  accountId,
   evidence,
   close,
   select,
 }: {
+  accountId:string;
   evidence: Evidence;
   close: () => void;
   select: (s: Chunk) => void;
@@ -74,7 +77,7 @@ function SourcePanel({
     if (mobile && main) main.inert = true;
     (el.querySelector("button") as HTMLButtonElement)?.focus();
     const key = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && (mobile || el.contains(e.target as Node))) {
         e.preventDefault();
         closeRef.current();
       }
@@ -86,7 +89,9 @@ function SourcePanel({
         ];
         const first = nodes[0],
           last = nodes.at(-1);
-        if (e.shiftKey && document.activeElement === first) {
+        if (!el.contains(document.activeElement)) {
+          e.preventDefault();first?.focus();
+        } else if (e.shiftKey && document.activeElement === first) {
           e.preventDefault();
           last?.focus();
         } else if (!e.shiftKey && document.activeElement === last) {
@@ -95,9 +100,9 @@ function SourcePanel({
         }
       }
     };
-    el.addEventListener("keydown", key);
+    document.addEventListener("keydown", key);
     return () => {
-      el.removeEventListener("keydown", key);
+      document.removeEventListener("keydown", key);
       if (main) main.inert = false;
       previous?.focus();
     };
@@ -161,6 +166,11 @@ function SourcePanel({
         ) : (
           <p className="abstract">{info?.abstract || "尚无摘要记录。"}</p>
         )}
+        {paperId && (source?.index_version ?? info?.indexVersion) && <ReaderAction
+          key={paperId+":"+(source?.chunk_id??"")+":"+(source?.index_version??info?.indexVersion)}
+          accountId={accountId} paperId={paperId} indexVersion={(source?.index_version??info?.indexVersion)!}
+          chunkId={source?.chunk_id} taskId={evidence.task?.id} artifactId={evidence.artifactId}
+        />}
         {info?.originalUrl && (
           <a
             className="button-link source-link"
@@ -439,7 +449,7 @@ function Workspace({
       key={route.id ?? "list"}
       id={route.id}
       {...props!}
-      onSource={(source) => setEvidence({ source })}
+      onSource={(source,artifactId) => setEvidence({ source,artifactId })}
     />
   ) : route.page === "inbox" ? (
     <Inbox {...props!} />
@@ -529,6 +539,7 @@ function Workspace({
       </div>
       {evidence && (
         <SourcePanel
+          accountId={account.id}
           evidence={evidence}
           close={() => setEvidence(undefined)}
           select={(source) => setEvidence((v) => ({ ...v, source }))}
