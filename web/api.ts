@@ -42,6 +42,20 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  RECOVERY_REQUEST_STORAGE: "浏览器无法保存本次请求标识。请允许此站点使用会话存储后重试，当前尚未发起恢复。",
+  RECOVERY_BUSY: "当前仍有模型、工具或入库步骤执行。请等待完成，或先暂停任务，再保存或恢复检查点。",
+  CHECKPOINT_EXPIRED: "检查点已过期。请刷新列表，选择仍在有效期内的检查点。",
+  CHECKPOINT_NOT_FOUND: "找不到这个检查点，请刷新列表后重新选择。",
+  CHECKPOINT_CAPACITY: "有效检查点已达到 30 个上限，请等待旧检查点过期后再保存。",
+  RECOVERY_SCHEMA_MISMATCH: "检查点与当前应用版本或存储结构不兼容，无法恢复。请保留当前记录并查看诊断。",
+  RECOVERY_BUILD_MISMATCH: "检查点来自不同应用版本，无法在当前版本恢复。",
+  RECOVERY_PROTECTION_TOO_LARGE: "需要保留的删除、权限和用量记录超过当前恢复容量，尚未开始回退。请导出数据并联系维护者处理。",
+  RECOVERY_IN_PROGRESS: "工作区正在恢复。请在数据设置中查看状态，完成后再继续。",
+  RECOVERED_TASK_INTERRUPTED: "这项未完成任务因工作区回退而取消，已有部分成果已保留。请检查后重新安排。",
+  CHECKPOINT_UNAVAILABLE: "暂时无法创建恢复检查点。请稍后重试，当前数据未回退。",
+  RECOVERY_FAILED: "恢复保护校验尚未完成，研究数据暂不开放。请刷新状态；若仍失败，请保留诊断编号排查。",
+  RECOVERY_PROTECTION_CORRUPT: "恢复保护记录未通过完整性校验，研究数据暂不开放。请保留诊断编号并联系维护者。",
+
   LEGACY_DEVICE_OWNERSHIP_UNKNOWN:"云端内容已清理，但旧版没有完整记录哪些设备保存过结果，本地副本仍待核验；不能视为全部删除。",
   DELETION_PENDING:"这个会话的来源仍在清理，请先完成数据删除；其他独立会话可以继续使用。",
   CONTEXT_SOURCE_DELETED:"这次回答使用的来源已删除，相关结果已清除。你可以在当前会话重新提问。",

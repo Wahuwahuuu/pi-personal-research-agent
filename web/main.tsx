@@ -1,3 +1,4 @@
+import {RecoveryCheckpoints} from "./RecoveryCheckpoints.tsx";
 import {ReaderAction} from "./ReaderAction.tsx";
 import {deviceView} from "./device-state.ts";
 import { MemoryView } from "./Memory.tsx";
@@ -412,13 +413,18 @@ function Workspace({
     </>
   );
   const props = data ? { data, revision, run, refresh } : undefined;
-  const content = !data ? (
+  const content = !data && overview.error && route.page === "settings" && route.id === "data" ? (
+    <section className="page"><h1>数据与恢复</h1><div className="settings-form">
+      <RecoveryCheckpoints accountId={account.id} revision={revision} run={run} refresh={refresh} />
+    </div></section>
+  ) : !data ? (
     overview.error ? (
       <div className="page">
         <p className="error" role="alert">
           {overview.error}
         </p>
         <button onClick={overview.reload}>重新连接</button>
+        <button onClick={() => navigate("settings", "data")}>查看恢复状态</button>
       </div>
     ) : (
       <Loading />

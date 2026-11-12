@@ -1,3 +1,4 @@
+import {verifyRecoveryBrowser} from "./recovery-browser.ts";
 import {verifyDeletionBrowser} from "./deletion-browser.ts";
 import {verifyReaderBrowser} from "./reader-browser.ts";
 import {freezeWorker} from "./freeze-worker.ts";
@@ -89,9 +90,9 @@ async function route(hash: string) {
 async function screenshot(name: string) {
   await page.screenshot({
     path: resolve(shots, name + ".png"),
-    fullPage: name.startsWith("imports-")||name.startsWith("reader-")||name.startsWith("deletions-"),
+    fullPage: name.startsWith("recovery-")||name.startsWith("imports-")||name.startsWith("reader-")||name.startsWith("deletions-"),
   });
-  if(name.startsWith("deletions-")){
+  if(name.startsWith("deletions-") || name.startsWith("recovery-")){
     const workspace=page.locator(".workspace"),position=await workspace.evaluate(e=>e.scrollTop);
     assert.equal(await workspace.evaluate(e=>e.scrollWidth<=e.clientWidth),true,"workspace overflow "+name);
     if(await workspace.evaluate(e=>e.scrollHeight>e.clientHeight+10)){
@@ -194,7 +195,11 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
-  if(process.env.PRA_BROWSER_SCOPE==="deletions"){
+  if(process.env.PRA_BROWSER_SCOPE==="recovery"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    checks.push(...await verifyRecoveryBrowser(base,page,api,screenshot));
+  }else if(process.env.PRA_BROWSER_SCOPE==="deletions"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...await verifyDeletionBrowser(base,page,context,api,screenshot));
@@ -635,13 +640,13 @@ try {
     timestamp: new Date().toISOString(),
     checks,
     deviceFixture:["reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??""),nativeWindowObserved:false,
-    browser: ["imports","reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
+    browser: ["imports","reader","deletions","recovery"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
     viewports: ["1440x900", "390x844"],
     paidCalls: 0,
     cloudDeployment: false,
   };
   await writeFile(
-    process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
+    process.env.PRA_BROWSER_SCOPE==="recovery"?"docs/validation/browser-recovery.json":process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

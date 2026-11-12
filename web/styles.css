@@ -2030,3 +2030,30 @@ textarea {
   .deletion-empty .help { margin: 8px 0 16px; }
   .deletion-boundary { padding-top: 20px; border-top: 1px solid var(--line); margin-top: 12px; }
 }
+
+@layer components {
+  .recovery-checkpoints { margin-top: 36px; }
+  .recovery-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .recovery-heading h3 { font-size: 16px; }
+  .recovery-heading button { font-size: 13px; }
+  .recovery-status { margin: 24px 0; padding: 20px 0; border-block: 1px solid var(--line); }
+  .recovery-status.error { padding: 20px 16px; border: 0; }
+  .recovery-status .key-values dd { min-width: 0; }
+  .recovery-checkpoints .recovery-ack { display: flex; align-items: flex-start; gap: 8px; margin: 20px 0; }
+  .recovery-checkpoints .recovery-ack input { flex-shrink: 0; margin-top: 4px; }
+  .recovery-status p { margin-top: 8px; }
+  .recovery-status .diagnostics { margin-top: 12px; }
+  .checkpoint-form { display: flex; gap: 12px; align-items: end; margin: 24px 0; flex-wrap: wrap; }
+  .checkpoint-form .field { flex: 1 1 240px; margin: 0; }
+  .checkpoint-form > button { flex-shrink: 0; }
+  .checkpoint-list { list-style: none; padding: 0; margin: 20px 0 0; }
+  .checkpoint-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 20px 0; border-top: 1px solid var(--line); }
+  .checkpoint-row > div { flex: 1 1 240px; min-width: 0; }
+  .checkpoint-row h4 { font-size: 14px; margin: 0 0 8px; overflow-wrap: anywhere; }
+  .checkpoint-row .help { font-variant-numeric: tabular-nums; }
+  .recovery-empty { padding: 20px 0; }
+  .recovery-boundary { margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
+  .recovery-consequences { padding-left: 20px; margin: 20px 0; }
+  .recovery-consequences li + li { margin-top: 8px; }
+  .recovery-actions { display: flex; gap: 12px; justify-content: flex-end; flex-wrap: wrap; }
+}

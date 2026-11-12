@@ -1,3 +1,4 @@
+import {RecoveryCheckpoints} from "./RecoveryCheckpoints.tsx";
 import {DeletionRecords} from "./DeletionRecords.tsx";
 import {deviceView} from "./device-state.ts";
 import { useEffect, useState } from "react";
@@ -512,6 +513,7 @@ export function SettingsView({
           >
             导出在线数据
           </button>
+          <RecoveryCheckpoints accountId={account.id} build={data.build} revision={revision} run={run} refresh={refresh} />
           <DeletionRecords revision={revision} run={run} />
           <details className="diagnostics">
             <summary>诊断详情</summary>

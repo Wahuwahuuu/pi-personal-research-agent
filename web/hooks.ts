@@ -4,7 +4,8 @@ import type { Page } from "./types.ts";
 export function useResource<T>(path: string | undefined, revision = 0) {
   const [result, setResult] = useState<{ path: string; value: T }>(),
     [failure, setFailure] = useState<{ path: string; message: string }>(),
-    [retry, setRetry] = useState(0);
+    [retry, setRetry] = useState(0),
+    [settled, setSettled] = useState<{ path: string; revision: number; retry: number }>();
   useEffect(() => {
     let live = true;
     setFailure(undefined);
@@ -18,6 +19,8 @@ export function useResource<T>(path: string | undefined, revision = 0) {
       })
       .catch((e) => {
         if (live) setFailure({ path, message: errorText(e) });
+      }).finally(() => {
+        if (live) setSettled({ path, revision, retry });
       });
     return () => {
       live = false;
@@ -25,6 +28,7 @@ export function useResource<T>(path: string | undefined, revision = 0) {
   }, [path, revision, retry]);
   return {
     value: result?.path === path ? result?.value : undefined,
+    loading: !!path && (settled?.path !== path || settled?.revision !== revision || settled?.retry !== retry),
     error: failure?.path === path ? (failure?.message ?? "") : "",
     reload: () => setRetry((v) => v + 1),
   };
