@@ -228,3 +228,12 @@ node scripts/prepare-node-release.ts
 ```
 
 命令要求干净且已提交的源码，将产品所需源码和锁定的 Node 生产依赖保存到 `.local/node-releases`，安装依赖时不执行生命周期脚本。配置、设备凭证、论文、索引与开发材料不进入程序目录。每次校验覆盖源码和依赖的全部文件；失败目录没有可选用的完成收据。此步骤只准备程序版本，不启动或切换节点。Python 环境继续使用独立的安装与切换工具。
+
+已准备版本的选择与回退：
+
+```powershell
+node scripts/switch-node-release.ts --config .local/node.json --release ".local/node-releases/BUILD-ID"
+node scripts/switch-node-release.ts --config .local/node.json --rollback ".local/application-switches/OPERATION-ID/receipt.json"
+```
+
+选择前会验证完整程序、Python 环境及绝对数据路径，并停止该配置对应的节点与托盘。操作完成表示版本已选中，尚未启动；随后使用原有 `start-desktop.ps1` 或 `start-node.ps1` 启动。启动器核对本机实际报告的构建与摘要，失败不会自动改用其他代码。首次选择建立可管理的基线，因之前的工作目录不是冻结版本，首次收据不能回退到未管理源码；后续选择可以按收据回到上一份冻结版本。论文、索引、凭证和未确认结果保持在原目录，回退程序不回退这些数据。相对资料路径需先按实际目录改成绝对路径。

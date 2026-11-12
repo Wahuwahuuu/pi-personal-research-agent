@@ -4,6 +4,12 @@ $project=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 if (-not $Config) { $Config=Join-Path $project '.local\node.json' }
 $Config=[IO.Path]::GetFullPath($Config)
 if (-not (Test-Path -LiteralPath $Config)) { throw 'NODE_CONFIGURATION_REQUIRED: 请先完成本机安装与配对。' }
+if (Test-Path -LiteralPath ($Config + ".application.json")) {
+    $managedArgs=@((Join-Path $project "scripts/launch-node.ts"),"--config",$Config,"--desktop")
+    if ($Show) { $managedArgs+="--show" }
+    & node.exe @managedArgs
+    exit $LASTEXITCODE
+}
 $configured=Get-Content -LiteralPath $Config -Raw|ConvertFrom-Json
 $python=[string]$configured.libraryPython
 if (-not $python) { $python=[string]$configured.python.executable }
@@ -13,7 +19,7 @@ if (-not (Test-Path -LiteralPath $python)) { throw 'DESKTOP_RUNTIME_REQUIRED: �
 $entry=Join-Path $project 'local\desktop\main.py'
 Set-Location -LiteralPath $project
 # pythonw has no console. --show is an explicit interactive launch; scheduled runs remain in the tray.
-$arguments=@($entry,'--config',$Config)
+$arguments=@('-B',$entry,'--config',$Config)
 if ($Show) { $arguments+='--show' }
 & $python @arguments | Out-Null
 exit $LASTEXITCODE

@@ -187,6 +187,7 @@ class Controller:
         state=self.status()
         return {"protocol":1,"connected":bool(state.get("connected")),"ready":bool(state.get("ready")),
                 "paused":bool(state.get("paused")),"phase":state.get("phase"),"error":state.get("error"),
+                "applicationBuild":state.get("application",{}).get("build"),
                 "indexVersion":state.get("indexVersion"),"libraryEnabled":bool(state.get("libraryEnabled")),
                 "importStates":{status:sum(j.get("status")==status for j in state.get("imports",[])) for status in
                                 ("queued","acquiring","parsing","indexing","validating","published","failed","cancelled")}}

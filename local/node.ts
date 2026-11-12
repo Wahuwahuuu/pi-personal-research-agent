@@ -1,3 +1,4 @@
+import {applicationIdentity} from "./application-identity.ts";
 import {controlKey,requestStop} from "./lifecycle.ts";
 import {ReaderQueue} from "./reader-queue.ts";
 import {CloudImports} from "./cloud-imports.ts";
@@ -33,6 +34,7 @@ interface Config {
   libraryPython?:string;
   localSecretFile?:string;
 }
+const application=await applicationIdentity();
 const configPath = resolve(process.argv[2] ?? ".local/node.json");
 const config = JSON.parse(await readFile(configPath, "utf8")) as Config;
 if(config.configurationVersion!==undefined&&config.configurationVersion!==1)throw Error("CONFIGURATION_VERSION_UNSUPPORTED");
@@ -95,7 +97,7 @@ const lock = createServer(async (req, res) => {
     }
     if (req.url === "/health") {
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ ready: !!reading }));
+      res.end(JSON.stringify({ ready: !!reading,instanceId:controlKey(configPath),application }));
       return;
     }
     const match = req.url?.match(/^\/papers\/(\d{4}\.\d{4,5}(?:v[1-9]\d{0,3})?)$/);
@@ -436,7 +438,7 @@ localHandler=async(req,res)=>{
   if(req.method==="GET"&&path==="/local/status"){
    // Return this read, not the scheduler cache: a completed retry must not show an older cancellation.
    const currentImports=library?await library.jobs():importJobs;
-   reply({instanceId:controlKey(configPath),connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:currentImports,libraryEnabled:!!library});return true;
+   reply({instanceId:controlKey(configPath),application,connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:currentImports,libraryEnabled:!!library});return true;
   }
   if(req.method==="GET"&&path==="/local/library"){
    const params=new URL(req.url!,"http://127.0.0.1").searchParams;

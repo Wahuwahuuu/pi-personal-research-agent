@@ -48,7 +48,7 @@ async function reserve(configPath:string,config:InstallConfig){
  });
  return ()=>new Promise<void>((ok,no)=>server.close(error=>error?no(Error("LOCAL_RESERVATION_RELEASE_FAILED")):ok()));
 }
-async function validateEnvironment(config:InstallConfig,root:string,run:RuntimeRunner){
+export async function validateRuntimeEnvironment(config:InstallConfig,root:string,run:RuntimeRunner){
  for(const executable of new Set([config.python.executable,config.libraryPython])){
   await file(executable);await file(join(dirname(executable),"pythonw.exe"));
   let resources:any;
@@ -72,7 +72,7 @@ async function candidate(root:string,path:string,config:InstallConfig){
  await owned(dirname(manifest),python);await owned(dirname(manifest),pythonw);
  return {manifest,python};
 }
-async function transaction<T>(filePath:string,controls:RuntimeSwitchControls,action:(root:string,current:Buffer,config:InstallConfig)=>Promise<T>):Promise<T>{
+export async function withRuntimeConfiguration<T>(filePath:string,controls:RuntimeSwitchControls,action:(root:string,current:Buffer,config:InstallConfig)=>Promise<T>):Promise<T>{
  if((controls.platform??process.platform)!=="win32")throw Error("WINDOWS_REQUIRED");
  const root=await realpath(controls.projectRoot??project),path=resolve(filePath),lock=path+".runtime-update.sqlite";
  const existing=await lstat(lock).catch(()=>undefined);if(existing&&(existing.isSymbolicLink()||!existing.isFile()))throw Error("RUNTIME_DIRECTORY_ESCAPE");
@@ -84,17 +84,17 @@ async function transaction<T>(filePath:string,controls:RuntimeSwitchControls,act
   return await action(root,current,config);
  }finally{if(db.isTransaction)db.exec("ROLLBACK");db.close();}
 }
-async function pauseAndReserve(path:string,config:InstallConfig,controls:RuntimeSwitchControls){
+export async function pauseAndReserve(path:string,config:InstallConfig,controls:RuntimeSwitchControls){
  await (controls.stop??stopNode)(path);
  return controls.reserve?controls.reserve(config):reserve(path,config);
 }
 export async function switchRuntime(configPath:string,manifestPath:string,controls:RuntimeSwitchControls={}){
  configPath=resolve(configPath);
- return transaction(configPath,controls,async(root,current,config)=>{
+ return withRuntimeConfiguration(configPath,controls,async(root,current,config)=>{
   const next=await candidate(root,manifestPath,config),original=JSON.parse(current.toString());
   if(original.python.executable===next.python&&original.libraryPython===next.python)throw Error("RUNTIME_ALREADY_SELECTED");
   const updated={...original,python:{...original.python,executable:next.python},libraryPython:next.python};
-  const checked=installationConfig(updated);await validateEnvironment(checked,root,controls.run??runRuntimeCommand);
+  const checked=installationConfig(updated);await validateRuntimeEnvironment(checked,root,controls.run??runRuntimeCommand);
   if(sha(await file(configPath))!==sha(current))throw Error("NODE_CONFIGURATION_CHANGED");
   const release=await pauseAndReserve(configPath,config,controls);
   try{
@@ -114,7 +114,7 @@ export async function switchRuntime(configPath:string,manifestPath:string,contro
 }
 export async function rollbackRuntime(configPath:string,receiptPath:string,controls:RuntimeSwitchControls={}){
  configPath=resolve(configPath);
- return transaction(configPath,controls,async(root,current,config)=>{
+ return withRuntimeConfiguration(configPath,controls,async(root,current,config)=>{
   const path=await owned(join(root,".local/runtime-switches"),resolve(receiptPath)),folder=dirname(path);
   if(path!==join(folder,"receipt.json"))throw Error("RUNTIME_RECEIPT_REQUIRED");
   const receipt:Receipt=JSON.parse((await file(path)).toString());
@@ -126,7 +126,7 @@ export async function rollbackRuntime(configPath:string,receiptPath:string,contr
    return {rolledBack:true,changed:false,started:false};
   }
   if(sha(current)!==receipt.afterSha256)throw Error("NODE_CONFIGURATION_CHANGED");
-  const checked=installationConfig(JSON.parse(before.toString()));await validateEnvironment(checked,root,controls.run??runRuntimeCommand);
+  const checked=installationConfig(JSON.parse(before.toString()));await validateRuntimeEnvironment(checked,root,controls.run??runRuntimeCommand);
   if(sha(await file(configPath))!==sha(current))throw Error("NODE_CONFIGURATION_CHANGED");
   const release=await pauseAndReserve(configPath,config,controls);
   try{
