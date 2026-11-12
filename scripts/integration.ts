@@ -216,6 +216,19 @@ try {
   assert.equal(editedArtifact.version,2);assert.equal((await api("artifacts/"+savedArtifact.id+"?version=1")).content,researchDone.answer);
   const exported=await fetch(base+"/api/artifacts/"+savedArtifact.id+"/export?format=md",{headers:{Cookie:cookie}});assert.ok((await exported.text()).includes("Evidence."));
   checks.push("research artifacts preserve versioned original evidence, reject destructive edits and export source-bearing content");
+  const temporarySave={requestId:"artifact-tombstone-save",taskId:research.id,kind:"comparison",title:"Explicit save deletion check"};
+  const beforeArtifactCursor=(await api("overview")).cursor;
+  const temporaryArtifact=await api("artifacts","POST",temporarySave);
+  await api("artifacts/"+temporaryArtifact.id,"DELETE",{requestId:"artifact-tombstone-delete"});
+  const replayedArtifact=await fetch(base+"/api/artifacts",{method:"POST",headers:{Cookie:cookie,"Content-Type":"application/json"},body:JSON.stringify(temporarySave)});
+  assert.equal(replayedArtifact.status,410);
+  const explicitNewArtifact=await api("artifacts","POST",{...temporarySave,requestId:"artifact-tombstone-explicit-new"});
+  assert.notEqual(explicitNewArtifact.id,temporaryArtifact.id);
+  assert.equal((await fetch(base+"/api/artifacts/"+temporaryArtifact.id,{headers:{Cookie:cookie}})).status,404);
+  assert.ok((await api("overview")).cursor>beforeArtifactCursor);
+  await api("artifacts/"+explicitNewArtifact.id,"DELETE",{requestId:"artifact-tombstone-clean"});
+  checks.push("artifact deletion rejects the original save replay, permits a new explicit save and advances the subscription cursor");
+
   const readerLocal=async(route:string,body:unknown={})=>{
     const response=await fetch(localBase+"/local/reader/"+route,{method:"POST",headers:{Authorization:"Bearer "+localControl,"Content-Type":"application/json"},body:JSON.stringify(body)});
     assert.ok(response.ok,"reader local protocol "+route);return await response.json() as any;

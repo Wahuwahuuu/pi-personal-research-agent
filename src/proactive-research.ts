@@ -589,7 +589,7 @@ export class ProactiveResearch {
       return;
     }
     a.readingAnswer = t.answer;
-    this.ports.artifacts.create(
+    this.ports.artifacts.createAutomatic(
       {
         projectId: b.projectId,
         conversationId: t.conversationId!,
@@ -690,7 +690,7 @@ export class ProactiveResearch {
     });
     if (!checked || checked.citationIssues.length)
       throw Error("ASSESSMENT_CITATION_CHECK_FAILED");
-    const artifact = this.ports.artifacts.create(
+    const artifact = this.ports.artifacts.createAutomatic(
       {
         projectId: b.projectId,
         conversationId: t.conversationId!,
@@ -711,7 +711,7 @@ export class ProactiveResearch {
       });
     this.ports.batches.update(b.id, {
       status: "completed",
-      artifactId: artifact.id,
+      artifactId: artifact?.id,
       coverageGaps: a.gaps,
       error: undefined,
     });
@@ -727,7 +727,7 @@ export class ProactiveResearch {
         .concat({ turn_id: t.id, user_text: t.input, final_answer: content });
 
     t.error = undefined;
-    if (updates.some((u) => u.important)) {
+    if (artifact && updates.some((u) => u.important)) {
       const n = notice(
         this.ports.state(),
         "research:" + b.id,

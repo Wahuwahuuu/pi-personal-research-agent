@@ -621,3 +621,22 @@ test("automatic budget renewal cannot erase cumulative long-goal exhaustion", ()
     assert.equal(f.host.nextBudgetWake(), undefined);
   } finally { f.db.close(); }
 });
+
+test("replaying proactive completion respects deleted reading and brief records without a persistence retry loop",()=>{
+ const f=fixture();
+ try{
+  const task=f.select();f.publishNext();f.publishNext();f.read(task);
+  const reading=f.artifacts.list().items.find(a=>a.kind==="reading")!;
+  f.assess(task);const brief=f.artifacts.list().items.find(a=>a.kind==="brief")!;
+  f.artifacts.delete(reading.id);f.artifacts.delete(brief.id);
+  f.state.notices=f.state.notices.filter(n=>n.artifactId!==brief.id);
+  task.proactive!.stage="research";task.status="completed";
+  for(const id of task.proactive!.selectedIds)f.batches.updateCandidate(id,{phase:"reading"});
+  f.batches.update(f.batch.id,{status:"processing"});
+  f.read(task);assert.equal(task.proactive!.stage,"assess");
+  f.assess(task);
+  assert.equal(task.status,"completed");assert.equal(task.proactive!.stage,"done");
+  assert.equal(f.artifacts.list().items.length,0);assert.equal(f.state.notices.length,0);
+  assert.equal(f.batches.get(f.batch.id).artifactId,undefined);
+ }finally{f.db.close();}
+});

@@ -783,7 +783,7 @@ export class PersonalAgent extends DurableObject<Env> {
         if(!t.answer||!["completed","waiting_user"].includes(t.status))throw new Problem("RESULT_NOT_READY",409);
         const c=this.state.conversations?.find(c=>c.id===t.conversationId);if(!c)throw new Problem("NOT_FOUND",404);
         const artifact=this.workspace.once(b.requestId,"artifact:create",b,()=>this.artifacts.create({projectId:c.projectId,conversationId:c.id,taskId:t.id,
-          kind:b.kind as any??"reading",title:text(b.title??t.input.slice(0,120),150),partial:t.status!=="completed"},t.answer!,t.researchEvidence??[]));
+          kind:b.kind as any??"reading",title:text(b.title??t.input.slice(0,120),150),partial:t.status!=="completed"},t.answer!,t.researchEvidence??[],{explicitSave:true}));
         this.publish();return json(artifact,201);
       }
     }
@@ -804,7 +804,7 @@ export class PersonalAgent extends DurableObject<Env> {
         const b=await this.body(r),value=this.workspace.once(b.requestId,"artifact:"+id,b,()=>this.artifacts.revise(id,Number(b.version),text(b.content,12000),typeof b.title==="string"?text(b.title,150):undefined));
         this.publish();return json(value);
       }
-      if(!artifact[2]&&r.method==="DELETE"){const b=await this.body(r);const value=this.workspace.once(b.requestId,"artifact:delete:"+id,{},()=>{this.artifacts.delete(id);this.workspace.forgetEntity(id);return{ok:true};});this.publish();return json(value);}
+      if(!artifact[2]&&r.method==="DELETE"){const b=await this.body(r);const value=this.workspace.once(b.requestId,"artifact:delete:"+id,{},()=>{this.artifacts.delete(id);this.workspace.forgetEntity(id);this.state.notices=this.state.notices.filter(n=>n.artifactId!==id);this.save();return{ok:true};});this.publish();return json(value);}
     }
     if(path==="/api/settings"){
       if(r.method==="GET")return json(this.workspace.settings());
