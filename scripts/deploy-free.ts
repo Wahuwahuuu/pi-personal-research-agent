@@ -1,130 +1,75 @@
-import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
-import {
-  parseModelSettings,
-  modelDeploymentArgs,
-} from "../src/model-settings.ts";
+import {execFileSync} from "node:child_process";
+import {mkdir,readFile,writeFile,cp,rename} from "node:fs/promises";
+import {resolve,sep} from "node:path";
+import {parseModelSettings,modelDeploymentArgs} from "../src/model-settings.ts";
+import {deploymentAccess,waitForDeployment,type DeploymentAccess} from "./deployment-access.ts";
+import {freezeWorker} from "./freeze-worker.ts";
 // No billing mutations; the operator has confirmed Workers Free for this account.
-const env = { ...process.env, WRANGLER_SEND_METRICS: "false" };
-const settingsText = await readFile(".local/model-settings.json", "utf8").catch(
-  (error: NodeJS.ErrnoException) => {
-    if (error.code === "ENOENT") return undefined;
-    throw error;
-  },
-);
-const settings = settingsText
-  ? parseModelSettings(JSON.parse(settingsText))
-  : undefined;
-const cli = (args: string[], input?: string) =>
-  execFileSync(
-    process.execPath,
-    ["node_modules/wrangler/bin/wrangler.js", ...args],
-    {
-      encoding: "utf8",
-      windowsHide: true,
-      env,
-      stdio: ["pipe", "pipe", "pipe"],
-      input,
-    },
-  );
-execFileSync(process.execPath, ["node_modules/vite/bin/vite.js","build"],{windowsHide:true,stdio:"inherit"});
-const who = JSON.parse(cli(["whoami", "--json"]));
-if (!who.loggedIn || who.accounts.length !== 1)
-  throw new Error("ONE_AUTHENTICATED_ACCOUNT_REQUIRED");
-const auth = JSON.parse(cli(["auth", "token", "--json"]));
-const account = who.accounts[0].id,
-  name = "pi-personal-research-agent";
-const response = await fetch(
-  `https://api.cloudflare.com/client/v4/accounts/${account}/workers/scripts`,
-  { headers: { Authorization: "Bearer " + auth.token } },
-);
-const listing = (await response.json()) as any;
-if (!response.ok || !listing.success)
-  throw new Error("CANNOT_CHECK_EXISTING_WORKER");
-const previous = await readFile(".local/deployment.json", "utf8")
-  .then(JSON.parse)
-  .catch(() => undefined);
-if (listing.result.some((s: any) => s.id === name) && previous?.name !== name)
-  throw new Error("REFUSING_TO_OVERWRITE_UNRECOGNIZED_WORKER");
-await mkdir(".local", { recursive: true });
-let token: string;
-if (previous) {
-  token = execFileSync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-File",
-      "scripts/read-secret.ps1",
-      resolve(".local/admin.secret"),
-    ],
-    { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
-  ).trim();
-} else {
-  token = crypto.randomUUID() + crypto.randomUUID();
-  execFileSync(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-File",
-      "scripts/write-secret.ps1",
-      resolve(".local/admin.secret"),
-    ],
-    {
-      input: token,
-      encoding: "utf8",
-      windowsHide: true,
-      stdio: ["pipe", "pipe", "pipe"],
-    },
-  );
+const env={...process.env,WRANGLER_SEND_METRICS:"false"};
+const git=(args:string[])=>execFileSync("git",args,{encoding:"utf8",windowsHide:true}).trim();
+const build=git(["rev-parse","HEAD"]);
+function committed(){if(git(["status","--porcelain","--untracked-files=normal"])||git(["rev-parse","HEAD"])!==build)throw Error("COMMITTED_BUILD_REQUIRED");}
+committed();
+async function optionalJson(path:string){try{return JSON.parse(await readFile(path,"utf8"));}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw Error("INVALID_LOCAL_DEPLOYMENT_CONFIGURATION");}}
+const rawSettings=await optionalJson(".local/model-settings.json"),settings=rawSettings?parseModelSettings(rawSettings):undefined;
+const cli=(args:string[],input?:string)=>{
+ try{return execFileSync(process.execPath,["node_modules/wrangler/bin/wrangler.js",...args],{encoding:"utf8",windowsHide:true,env,stdio:["pipe","pipe","pipe"],input,timeout:240000});}
+ catch{throw Error("CLOUDFLARE_"+args[0].toUpperCase()+"_FAILED");}
+};
+const secret=(path:string)=>{
+ try{return execFileSync("powershell.exe",["-NoProfile","-NonInteractive","-File","scripts/read-secret.ps1",resolve(path)],{encoding:"utf8",windowsHide:true,stdio:["ignore","pipe","pipe"]}).trim();}
+ catch{throw Error("DEPLOYMENT_CREDENTIAL_UNAVAILABLE");}
+};
+const optionalSecret=async(path:string)=>{try{await readFile(path);return secret(path);}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw error;}};
+const who=JSON.parse(cli(["whoami","--json"]));if(!who.loggedIn||who.accounts.length!==1)throw Error("ONE_AUTHENTICATED_ACCOUNT_REQUIRED");
+const auth=JSON.parse(cli(["auth","token","--json"])),name="pi-personal-research-agent";
+const response=await fetch("https://api.cloudflare.com/client/v4/accounts/"+who.accounts[0].id+"/workers/scripts",{headers:{Authorization:"Bearer "+auth.token},redirect:"error",signal:AbortSignal.timeout(20000)});
+const listing=await response.json() as any;if(!response.ok||!listing.success)throw Error("CANNOT_CHECK_EXISTING_WORKER");
+const verified=await optionalJson(".local/deployment.json"),pending=await optionalJson(".local/deployment-pending.json");
+const previous=verified??pending;
+if(previous&&(previous.name!==name||!/^https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev$/.test(previous.url)))throw Error("UNRECOGNIZED_DEPLOYMENT_RECORD");
+if(listing.result.some((s:any)=>s.id===name)&&!previous)throw Error("REFUSING_TO_OVERWRITE_UNRECOGNIZED_WORKER");
+await mkdir(".local",{recursive:true});
+let token:string;
+if(previous)token=secret(".local/admin.secret");
+else{
+ token=crypto.randomUUID()+crypto.randomUUID();
+ execFileSync("powershell.exe",["-NoProfile","-NonInteractive","-File","scripts/write-secret.ps1",resolve(".local/admin.secret")],{input:token,encoding:"utf8",windowsHide:true,stdio:["pipe","pipe","pipe"]});
 }
-// Secret is sent on stdin, never as a command argument or log line.
-const build=execFileSync("git",["rev-parse","HEAD"],{encoding:"utf8",windowsHide:true}).trim();
-const output = cli(["deploy", "--var", "BUILD_ID:"+build, ...modelDeploymentArgs(settings)]);
-const url = output.match(
-  /https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev/,
-)?.[0];
-if (!url) throw new Error("DEPLOYED_URL_NOT_FOUND");
-await writeFile(
-  ".local/deployment.json",
-  JSON.stringify(
-    {
-      name,
-      url,
-      mode: settings?.mode ?? "mock",
-      modelId: settings?.mode === "live" ? settings.modelId : "deterministic-v1",
-      thinking: "off",
-      freePlanConfirmedByUser: true,
-      build,
-      deployed: new Date().toISOString(),
-    },
-    null,
-    2,
-  ),
-);
-if(!previous)cli(["secret", "bulk"], JSON.stringify({ ADMIN_TOKEN: token }));
-// Verify the actual personal DO serving traffic, not just the uploaded script.
-let ready=false;
-for(const end=Date.now()+120000;Date.now()<end;){
- try{
-  const login=await fetch(url+"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token}),signal:AbortSignal.timeout(10000)});
-  const cookie=login.headers.get("set-cookie")?.split(";")[0];
-  if(cookie){const r=await fetch(url+"/api/state",{headers:{Cookie:cookie},signal:AbortSignal.timeout(10000)});const state=await r.json() as any;if(r.ok&&state.build===build){ready=true;break;}}
- }catch{/* Deployment propagation or transient transport; bounded retry without model calls. */}
- await new Promise(r=>setTimeout(r,1500));
+let access:DeploymentAccess|undefined;
+if(!verified&&pending?.initialProvisioning){
+ const release=resolve(pending.release??"");
+ if(!release.startsWith(resolve(".local/releases")+sep))throw Error("UNRECOGNIZED_INITIAL_RELEASE");
+ const file=resolve(release,"wrangler.json"),initial=await optionalJson(file);
+ if(initial?.name!==name||initial.vars?.BUILD_ID!==pending.build)throw Error("UNRECOGNIZED_INITIAL_RELEASE");
+ // Resume only our recorded first installation; reuse the same protected key.
+ cli(["secret","bulk","--config",file],JSON.stringify({ADMIN_TOKEN:token}));
 }
-if(!ready)throw Error("DEPLOYED_BUILD_NOT_SERVING");
-console.log(
-  JSON.stringify({
-    url,
-    mode: settings?.mode ?? "mock",
-    modelId: settings?.mode === "live" ? settings.modelId : "deterministic-v1",
-    thinking: "off",
-    adminCredential: "DPAPI protected .local/admin.secret",
-    planChanged: false,
-    build,
-    servingBuildVerified:true,
-  }),
-);
+if(previous){
+ let deviceToken=process.env.PRA_DEPLOY_DEVICE_TOKEN;
+ const node=await optionalJson(".local/node.json");
+ if(!deviceToken&&node?.endpoint===previous.url&&typeof node.secretFile==="string")deviceToken=secret(node.secretFile);
+ const sessionCookie=process.env.PRA_DEPLOY_SESSION??await optionalSecret(".local/deployment-session.secret");
+ // Authentication must succeed before any new production upload.
+ access=await deploymentAccess(previous.url,{deviceToken,sessionCookie,bootstrapToken:token});
+}
+execFileSync(process.execPath,["node_modules/vite/bin/vite.js","build"],{windowsHide:true,stdio:"inherit"});
+const release=resolve(".local/releases",build+"-"+Date.now());await mkdir(release,{recursive:true});
+await cp(resolve("dist/web"),resolve(release,"assets"),{recursive:true});
+const config=JSON.parse((await readFile("wrangler.jsonc","utf8")).replace(/,\s*([}\]])/g,"$1"));
+if(config.name!==name)throw Error("UNRECOGNIZED_WORKER_NAME");
+config.main=resolve("src/worker.ts");config.assets.directory=resolve(release,"assets");config.vars={...config.vars,BUILD_ID:build};
+const file=resolve(release,"wrangler.json");await writeFile(file,JSON.stringify(config));
+await freezeWorker(file,resolve(release,"worker"));committed();
+const output=cli(["deploy","--config",file,...modelDeploymentArgs(settings)]);
+const url=output.match(/https:\/\/pi-personal-research-agent\.[a-z0-9-]+\.workers\.dev/)?.[0];
+if(!url||(previous&&url!==previous.url))throw Error("DEPLOYED_URL_MISMATCH");
+const record={name,url,mode:settings?.mode??"mock",modelId:settings?.mode==="live"?settings.modelId:"deterministic-v1",thinking:"off",freePlanConfirmedByUser:true,build,release,deployed:new Date().toISOString(),servingBuildVerified:false,initialProvisioning:!verified&&(!previous||!!pending?.initialProvisioning)};
+await writeFile(".local/deployment-pending.json",JSON.stringify(record,null,2));
+if(!previous)cli(["secret","bulk","--config",file],JSON.stringify({ADMIN_TOKEN:token}));
+access??=await deploymentAccess(url,{bootstrapToken:token});
+await waitForDeployment(url,access,build);
+const completed={...record,servingBuildVerified:true,verified:new Date().toISOString(),verification:access.kind};
+await writeFile(resolve(release,"verification.json"),JSON.stringify(completed,null,2));
+const temporary=".local/deployment."+crypto.randomUUID()+".tmp";await writeFile(temporary,JSON.stringify(completed,null,2));await rename(temporary,".local/deployment.json");
+console.log(JSON.stringify({url,mode:record.mode,modelId:record.modelId,thinking:"off",adminCredential:"DPAPI protected .local/admin.secret",planChanged:false,build,servingBuildVerified:true,verification:access.kind}));
