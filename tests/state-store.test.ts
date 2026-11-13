@@ -125,7 +125,7 @@ test("cold history replacement and failed transaction preserve unloaded partitio
 test("schema one history counts migrate atomically without rewriting legacy message positions",()=>{
  const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(2,3);store.save(s);
  f.db.exec("UPDATE pra_app_schema SET version=1; DROP TABLE pra_history_counts; UPDATE pra_data_messages SET position=position+1000 WHERE parent='c1'");
- const cold=new StateRepository(f.storage),loaded=cold.load();assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,3);
+ const cold=new StateRepository(f.storage),loaded=cold.load();assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,4);
  assert.equal(cold.historyCount(loaded.conversations![1]),3);assert.equal(loaded.conversations![1].history[0].turn_id,"t0");
  assert.equal(cold.save(loaded).writes,0);loaded.conversations![1].history.push({turn_id:"new",user_text:"q",final_answer:"a"});
  assert.equal(cold.save(loaded).writes,1);
@@ -258,7 +258,7 @@ test("schema two header migration preserves exact bodies and rolls back a failed
  assert.ok(!f.db.prepare("PRAGMA table_info(pra_data_tasks)").all().some(c=>c.name==="header"));
  assert.deepEqual(f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks").all(),original);
  fail=false;const cold=new StateRepository(wrapped),loaded=cold.load();
- assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,3);
+ assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,4);
  assert.equal(loaded.tasks[0].input,"original source");assert.equal(cold.save(loaded).writes,0);
  assert.deepEqual(f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks").all(),original);f.db.close();
 });

@@ -1,3 +1,4 @@
+import {memoryView} from "./memory-view.ts";
 import {activeTasks,taskByRequest} from "./task-queries.ts";
 import {SOURCE_BUILD} from "./source-build.ts";
 import {beginModelTiming, finishModelTiming, markToolDispatch, taskTimings, apiTiming, type ModelMeasurement} from "./timing.ts";
@@ -193,7 +194,7 @@ export class PersonalAgent extends DurableObject<Env> {
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_reading_sources (version TEXT, id TEXT, value TEXT NOT NULL, PRIMARY KEY(version,id))",
     );
-    for(const e of this.state.cloudMemory.entries)if(e.kind!=="preference"&&!e.projectId&&e.source_session)e.projectId=this.state.conversations?.find(c=>c.id===e.source_session)?.projectId;
+    for(const e of this.state.cloudMemory.entries)if(e.kind!=="preference"&&!e.projectId&&e.source_session){const projectId=this.state.conversations?.find(c=>c.id===e.source_session)?.projectId;if(projectId)e.projectId=projectId;}
     this.memoryIndex=new MemoryIndex(this.database);
     this.memoryIndex.sync(this.state.cloudMemory.entries);
     this.harness = new PiHarness({
@@ -393,7 +394,7 @@ export class PersonalAgent extends DurableObject<Env> {
     });
   }
   save() {
-    this.state.memories=this.state.cloudMemory!.entries.map(m=>({id:m.id,content:m.content,source:m.source_session||"user",updated:Date.parse(m.updated_at)}));
+    this.state.memories=memoryView(this.state.cloudMemory!.entries);
     this.repository.save(this.state);
     this.memoryIndex.sync(this.state.cloudMemory!.entries);
   }

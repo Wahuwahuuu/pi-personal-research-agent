@@ -48,3 +48,7 @@ test("pre-transfer builds cannot be used to roll back a sealed billing ledger ev
  assert.equal(prior.appStateSchema,RELEASE_CONTRACT.appStateSchema);
  assert.throws(()=>assertReleaseCompatible(RELEASE_CONTRACT,prior),/INCOMPATIBLE_RELEASE_CONTRACT/);
 });
+
+test("canonical-memory releases reject rollback to the prior state-three memory-copy format",()=>{
+ assert.throws(()=>assertReleaseCompatible(RELEASE_CONTRACT,{...RELEASE_CONTRACT,appStateSchema:3,family:"pra-v1-state3-pi2-budget-transfer-20261113"}),/INCOMPATIBLE_RELEASE_CONTRACT/);
+});

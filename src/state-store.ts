@@ -1,3 +1,4 @@
+import {memoryView} from "./memory-view.ts";
 import {bindTaskQueries,closedTask,matchesTaskPage,taskPageOrder,type TaskPageQuery} from "./task-queries.ts";
 import {entityHeader,isLazyCollection,lazyEntity,type LazyEntity,type LazyCollection} from "./lazy-entity.ts";
 import { stableEntityPositions } from "./row-order.ts";
@@ -22,6 +23,7 @@ const validCollection = (name: string): name is Collection => collections.includ
 /** SQL persistence adapter. Business code retains its state shape; unchanged entities are never rewritten.
  * Historical state hydration is intentionally separate from paginated client reads. */
 export class StateRepository {
+  private canonicalMemory=false;
   private cached = new Map<string, string>();
   private entities = new WeakMap<object,LazyEntity>();
   private positions = new Map<Collection, Map<string, number>>();
@@ -35,16 +37,16 @@ export class StateRepository {
     storage.transactionSync(() => {
       storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_app_schema (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL)");
       const version = storage.sql.exec<{ version: number }>("SELECT version FROM pra_app_schema WHERE id=1").toArray()[0]?.version ?? 0;
-      if (version > 3) throw new Problem("UNKNOWN_STATE_SCHEMA", 503);
+      if (version > 4) throw new Problem("UNKNOWN_STATE_SCHEMA", 503);
       storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_meta (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
       for (const name of collections) {
         storage.sql.exec("CREATE TABLE IF NOT EXISTS " + table(name) + " (id TEXT PRIMARY KEY, parent TEXT NOT NULL, position INTEGER NOT NULL, value TEXT NOT NULL)");
         storage.sql.exec("CREATE INDEX IF NOT EXISTS " + table(name) + "_parent ON " + table(name) + "(parent,id)");
       }
-      for(const name of ["tasks","operations"] as const){
+      for(const name of ["tasks","operations","memory_entries"] as const){
         const columns=storage.sql.exec<{name:string}>("PRAGMA table_info("+table(name)+")").toArray();
         if(!columns.some(c=>c.name==="header")){
-          if(version>=3)throw new Problem("INVALID_ENTITY_HEADER",503);
+          if(version>=(name==="memory_entries"?4:3))throw new Problem("INVALID_ENTITY_HEADER",503);
           storage.sql.exec("ALTER TABLE "+table(name)+" ADD COLUMN header TEXT");
         }
       }
@@ -87,6 +89,18 @@ export class StateRepository {
         }
         storage.sql.exec("UPDATE pra_app_schema SET version=3 WHERE id=1");
       }
+      if(version<4){
+        let after="";
+        for(;;){
+          const rows=storage.sql.exec<Row>("SELECT id,parent,position,value FROM pra_data_memory_entries WHERE id>? ORDER BY id LIMIT 200",after).toArray();
+          if(!rows.length)break;
+          for(const row of rows)storage.sql.exec("UPDATE pra_data_memory_entries SET header=? WHERE id=?",serial(entityHeader("memory_entries",parse(row.value))),row.id);
+          after=rows.at(-1)!.id;
+        }
+        const memoryMeta=storage.sql.exec<{value:string}>("SELECT value FROM pra_meta WHERE id='cloudMemory'").toArray()[0];
+        if(memoryMeta){const memory=parse<any>(memoryMeta.value);if(!memory||!Array.isArray(memory.entries)||typeof memory.enabled!=="boolean")throw new Problem("INVALID_MEMORY_STATE",503);storage.sql.exec("DELETE FROM pra_data_memories");}
+        storage.sql.exec("UPDATE pra_app_schema SET version=4 WHERE id=1");
+      }
       storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_request ON pra_data_tasks(json_extract(header,'$.requestId'))");
       storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_created ON pra_data_tasks(json_extract(header,'$.created') DESC,id DESC)");
       storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_conversation_created ON pra_data_tasks(parent,json_extract(header,'$.created') DESC,id DESC)");
@@ -94,6 +108,7 @@ export class StateRepository {
       storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_active ON pra_data_tasks(id) WHERE json_extract(header,'$.status') NOT IN ('completed','failed','cancelled')");
       storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_open ON pra_data_tasks(id) WHERE json_extract(header,'$.status') NOT IN ('completed','failed','cancelled') OR json_extract(header,'$.runOpen')=1");
     });
+    this.canonicalMemory=true;
   }
   private put(name: Collection, row: Row) {
     if(isLazyCollection(name)){
@@ -118,7 +133,7 @@ export class StateRepository {
         return { id, parent: entity&&!entity.loaded?entity.parent??parentOf(v):parentOf(v), position:savedPosition, value:entity&&!entity.loaded?"":serial(v) };
       }));
     };
-    for (const name of ["tasks", "operations", "memories", "notices", "plans"] as const) { add(name, state[name]); delete rest[name]; }
+    for (const name of ["tasks", "operations", "memories", "notices", "plans"] as const) { add(name, name==="memories"&&this.canonicalMemory&&state.cloudMemory?[]:state[name]); delete rest[name]; }
     add("papers", Object.entries(state.papers).map(([key, paper]) => ({ key, paper })), v => v.key, () => "");
     delete rest.papers;
     if (state.conversations) {
@@ -169,14 +184,16 @@ export class StateRepository {
     });
     return conversation;
   }
-  private attachEntity(name:LazyCollection,row:{id:string;parent:string;position:number}){
-    const entity=lazyEntity(name,{id:row.id},row.position,()=>{
+  private attachEntity(name:LazyCollection,row:{id:string;parent:string;position:number;header?:string}){
+    const knownHeader=row.header===undefined?undefined:parse<Record<string,any>>(row.header);
+    if(row.header!==undefined&&(!knownHeader||knownHeader.id!==row.id))throw new Problem("INVALID_ENTITY_HEADER",503);
+    const entity=lazyEntity(name,knownHeader??{id:row.id},row.position,()=>{
       const stored=this.storage.sql.exec<Row>("SELECT id,parent,position,value FROM "+table(name)+" WHERE id=?",row.id).toArray()[0];
       if(!stored)throw new Problem("ENTITY_UNAVAILABLE",503);
       // Cache the original persisted bytes before exposing a mutable payload.
       this.cached.set(name+":"+row.id,serial(stored));
       return parse<Record<string,any>>(stored.value);
-    },()=>{
+    },knownHeader?undefined:()=>{
       const stored=this.storage.sql.exec<{header:string}>("SELECT header FROM "+table(name)+" WHERE id=?",row.id).toArray()[0];
       const header=stored&&parse<Record<string,any>>(stored.header);
       if(!header||header.id!==row.id)throw new Problem("INVALID_ENTITY_HEADER",503);
@@ -189,7 +206,7 @@ export class StateRepository {
     for (const row of this.storage.sql.exec<{ id: string; value: string }>("SELECT id,value FROM pra_meta").toArray()) state[row.id] = parse(row.value);
     const all = (name: Collection) => {
       if(lazy&&isLazyCollection(name)){
-        const rows=this.storage.sql.exec<{id:string;parent:string;position:number}>("SELECT id,parent,position FROM "+table(name)+" ORDER BY position,id").toArray();
+        const rows=this.storage.sql.exec<{id:string;parent:string;position:number;header?:string}>("SELECT id,parent,position"+(name==="memory_entries"?",header":"")+" FROM "+table(name)+" ORDER BY position,id").toArray();
         this.positions.set(name,new Map(rows.map(row=>[row.id,row.position])));
         return rows.map(row=>this.attachEntity(name,row));
       }
@@ -209,7 +226,7 @@ export class StateRepository {
       }
     }
     delete state.has_conversations;
-    if (state.cloudMemory) state.cloudMemory.entries = all("memory_entries");
+    if (state.cloudMemory) {state.cloudMemory.entries = all("memory_entries");if(this.canonicalMemory)state.memories=memoryView(state.cloudMemory.entries); }
     return state;
   }
   load(): State {

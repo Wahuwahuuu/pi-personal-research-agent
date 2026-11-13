@@ -1,3 +1,4 @@
+import {persistedEntityHash} from "./lazy-entity.ts";
 import {createHash} from "node:crypto";
 import type {StateStorage} from "./state-store.ts";
 import type {CloudMemoryEntry} from "../packages/research/cloud-memory.ts";
@@ -11,24 +12,39 @@ export function memoryTokens(text:string):string[]{
  }
  return [...terms].slice(0,800);
 }
-const fingerprint=(e:CloudMemoryEntry)=>createHash("sha256").update(JSON.stringify(e)).digest("hex");
+const fingerprint=(e:CloudMemoryEntry)=>persistedEntityHash(e)??createHash("sha256").update(JSON.stringify(e)).digest("hex");
 export class MemoryIndex{
  readonly db:StateStorage;private known:Map<string,string>;
  constructor(db:StateStorage){this.db=db;
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_memory_index(id TEXT PRIMARY KEY,hash TEXT NOT NULL,project TEXT NOT NULL,category TEXT NOT NULL,papers TEXT NOT NULL,updated TEXT NOT NULL,edited INTEGER NOT NULL,active INTEGER NOT NULL,value TEXT NOT NULL)");
   db.sql.exec("CREATE VIRTUAL TABLE IF NOT EXISTS pra_memory_fts USING fts5(id UNINDEXED,tokens)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_memory_revisions(id TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL,changed INTEGER NOT NULL,PRIMARY KEY(id,revision))");
+  db.transactionSync(()=>{
+   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_memory_index_schema(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL)");
+   const version=db.sql.exec<{version:number}>("SELECT version FROM pra_memory_index_schema WHERE id=1").toArray()[0]?.version??0;
+   if(version>1)throw new Problem("UNKNOWN_MEMORY_INDEX_SCHEMA",503);
+   if(version===0){
+    // Pin FTS rowids to the indexed canonical IDs, so an update never scans every unindexed FTS id.
+    db.sql.exec("DELETE FROM pra_memory_fts");
+    let after=0;
+    for(;;){const rows=db.sql.exec<{rowid:number;id:string;value:string}>("SELECT rowid,id,value FROM pra_memory_index WHERE rowid>? ORDER BY rowid LIMIT 200",after).toArray();if(!rows.length)break;
+     for(const row of rows)db.sql.exec("INSERT INTO pra_memory_fts(rowid,id,tokens) VALUES(?,?,?)",row.rowid,row.id,memoryTokens(JSON.parse(row.value).content).join(" "));
+     after=rows.at(-1)!.rowid;
+    }
+    db.sql.exec("INSERT INTO pra_memory_index_schema VALUES(1,1)");
+   }
+  });
   this.known=new Map(db.sql.exec<{id:string;hash:string}>("SELECT id,hash FROM pra_memory_index").toArray().map(r=>[r.id,r.hash]));
  }
  sync(entries:readonly CloudMemoryEntry[]){
   const current=new Map(entries.map(e=>[e.id,fingerprint(e)]));
   this.db.transactionSync(()=>{
-   for(const id of this.known.keys())if(!current.has(id)){this.db.sql.exec("DELETE FROM pra_memory_fts WHERE id=?",id);this.db.sql.exec("DELETE FROM pra_memory_index WHERE id=?",id);this.db.sql.exec("DELETE FROM pra_memory_revisions WHERE id=?",id);}
+   for(const id of this.known.keys())if(!current.has(id)){this.db.sql.exec("DELETE FROM pra_memory_fts WHERE rowid=(SELECT rowid FROM pra_memory_index WHERE id=?)",id);this.db.sql.exec("DELETE FROM pra_memory_index WHERE id=?",id);this.db.sql.exec("DELETE FROM pra_memory_revisions WHERE id=?",id);}
    for(const e of entries){const hash=current.get(e.id)!;if(this.known.get(e.id)===hash)continue;
-    this.db.sql.exec("DELETE FROM pra_memory_fts WHERE id=?",e.id);
-    this.db.sql.exec("INSERT INTO pra_memory_fts(id,tokens) VALUES(?,?)",e.id,memoryTokens(e.content).join(" "));
+    this.db.sql.exec("DELETE FROM pra_memory_fts WHERE rowid=(SELECT rowid FROM pra_memory_index WHERE id=?)",e.id);
     const value=JSON.stringify(e);
     this.db.sql.exec("INSERT INTO pra_memory_index VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET hash=excluded.hash,project=excluded.project,category=excluded.category,papers=excluded.papers,updated=excluded.updated,edited=excluded.edited,active=excluded.active,value=excluded.value",e.id,hash,e.projectId??"",e.category??(e.kind==="preference"?"preference":"reading"),JSON.stringify(e.paper_ids),e.updated_at,Number(e.edited),Number(e.active!==false),value);
+    this.db.sql.exec("INSERT INTO pra_memory_fts(rowid,id,tokens) SELECT rowid,?,? FROM pra_memory_index WHERE id=?",e.id,memoryTokens(e.content).join(" "),e.id);
     this.db.sql.exec("INSERT INTO pra_memory_revisions SELECT ?,COALESCE(MAX(revision),0)+1,?,? FROM pra_memory_revisions WHERE id=?",e.id,value,Date.now(),e.id);
    }
   });this.known=current;

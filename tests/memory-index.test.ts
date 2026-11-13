@@ -47,3 +47,19 @@ test("paper memory slots are project-scoped; correction preserves provenance and
  await a.remove(state.entries.find(e=>e.projectId==="a")!.id);await a.save(input).catch(()=>{});
  assert.equal(state.entries.length,1);assert.equal(state.entries[0].projectId,"b");assert.equal((await b.recall("结论",["a"])).items.length,1);
 });
+
+test("legacy FTS rowids are rebuilt once without changing revisions, and rowid updates keep other entries",()=>{
+ const {db,p,index}=setup(),a=entry("Alpha legacy recall"),b=entry("Beta retained recall");index.sync([a,b]);db.exec("DELETE FROM pra_memory_index_schema; DELETE FROM pra_memory_fts");db.prepare("INSERT INTO pra_memory_fts(rowid,id,tokens) VALUES(?,?,?)").run(100,a.id,memoryTokens(a.content).join(" "));db.prepare("INSERT INTO pra_memory_fts(rowid,id,tokens) VALUES(?,?,?)").run(200,b.id,memoryTokens(b.content).join(" "));
+ const revisions=db.prepare("SELECT * FROM pra_memory_revisions ORDER BY id,revision").all();const migrated=new MemoryIndex(p);assert.equal(migrated.page({query:"Alpha"}).items[0].id,a.id);assert.deepEqual(db.prepare("SELECT * FROM pra_memory_revisions ORDER BY id,revision").all(),revisions);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_memory_fts f JOIN pra_memory_index m ON m.id=f.id WHERE f.rowid!=m.rowid").get()!.n,0);
+ migrated.sync([{...a,content:"Gamma corrected recall"},b]);assert.equal(migrated.page({query:"Alpha"}).items.length,0);assert.equal(migrated.page({query:"Gamma"}).items[0].id,a.id);assert.equal(migrated.page({query:"Beta"}).items[0].id,b.id);migrated.sync([b]);assert.equal(migrated.page({query:"Gamma"}).items.length,0);db.close();
+});
+test("future memory-index schema is rejected without replacing searchable records",()=>{
+ const {db,p,index}=setup(),a=entry("Retained indexed evidence");index.sync([a]);db.exec("UPDATE pra_memory_index_schema SET version=99");assert.throws(()=>new MemoryIndex(p),/UNKNOWN_MEMORY_INDEX_SCHEMA/);assert.equal(index.page({query:"Retained"}).items[0].id,a.id);db.close();
+});
+
+test("an interrupted FTS rowid migration rolls back the old search data and schema marker",()=>{
+ const {db,p,index}=setup(),a=entry("Legacy evidence retained");index.sync([a]);db.exec("DELETE FROM pra_memory_index_schema; DELETE FROM pra_memory_fts");db.prepare("INSERT INTO pra_memory_fts(rowid,id,tokens) VALUES(?,?,?)").run(100,a.id,memoryTokens(a.content).join(" "));const before=db.prepare("SELECT rowid,id,tokens FROM pra_memory_fts").all();
+ const failing:StateStorage={...p,sql:{exec<T>(query:string,...args:any[]){if(query.startsWith("INSERT INTO pra_memory_fts(rowid,id,tokens) VALUES"))throw Error("INTERRUPTED_FTS_MIGRATION");return p.sql.exec<T>(query,...args);}}};
+ assert.throws(()=>new MemoryIndex(failing),/INTERRUPTED_FTS_MIGRATION/);assert.deepEqual(db.prepare("SELECT rowid,id,tokens FROM pra_memory_fts").all(),before);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_memory_index_schema").get()!.n,0);assert.equal(new MemoryIndex(p).page({query:"Legacy"}).items[0].id,a.id);db.close();
+});
