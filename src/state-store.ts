@@ -1,7 +1,8 @@
+import {bindTaskQueries,closedTask,matchesTaskPage,taskPageOrder,type TaskPageQuery} from "./task-queries.ts";
 import {entityHeader,isLazyCollection,lazyEntity,type LazyEntity,type LazyCollection} from "./lazy-entity.ts";
 import { stableEntityPositions } from "./row-order.ts";
 import { appendChanges, changeCursor, readChanges } from "./change-feed.ts";
-import { initialState, Problem, type State } from "./domain.ts";
+import { initialState, Problem, type State, type Task } from "./domain.ts";
 
 export interface SqlRows<T = Record<string, unknown>> { toArray(): T[] }
 export interface SqlPort {
@@ -86,6 +87,12 @@ export class StateRepository {
         }
         storage.sql.exec("UPDATE pra_app_schema SET version=3 WHERE id=1");
       }
+      storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_request ON pra_data_tasks(json_extract(header,'$.requestId'))");
+      storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_created ON pra_data_tasks(json_extract(header,'$.created') DESC,id DESC)");
+      storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_conversation_created ON pra_data_tasks(parent,json_extract(header,'$.created') DESC,id DESC)");
+      storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_status_created ON pra_data_tasks(json_extract(header,'$.status'),json_extract(header,'$.created') DESC,id DESC)");
+      storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_active ON pra_data_tasks(id) WHERE json_extract(header,'$.status') NOT IN ('completed','failed','cancelled')");
+      storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_tasks_open ON pra_data_tasks(id) WHERE json_extract(header,'$.status') NOT IN ('completed','failed','cancelled') OR json_extract(header,'$.runOpen')=1");
     });
   }
   private put(name: Collection, row: Row) {
@@ -108,7 +115,7 @@ export class StateRepository {
         ids.add(id);
         const savedPosition=positionOf?.(v,position)??positions![position],entity=isLazyCollection(name)?this.entities.get(v):undefined;
         if(entity&&!entity.loaded&&entity.position!==savedPosition)entity.load();
-        return { id, parent: parentOf(v), position:savedPosition, value:entity&&!entity.loaded?"":serial(v) };
+        return { id, parent: entity&&!entity.loaded?entity.parent??parentOf(v):parentOf(v), position:savedPosition, value:entity&&!entity.loaded?"":serial(v) };
       }));
     };
     for (const name of ["tasks", "operations", "memories", "notices", "plans"] as const) { add(name, state[name]); delete rest[name]; }
@@ -162,24 +169,27 @@ export class StateRepository {
     });
     return conversation;
   }
-  private attachEntity(name:LazyCollection,row:{id:string;parent:string;position:number;header:string}){
-    const header=parse<Record<string,any>>(row.header);
-    if(!header||header.id!==row.id)throw new Problem("INVALID_ENTITY_HEADER",503);
-    const entity=lazyEntity(name,header,row.position,()=>{
+  private attachEntity(name:LazyCollection,row:{id:string;parent:string;position:number}){
+    const entity=lazyEntity(name,{id:row.id},row.position,()=>{
       const stored=this.storage.sql.exec<Row>("SELECT id,parent,position,value FROM "+table(name)+" WHERE id=?",row.id).toArray()[0];
       if(!stored)throw new Problem("ENTITY_UNAVAILABLE",503);
       // Cache the original persisted bytes before exposing a mutable payload.
       this.cached.set(name+":"+row.id,serial(stored));
       return parse<Record<string,any>>(stored.value);
+    },()=>{
+      const stored=this.storage.sql.exec<{header:string}>("SELECT header FROM "+table(name)+" WHERE id=?",row.id).toArray()[0];
+      const header=stored&&parse<Record<string,any>>(stored.header);
+      if(!header||header.id!==row.id)throw new Problem("INVALID_ENTITY_HEADER",503);
+      return header;
     });
-    this.entities.set(entity.proxy,entity);return entity.proxy;
+    entity.parent=row.parent;this.entities.set(entity.proxy,entity);return entity.proxy;
   }
   private read(lazy=false): State {
     const state: any = initialState();
     for (const row of this.storage.sql.exec<{ id: string; value: string }>("SELECT id,value FROM pra_meta").toArray()) state[row.id] = parse(row.value);
     const all = (name: Collection) => {
       if(lazy&&isLazyCollection(name)){
-        const rows=this.storage.sql.exec<{id:string;parent:string;position:number;header:string}>("SELECT id,parent,position,header FROM "+table(name)+" ORDER BY position,id").toArray();
+        const rows=this.storage.sql.exec<{id:string;parent:string;position:number}>("SELECT id,parent,position FROM "+table(name)+" ORDER BY position,id").toArray();
         this.positions.set(name,new Map(rows.map(row=>[row.id,row.position])));
         return rows.map(row=>this.attachEntity(name,row));
       }
@@ -208,7 +218,48 @@ export class StateRepository {
     const state = this.read(true);
     this.knownConversations=new Set((state.conversations??[]).map(c=>c.id));
     this.cached = this.fingerprints(this.split(state));
+    bindTaskQueries(state,{page:query=>this.taskPageRows(state,query),active:includeOpen=>this.activeTaskRows(state,includeOpen),byRequest:requestId=>this.taskRequest(state,requestId)});
     return state;
+  }
+  /** Loaded/new values are authoritative until save; SQL is only used for untouched entities. */
+  private taskOverlay(state:State){
+    const saved=new Map<string,Task>(),overlay:Task[]=[];
+    for(const task of state.tasks){const entity=this.entities.get(task);if(entity&&!entity.loaded)saved.set(task.id,task);else overlay.push(task);}
+    return {saved,overlay};
+  }
+  private taskRequest(state:State,requestId:string):Task|undefined{
+    const {saved,overlay}=this.taskOverlay(state),ids=new Set(overlay.filter(t=>t.requestId===requestId).map(t=>t.id));
+    if(saved.size)for(const row of this.storage.sql.exec<{id:string}>("SELECT id FROM pra_data_tasks WHERE json_extract(header,'$.requestId')=?",requestId).toArray())if(saved.has(row.id))ids.add(row.id);
+    return state.tasks.find(t=>ids.has(t.id));
+  }
+  private taskPageRows(state:State,query:TaskPageQuery):Task[]{
+    const {saved,overlay}=this.taskOverlay(state),selected:Task[]=[];
+    let timestamp=query.timestamp,id=query.id;
+    while(saved.size&&selected.length<query.limit+1){
+      const where:string[]=[],args:any[]=[];
+      if(query.conversationId){where.push("parent=?");args.push(query.conversationId);}
+      if(query.status){where.push("json_extract(header,'$.status')=?");args.push(query.status);}
+      const select=(condition:string,bindings:any[],limit:number,sameTime=false)=>this.storage.sql.exec<{id:string;created:number}>("SELECT id,json_extract(header,'$.created') AS created FROM pra_data_tasks WHERE "+[condition,...where].join(" AND ")+" ORDER BY "+(sameTime?"id DESC":"json_extract(header,'$.created') DESC,id DESC")+" LIMIT ?",...bindings,...args,limit).toArray();
+      // Separate equal-time and older ranges: a tuple/OR over JSON expressions can scan the entire prefix.
+      const rows=select("json_extract(header,'$.created')=? AND id<?",[timestamp,id],query.limit+1,true);
+      if(rows.length<query.limit+1)rows.push(...select("json_extract(header,'$.created')<?",[timestamp],query.limit+1-rows.length));
+      if(!rows.length)break;
+      for(const row of rows){const task=saved.get(row.id);if(task)selected.push(task);}
+      const last=rows.at(-1)!;timestamp=last.created;id=last.id;
+      if(rows.length<query.limit+1)break;
+    }
+    return [...selected,...overlay.filter(t=>matchesTaskPage(t,query))].sort(taskPageOrder).slice(0,query.limit+1);
+  }
+  private activeTaskRows(state:State,includeOpen:boolean):Task[]{
+    const {saved,overlay}=this.taskOverlay(state),selected:Task[]=[],predicate="json_extract(header,'$.status') NOT IN ('completed','failed','cancelled')"+(includeOpen?" OR json_extract(header,'$.runOpen')=1":"");
+    let after="";
+    while(saved.size){
+      const rows=this.storage.sql.exec<{id:string}>("SELECT id FROM pra_data_tasks WHERE ("+predicate+") AND id>? ORDER BY id LIMIT 200",after).toArray();
+      for(const row of rows){const task=saved.get(row.id);if(task)selected.push(task);}
+      if(rows.length<200)break;after=rows.at(-1)!.id;
+    }
+    const ids=new Set([...selected,...overlay.filter(t=>!closedTask(t)||(includeOpen&&t.runOpen))].map(t=>t.id));
+    return state.tasks.filter(t=>ids.has(t.id));
   }
   private fingerprints(split: ReturnType<StateRepository["split"]>) {
     const cache = new Map<string, string>();

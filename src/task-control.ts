@@ -1,3 +1,4 @@
+import {activeTasks} from "./task-queries.ts";
 import {
   Problem,
   text,
@@ -190,7 +191,7 @@ export function taskOrder(a: Task, b: Task) {
   );
 }
 export function orderedTasks(s: State,activeOnly=false) {
-  return s.tasks.filter(t=>!activeOnly||!["completed","failed","cancelled"].includes(t.status)).sort(taskOrder);
+  return (activeOnly?activeTasks(s):[...s.tasks]).sort(taskOrder);
 }
 
 

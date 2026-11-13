@@ -71,11 +71,4 @@ export function conversationPage(s:State,options:{q?:string;projectId?:string;ar
  return {items:filtered.slice(after,after+limit).map(c=>({...(Object.fromEntries(Object.keys(c).filter(k=>k!=="history"&&k!=="domain").map(k=>[k,(c as any)[k]])) as Omit<NonNullable<State["conversations"]>[number],"history"|"domain">),turns:reader?reader.historyCount(c):c.history.length})),nextCursor:filtered.length>after+limit?after+limit:null};
 }
 
-export function taskPage(s:State,options:{conversationId?:string;status?:string;before?:string;limit?:number}={}){
- const limit=options.limit??30;if(!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
- let timestamp=Number.MAX_SAFE_INTEGER,id="~";
- if(options.before){const split=options.before.indexOf(":");timestamp=Number(options.before.slice(0,split));id=options.before.slice(split+1);if(split<1||!Number.isSafeInteger(timestamp)||timestamp<0||id.length>128)throw new Problem("INVALID_PAGE");}
- const rows=s.tasks.filter(t=>(!options.conversationId||t.conversationId===options.conversationId)&&(!options.status||t.status===options.status)&&(t.created<timestamp||t.created===timestamp&&t.id<id))
- .sort((a,b)=>b.created-a.created||b.id.localeCompare(a.id));
- return{items:rows.slice(0,limit),nextCursor:rows.length>limit?rows[limit-1].created+":"+rows[limit-1].id:null};
-}
+export {queryTaskPage as taskPage} from "./task-queries.ts";

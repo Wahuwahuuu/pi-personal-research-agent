@@ -1,3 +1,4 @@
+import {taskByRequest} from "./task-queries.ts";
 import type {ModelCallTiming, ToolTiming} from "./timing.ts";
 export const TASK_CAPACITY=5000;
 import type {ControlReceipt} from "./conversation-control.ts";
@@ -158,7 +159,7 @@ export function submit(
   const key = text(requestId, 128),
     prompt = text(input);
   if (kind !== "chat" && kind !== "research" && kind !== "auto") throw new Problem("INVALID_KIND");
-  const old = s.tasks.find((t) => t.requestId === key);
+  const old = taskByRequest(s,key);
   if (old) {
     if (old.input !== prompt || old.kind !== kind)
       throw new Problem("REQUEST_CONFLICT", 409);

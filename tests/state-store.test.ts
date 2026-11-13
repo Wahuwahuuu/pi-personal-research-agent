@@ -1,3 +1,4 @@
+import {activeTasks,taskByRequest} from "../src/task-queries.ts";
 import {ProactiveResearch} from "../src/proactive-research.ts";
 import {orderedTasks} from "../src/task-control.ts";
 import {resolveConversationControl,recordConversationControl} from "../src/conversation-control.ts";
@@ -249,7 +250,7 @@ test("schema two header migration preserves exact bodies and rolls back a failed
  const f=fixture(),store=new StateRepository(f.storage),s=store.load();
  submit(s,"original source","migration","research");store.save(s);
  const original=f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks").all();
- f.db.exec("UPDATE pra_app_schema SET version=2; ALTER TABLE pra_data_tasks DROP COLUMN header; ALTER TABLE pra_data_operations DROP COLUMN header");
+ f.db.exec("DROP INDEX pra_tasks_request; DROP INDEX pra_tasks_created; DROP INDEX pra_tasks_conversation_created; DROP INDEX pra_tasks_status_created; DROP INDEX pra_tasks_active; DROP INDEX pra_tasks_open; UPDATE pra_app_schema SET version=2; ALTER TABLE pra_data_tasks DROP COLUMN header; ALTER TABLE pra_data_operations DROP COLUMN header");
  let fail=true;
  const wrapped:StateStorage={...f.storage,sql:{exec<T>(q:string,...b:any[]){if(fail&&q.startsWith("UPDATE pra_data_tasks SET header="))throw Error("MIGRATION_INTERRUPTED");return f.storage.sql.exec<T>(q,...b);}}};
  assert.throws(()=>new StateRepository(wrapped),/MIGRATION_INTERRUPTED/);
@@ -260,4 +261,69 @@ test("schema two header migration preserves exact bodies and rolls back a failed
  assert.equal(f.db.prepare("SELECT version FROM pra_app_schema").get()!.version,3);
  assert.equal(loaded.tasks[0].input,"original source");assert.equal(cold.save(loaded).writes,0);
  assert.deepEqual(f.db.prepare("SELECT id,parent,position,value FROM pra_data_tasks").all(),original);f.db.close();
+});
+
+const headerReads=(f:ReturnType<typeof fixture>)=>f.queries.filter(q=>/^SELECT header FROM pra_data_(tasks|operations)/.test(q.sql)).reduce((n,q)=>n+q.rows,0);
+test("cold identity load and unchanged save do not deserialize 10000 task headers; indexed scheduling skips terminal history",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load(),template=submit(s,"large history","base","chat");
+ s.tasks=Array.from({length:10000},(_,i)=>({...template,id:"t"+String(i).padStart(5,"0"),requestId:"r"+i,created:i,status:"completed" as const}));
+ s.tasks[9997].status="queued";s.tasks[9998].status="waiting_device";s.tasks[9999].status="cancelled";s.tasks[9999].runOpen=true;
+ store.save(s);const cold=new StateRepository(f.storage);f.queries.length=0;const loaded=cold.load();
+ assert.equal(headerReads(f),0);assert.equal(payloadReads(f,"tasks"),0);assert.equal(cold.save(loaded).writes,0);assert.equal(headerReads(f),0);
+ assert.deepEqual(orderedTasks(loaded,true).map(t=>t.id),["t09997","t09998"]);assert.equal(headerReads(f),2);assert.equal(payloadReads(f,"tasks"),0);
+ assert.deepEqual(activeTasks(loaded,true).map(t=>t.id),["t09997","t09998","t09999"]);assert.equal(headerReads(f),2);
+ const selected=f.queries.filter(q=>q.sql.startsWith("SELECT id FROM pra_data_tasks WHERE"));assert.equal(selected.reduce((n,q)=>n+q.rows,0),5);
+ assert.equal(cold.save(loaded).writes,0);assert.equal(payloadReads(f,"tasks"),0);f.db.close();
+});
+test("SQL keyset pages preserve equal timestamps, binary ID order, filters and lazy task bodies",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load(),template=submit(s,"page question","base","chat");
+ s.tasks=Array.from({length:251},(_,i)=>({...template,id:(i%2?"A":"a")+String(i).padStart(4,"0"),requestId:"r"+i,created:Math.floor(i/9),conversationId:"c"+(i%3),status:i%4?"completed" as const:"queued" as const}));store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();f.queries.length=0;
+ for(const filter of [{},{conversationId:"c1"},{status:"queued"},{conversationId:"c2",status:"completed"}]){
+  const expected=taskPage(s,{...filter,limit:100});const actual=taskPage(loaded,{...filter,limit:100});assert.deepEqual(actual.items.map(t=>t.id),expected.items.map(t=>t.id));assert.equal(actual.nextCursor,expected.nextCursor);
+  let before:string|undefined;const seen:string[]=[];
+  do{const page=taskPage(loaded,{...filter,before,limit:7});seen.push(...page.items.map(t=>t.id));before=page.nextCursor??undefined;}while(before);
+  const all=s.tasks.filter(t=>(!filter.conversationId||t.conversationId===filter.conversationId)&&(!filter.status||t.status===filter.status));assert.equal(seen.length,all.length);assert.equal(new Set(seen).size,all.length);
+ }
+ assert.equal(payloadReads(f,"tasks"),0);const page=taskPage(loaded,{limit:10});page.items.map(taskSummary);assert.equal(payloadReads(f,"tasks"),10);assert.equal(cold.save(loaded).writes,0);f.db.close();
+});
+test("uncommitted mutations, deletion, new tasks and reassigned arrays override SQL task views",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load(),template=submit(s,"live mutation","base","chat");
+ s.tasks=Array.from({length:40},(_,i)=>({...template,id:"t"+String(i).padStart(3,"0"),requestId:"r"+i,created:i,status:i%2?"completed" as const:"queued" as const,conversationId:"c1"}));store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();loaded.tasks[0].status="completed";loaded.tasks[1].status="queued";loaded.tasks[1].created=100;loaded.tasks[3].conversationId="c2";loaded.tasks[3].status="queued";
+ loaded.tasks=loaded.tasks.filter(t=>t.id!=="t038");loaded.tasks.push({...template,id:"new",requestId:"new",created:101,status:"queued",conversationId:"c2"});
+ const expected={...loaded,tasks:loaded.tasks.map(t=>({...t}))};const persistedCursor=cold.cursor();
+ for(const filter of [{},{status:"queued"},{conversationId:"c2"},{status:"completed",conversationId:"c1"}])assert.deepEqual(taskPage(loaded,{...filter,limit:7}),taskPage(expected,{...filter,limit:7}));
+ assert.deepEqual(activeTasks(loaded).map(t=>t.id),activeTasks(expected).map(t=>t.id));assert.equal(cold.cursor(),persistedCursor);
+ f.setFail(true);assert.throws(()=>cold.save(loaded),/INJECTED/);assert.deepEqual(taskPage(loaded,{status:"queued",limit:7}),taskPage(expected,{status:"queued",limit:7}));f.setFail(false);cold.save(loaded);
+ const reopened=new StateRepository(f.storage).load();assert.deepEqual(taskPage(reopened,{status:"queued",limit:7}),taskPage(expected,{status:"queued",limit:7}));assert.ok(!reopened.tasks.some(t=>t.id==="t038"));f.db.close();
+});
+test("SQL candidates cross 200-row boundaries and pagination fills gaps left by dirty and removed tasks",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load(),template=submit(s,"many candidates","base","chat");
+ s.tasks=Array.from({length:610},(_,i)=>({...template,id:"t"+String(i).padStart(4,"0"),requestId:"r"+i,created:i,status:"queued" as const}));store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();for(let i=505;i<610;i++)loaded.tasks[i].status="completed";loaded.tasks=loaded.tasks.filter(t=>!['t0503','t0504'].includes(t.id));
+ const active=activeTasks(loaded);assert.equal(active.length,503);assert.equal(active.at(-1)!.id,"t0502");
+ const page=taskPage(loaded,{status:"queued",limit:10});assert.deepEqual(page.items.map(t=>t.id),Array.from({length:10},(_,i)=>"t"+String(502-i).padStart(4,"0")));assert.equal(page.nextCursor,"493:t0493");assert.equal(cold.save(loaded).writes,107);f.db.close();
+});
+test("task SQL views use expression and partial indexes rather than temporary whole-history sorting",()=>{
+ const f=fixture();new StateRepository(f.storage);
+ const queries=[
+  "SELECT id,json_extract(header,'$.created') AS created FROM pra_data_tasks WHERE json_extract(header,'$.created')=100 AND id<'z' ORDER BY id DESC LIMIT 11",
+  "SELECT id FROM pra_data_tasks WHERE (json_extract(header,'$.status') NOT IN ('completed','failed','cancelled')) AND id>'' ORDER BY id LIMIT 200",
+  "SELECT id FROM pra_data_tasks WHERE (json_extract(header,'$.status') NOT IN ('completed','failed','cancelled') OR json_extract(header,'$.runOpen')=1) AND id>'' ORDER BY id LIMIT 200",
+ ];
+ for(const query of queries){const plan=f.db.prepare("EXPLAIN QUERY PLAN "+query).all().map(r=>String(r.detail)).join(" ");assert.match(plan,/USING (?:COVERING )?INDEX pra_tasks_/);assert.doesNotMatch(plan,/TEMP B-TREE/);}
+ f.db.close();
+});
+
+test("idempotent submission consults the request index without reading historical task headers",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load(),template=submit(s,"original prompt","base","chat");s.tasks=Array.from({length:1000},(_,i)=>({...template,id:"t"+i,requestId:"r"+i,created:i,status:"completed" as const}));store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();f.queries.length=0;
+ assert.equal(submit(loaded,"original prompt","r999","chat").id,"t999");assert.equal(headerReads(f),0);assert.equal(payloadReads(f,"tasks"),1);assert.equal(loaded.tasks.length,1000);
+ f.queries.length=0;const added=submit(loaded,"new prompt","new-request","chat");assert.equal(headerReads(f),0);assert.equal(taskByRequest(loaded,"new-request"),added);assert.equal(cold.save(loaded).writes,1);f.db.close();
+});
+test("request lookup honors modified IDs and removal before commit rather than resurrecting the SQL match",()=>{
+ const f=fixture(),store=new StateRepository(f.storage),s=store.load();const a=submit(s,"a","a","chat"),b=submit(s,"b","b","chat");store.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();loaded.tasks[0].requestId="changed";loaded.tasks=loaded.tasks.filter(t=>t.id!==b.id);
+ assert.equal(taskByRequest(loaded,"a"),undefined);assert.equal(taskByRequest(loaded,"b"),undefined);assert.equal(taskByRequest(loaded,"changed")!.id,a.id);f.db.close();
 });

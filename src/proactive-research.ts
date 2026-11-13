@@ -1,3 +1,4 @@
+import {activeTasks} from "./task-queries.ts";
 import { nextBudgetWindow } from "./budget-resume.ts";
 import {
   Problem,
@@ -94,7 +95,7 @@ export class ProactiveResearch {
   }
   syncPauses(now = Date.now()) {
     const s = this.ports.state();
-    for (const t of s.tasks.filter((t) => !closed(t) && t.proactive)) {
+    for (const t of activeTasks(s).filter((t) => t.proactive)) {
       if (!this.allowed(t)) {
         if (!t.pauseRequested) {
           pauseTask(t);
@@ -217,9 +218,7 @@ export class ProactiveResearch {
       t.proactive.budgetResumeAt = nextBudgetWindow(t.error, now);
   }
   nextBudgetWake() {
-    const times = this.ports
-      .state()
-      .tasks.filter(
+    const times = activeTasks(this.ports.state()).filter(
         (t) =>
           t.status === "waiting_user" &&
           t.proactive &&
@@ -234,7 +233,7 @@ export class ProactiveResearch {
   tick(now = Date.now()) {
     this.syncPauses(now);
     const s = this.ports.state();
-    for (const t of s.tasks) {
+    for (const t of activeTasks(s)) {
       if (
         t.status !== "waiting_user" ||
         !t.proactive ||
@@ -277,9 +276,8 @@ export class ProactiveResearch {
       }
       if (!t) {
         if (
-          s.tasks.some(
+          activeTasks(s).some(
             (t) =>
-              !closed(t) &&
               t.proactive &&
               this.ports.batches.get(t.proactive.batchId).planId === b.planId,
           )

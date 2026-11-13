@@ -1,3 +1,4 @@
+import {activeTasks} from "./task-queries.ts";
 import {createHash} from "node:crypto";
 import {Problem,text,type State,type Task} from "./domain.ts";
 import type {StateStorage} from "./state-store.ts";
@@ -60,7 +61,7 @@ export class PlatformResources{
 }
 export function applyPlatformWait(s:State,status:PlatformStatus){
  let changed=false;
- for(const t of s.tasks.filter(t=>t.origin==="schedule"&&!["completed","failed","cancelled"].includes(t.status))){
+ for(const t of activeTasks(s).filter(t=>t.origin==="schedule")){
   if(status.blocked){
    if(t.platformWait&&t.status==="waiting_user"&&PLATFORM_STOPS.has(t.error??"")&&t.error!==status.reason){t.error=status.reason;changed=true;}
    if(!t.platformWait&&!t.pauseRequested&&!t.runOpen&&["queued","waiting_device"].includes(t.status)&&!s.operations.some(o=>o.taskId===t.id&&o.state==="sent")){

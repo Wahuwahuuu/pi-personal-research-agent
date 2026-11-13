@@ -1,3 +1,4 @@
+import {taskByRequest} from "./task-queries.ts";
 import { cancel, Problem, submit, text, type State, type Task } from "./domain.ts";
 import { pauseTask, resumeTask, settledForControl } from "./task-control.ts";
 export type ControlAction = "pause" | "resume" | "cancel" | "status";
@@ -102,7 +103,7 @@ export function recordConversationControl(s: State, conversationId: string, inpu
   const c = s.conversations?.find(c => c.id === conversationId);
   if (!c) throw new Problem("UNKNOWN_CONVERSATION", 404);
   const key=text(requestId,128);
-  const prior = s.tasks.find(t => t.requestId === key);
+  const prior = taskByRequest(s,key);
   const receipt = submit(s, input, key, "auto", now);
   if (prior) {
     if (prior.conversationId !== conversationId || !prior.control) throw new Problem("REQUEST_CONFLICT", 409);

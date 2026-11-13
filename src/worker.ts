@@ -1,3 +1,4 @@
+import {activeTasks,taskByRequest} from "./task-queries.ts";
 import {SOURCE_BUILD} from "./source-build.ts";
 import {beginModelTiming, finishModelTiming, markToolDispatch, taskTimings, apiTiming, type ModelMeasurement} from "./timing.ts";
 import {retentionCandidates,retentionPreview,confirmRetention} from "./data-retention.ts";
@@ -199,10 +200,10 @@ export class PersonalAgent extends DurableObject<Env> {
       harness: async ({ storage, context, onWake }) => {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
         let timingCall: {taskId:string;call:number}|undefined;
-        const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
+        const outputLimit=()=>activeTasks(this.state).some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
         const before = async (messages:readonly {role:string;content?:unknown}[]) => {
           if(this.recoveryBlocked)throw new Problem("RECOVERY_IN_PROGRESS",503);
-          const t=this.state.tasks.find(t=>t.status==="running"&&t.modelOperation);
+          const t=activeTasks(this.state).find(t=>t.status==="running"&&t.modelOperation);
           if(!t)throw new Error("NO_ACTIVE_TASK");
           assertModelSubmission(messages,t.modelPrompt);
           const operation=t.modelOperation;
@@ -254,7 +255,7 @@ export class PersonalAgent extends DurableObject<Env> {
         };
         const models =
           env.MODEL_MODE === "mock"
-            ? mockModels(before, (input, output, timing) => after({ input, output },timing), (code)=>{const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;})
+            ? mockModels(before, (input, output, timing) => after({ input, output },timing), (code)=>{const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;})
             : liveModels(
                 {
                   authorized: env.ALLOW_PAID_CALLS ?? "",
@@ -262,9 +263,9 @@ export class PersonalAgent extends DurableObject<Env> {
                   baseUrl: env.MODEL_BASE_URL ?? "",
                   modelId: env.MODEL_ID ?? "",
                   maxOutput:outputLimit,
-                  onFailure:(code)=>{const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;},
+                  onFailure:(code)=>{const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;},
                   onVisible:(text)=>{
-                    const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");
+                    const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");
                     if(!task||Date.now()-lastPreview<1000)return;
                     const preview=answerPreview(text);if(!preview)return;
                     task.preview=preview;lastPreview=Date.now();this.publish();
@@ -314,7 +315,7 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   async alarm(){if(this.recoveryBlocked){await this.recoverPending();return;}await this.lifecycle.alarm();}
   private recoveryIdle(){
-    if(this.busy||this.state.tasks.some(t=>t.runOpen||t.status==="running")||this.state.operations.some(o=>o.state==="sent")||
+    if(this.busy||activeTasks(this.state,true).some(t=>t.runOpen||t.status==="running")||this.state.operations.some(o=>o.state==="sent")||
       this.database.sql.exec("SELECT id FROM pra_library_jobs WHERE status IN ('sent','processing') LIMIT 1").toArray().length)
       throw new Problem("RECOVERY_BUSY",409);
   }
@@ -419,7 +420,7 @@ export class PersonalAgent extends DurableObject<Env> {
   publish() {
     for (const ws of this.ctx.getWebSockets("ui")) {
       if(!this.validHash(ws.deserializeAttachment()?.hash??"","user")){ws.close(1008,"expired");continue;}
-      this.send(ws,ws.deserializeAttachment()?.view===2?{type:"change",cursor:this.repository.cursor(),active:this.state.tasks.filter(t=>!terminal(t)).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      this.send(ws,ws.deserializeAttachment()?.view===2?{type:"change",cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     }
   }
   device() {
@@ -693,7 +694,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const c=this.state.conversations?.find(c=>c.id===conversationMatch[1]);
       if(!c)throw new Problem("NOT_FOUND",404);
       const b=await this.body(r);
-      if((b.scope!==undefined||b.projectId!==undefined)&&this.state.tasks.some(t=>t.conversationId===c.id&&!terminal(t)&&t.status!=="waiting_user"))throw new Problem("CONVERSATION_BUSY",409);
+      if((b.scope!==undefined||b.projectId!==undefined)&&activeTasks(this.state).some(t=>t.conversationId===c.id&&t.status!=="waiting_user"))throw new Problem("CONVERSATION_BUSY",409);
       if(b.scope!==undefined){
         if(!Array.isArray(b.scope)||b.scope.length>MAX_PROJECT_PAPERS||b.scope.some((id:unknown)=>typeof id!=="string"))throw new Problem("INVALID_SCOPE");
         const version=this.device()?.deserializeAttachment()?.indexVersion ?? c.domain?.index_version;
@@ -711,7 +712,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if(b.mode!==undefined&&!["normal","long"].includes(b.mode as string))throw new Problem("INVALID_TASK_MODE");
       if(b.priority!==undefined&&![0,1,2].includes(b.priority as number))throw new Problem("INVALID_PRIORITY");
       if(this.database.sql.exec("SELECT id FROM pra_recovery_requests WHERE id=? UNION ALL SELECT request_id AS id FROM pra_task_tombstones WHERE request_id=?",text(b.requestId,128),text(b.requestId,128)).toArray().length)throw new Problem("RESOURCE_DELETED",410);
-      const prior = this.state.tasks.find(t => t.requestId === b.requestId);
+      const prior = taskByRequest(this.state,text(b.requestId,128));
       if(prior&&!prior.control&&b.mode!==undefined&&(b.mode==="long")!==!!prior.goal)throw new Problem("REQUEST_CONFLICT",409);
       const conversationId = typeof b.conversationId === "string" ? text(b.conversationId,128) : prior?.conversationId ?? crypto.randomUUID();
       if(this.deletions.get(conversationId))throw new Problem("CONVERSATION_DELETED",410);
@@ -729,7 +730,7 @@ export class PersonalAgent extends DurableObject<Env> {
           const status=await this.identityRegistry().platformStatus();
           if(status.blocked)resumeBlocked=status.reason??"PLATFORM_METRICS_UNAVAILABLE";
           // An awaited registry RPC can interleave another request or deletion.
-          const repeated=this.state.tasks.find(t=>t.requestId===b.requestId);
+          const repeated=taskByRequest(this.state,text(b.requestId,128));
           if(repeated?.control){
             if(repeated.conversationId!==conversationId)throw new Problem("REQUEST_CONFLICT",409);
             submit(this.state,b.input,b.requestId,b.kind);return json(repeated,202);
@@ -1050,7 +1051,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const view=kind==="ui"&&new URL(r.url).searchParams.get("version")==="2"?2:1;
     pair[1].serializeAttachment({ kind, hash, ready: false,view });
     if (kind === "ui")
-      this.send(pair[1],view===2?{type:"change",cursor:this.repository.cursor(),active:this.state.tasks.filter(t=>!terminal(t)).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      this.send(pair[1],view===2?{type:"change",cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
@@ -1396,14 +1397,14 @@ export class PersonalAgent extends DurableObject<Env> {
     return {id:t.id,input:currentInstruction(t)+this.proactive.researchRequest(t),calls:segmentUsage(t).calls,goal:t.goal?{segment:t.goal.segments.length,maximum:4,calls:t.calls,tools:t.tools,activeMs:t.activeMs,remaining:t.goal.segments.at(-2)?.checkpoint?.remaining??[]}:undefined,invalidatedMemoryTurns:this.state.cloudMemory?.invalidatedTurns,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
   }
   async tickResearch() {
-    for(const changed of this.state.tasks.filter(t=>!terminal(t)&&this.state.cloudMemory?.invalidatedTurns?.includes(t.id)&&t.error!=="CONTEXT_CHANGED")){
+    for(const changed of activeTasks(this.state).filter(t=>this.state.cloudMemory?.invalidatedTurns?.includes(t.id)&&t.error!=="CONTEXT_CHANGED")){
       changed.status="waiting_user";changed.error="CONTEXT_CHANGED";changed.updated=Date.now();
       for(const op of this.state.operations.filter(o=>o.taskId===changed.id&&o.state!=="done"))op.state="cancelled";
       if(changed.runOpen){await this.harness.abort({session:changed.sessionId});changed.runOpen=false;}
       changed.modelPrompt=undefined;this.save();
     }
     // Settle the Pi run even if a fast device result already changed the business task state.
-    for (const t of this.state.tasks.filter(
+    for (const t of activeTasks(this.state,true).filter(
       (t) => t.engine === "durable" && t.runOpen,
     )) {
       if (terminal(t)) {
@@ -1561,7 +1562,7 @@ export class PersonalAgent extends DurableObject<Env> {
       }
     }
     if (
-      this.state.tasks.some(
+      activeTasks(this.state,true).some(
         (t) =>
           t.runOpen ||
           (t.engine !== "durable" &&
@@ -1575,7 +1576,7 @@ export class PersonalAgent extends DurableObject<Env> {
         !t.pauseRequested&&this.proactive.allowed(t)&&(t.origin!=="schedule"||!this.resources.blocked)&&t.proactive?.stage!=="imports"&&t.engine === "durable" &&
         (t.status === "queued" ||
           (t.status === "waiting_device" && (!t.sessionId||t.error===SCOPED_RESEARCH_UPDATE) && dev && (t.error!==SCOPED_RESEARCH_UPDATE||attachment.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY)))) &&
-        !this.state.tasks.some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
+        !activeTasks(this.state).some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
     );
     if (!t) return;
     if(dev&&!requireScopedResearchNode(t,this.state.conversations?.find(c=>c.id===t.conversationId)?.scope??[],attachment.capabilities)){this.save();return;}
@@ -1691,7 +1692,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const d=this.deletions.pending()[0];if(!d)return false;
     const impact=this.database.transactionSync(()=>{const value=this.deletions.capture(this.state,d.id);this.save();return value;});
     const readerCancellations:string[]=[];
-    if(this.state.tasks.some(t=>t.runOpen||t.status==="running"))return true;
+    if(activeTasks(this.state,true).some(t=>t.runOpen||t.status==="running"))return true;
     const piExists=this.database.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='pi_conversations'").toArray().length;
     if(piExists)for(const session of impact.sessions)
       if(this.database.sql.exec("SELECT id FROM pi_conversations WHERE id=?",Number(session)).toArray().length&&(await this.harness.pending({session})).length)return true;
@@ -1750,7 +1751,7 @@ export class PersonalAgent extends DurableObject<Env> {
       this.libraryJobs.expire();this.dispatchImports();
       await this.tickResearch();
       if(await this.processDeletion())return Date.now()+1000;
-      const running = this.state.tasks.find(
+      const running = activeTasks(this.state).find(
         (t) =>
           t.engine !== "durable" && t.status === "running" && t.modelOperation,
       );
@@ -1803,10 +1804,10 @@ export class PersonalAgent extends DurableObject<Env> {
         }
       }
       const dev = this.device();
-      const t = !this.state.tasks.some(
+      const t = !activeTasks(this.state,true).some(
         (t) => t.runOpen || (t.status === "running" && t.modelOperation),
       )
-        ? this.state.tasks.find(
+        ? activeTasks(this.state).find(
             (t) =>
               t.engine !== "durable" &&
               (t.status === "queued" || (t.status === "waiting_device" && dev)),
@@ -1966,7 +1967,7 @@ export class PersonalAgent extends DurableObject<Env> {
         ...(this.state.tasks.some(t=>t.platformWait)?[Date.now()+60000]:[]),
       ];
       if (
-        this.state.tasks.some(
+        activeTasks(this.state,true).some(
           (t) => t.runOpen || t.status === "running" || (t.status === "queued"&&(t.origin!=="schedule"||!this.resources.blocked)),
         )
       )
