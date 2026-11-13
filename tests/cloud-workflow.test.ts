@@ -219,3 +219,22 @@ test("reading capability projection stays bounded and reports omitted metadata h
  assert.equal(p.reading_availability_omitted,100-p.reading_availability.length);
  assert.ok(Buffer.byteLength(JSON.stringify(p.reading_availability))<=2500);
 });
+
+
+test("citation repair retains its verified sources before unrelated archived chunks within the existing byte window",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));c.calls=4;
+ c.evidence=Array.from({length:20},(_,i)=>({paper_id:"fixture-paper",paragraph_id:"paragraph-"+i,chunk_id:"chunk-"+i,index_version:c.catalog.indexVersion,section:"body",start:0,end:1800,text:"x".repeat(1800)}));
+ const initial=JSON.parse(workflowPrompt(w,c));assert.ok(!initial.evidence.some((e:any)=>e.chunk_id==="chunk-19"));
+ w.citationRepair={answer:"Check the supplied result [cite:chunk-19] and reject [cite:invented-id].",claims:[]};
+ const p=JSON.parse(workflowPrompt(w,c));assert.equal(p.evidence[0].chunk_id,"chunk-19");
+ assert.equal(p.evidence[0].text,c.evidence[19].text);assert.ok(!p.evidence.some((e:any)=>e.chunk_id==="invented-id"));
+ assert.equal(p.evidence_window.omitted,c.evidence.length-p.evidence.length);assert.ok(Buffer.byteLength(JSON.stringify(p.evidence))<=22000);assert.ok(Buffer.byteLength(JSON.stringify(p))<=45000);
+ assert.deepEqual(w.visibleSourceIds,p.evidence.map((e:any)=>e.chunk_id));assert.deepEqual(p.evidence.slice(1).map((e:any)=>e.chunk_id),initial.evidence.slice(0,p.evidence.length-1).map((e:any)=>e.chunk_id));
+});
+
+test("repair priority never truncates oversized evidence or invents a source for malformed citation IDs",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));c.calls=4;
+ c.evidence=[{paper_id:"fixture-paper",paragraph_id:"p",chunk_id:"oversized",index_version:c.catalog.indexVersion,section:"body",start:0,end:24000,text:"x".repeat(24000)},{paper_id:"fixture-paper",paragraph_id:"q",chunk_id:"small",index_version:c.catalog.indexVersion,section:"body",start:0,end:5,text:"whole"}];
+ w.citationRepair={answer:"Check [cite:oversized] and [cite:small] but not [cite:unknown",claims:[]};
+ const p=JSON.parse(workflowPrompt(w,c));assert.deepEqual(p.evidence.map((e:any)=>e.chunk_id),["small"]);assert.equal(p.evidence[0].text,"whole");assert.equal(p.evidence_window.omitted,1);
+});

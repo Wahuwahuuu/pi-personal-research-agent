@@ -1,3 +1,4 @@
+import {citationIds} from "./internal/agent/p2-r2.ts";
 import {projectToolOutcomes,type ToolOutcomeOperation} from "./tool-outcomes.ts";
 import {projectRecentDialogue,type ContextWindow} from "./context-window.ts";
 import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest} from "./memory.ts";
@@ -129,7 +130,9 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
   const ordered=m?m.window(30000):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
-  const evidence=boundedItems(ordered,Math.max(0,Math.min(22000,40000-byteSize(payload))));
+  // A repair must be able to recheck its own cited originals. Unknown IDs never create evidence.
+  const repairIds=w.citationRepair?citationIds(w.citationRepair.answer):[],repair=repairIds.flatMap(id=>byId.has(id)?[byId.get(id)!]:[]),preferred=new Set(repair.map(e=>e.chunk_id));
+  const evidence=boundedItems([...repair,...ordered.filter(e=>!preferred.has(e.chunk_id))],Math.max(0,Math.min(22000,40000-byteSize(payload))));
   w.visibleSourceIds=evidence.map(e=>e.chunk_id);
   payload.evidence=evidence;
   payload.evidence_window={archived:c.evidence.length,visible:evidence.length,omitted:c.evidence.length-evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
