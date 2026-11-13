@@ -67,3 +67,11 @@ test("a matching build with an absent or incompatible release contract is not a 
  }
  await waitForDeployment(base,access,build,{expectedRelease:RELEASE_CONTRACT,fetcher:(async()=>reply({build,release:RELEASE_CONTRACT})) as any});
 });
+
+test("an environment build label alone cannot confirm a source-verified deployment",async()=>{
+ const access={kind:"session" as const,path:"/api/deployment",headers:{Cookie:cookie}};
+ for(const sourceBuild of [undefined,"old"]){
+  await assert.rejects(waitForDeployment(base,access,build,{requireSourceBuild:true,fetcher:(async()=>reply({build,sourceBuild})) as any}),/DEPLOYED_SOURCE_MISMATCH/);
+ }
+ await waitForDeployment(base,access,build,{requireSourceBuild:true,fetcher:(async()=>reply({build,sourceBuild:build})) as any});
+});

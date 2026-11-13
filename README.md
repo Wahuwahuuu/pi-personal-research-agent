@@ -261,3 +261,6 @@ node scripts/switch-node-release.ts --config .local/node.json --rollback ".local
 任务耗时诊断可通过登录后的 `GET /api/tasks/{id}/timing` 获取。它分别返回已登记的模型请求和本机工具计时，不包含提示或证据正文。模型请求区分模拟/真实、响应已收取/传输中断/未派发；缺失与未结算时间保留为未知。重发的工具操作不参与单次往返计算，重复结果不会覆盖原计时，删除任务时一并清除。
 
 普通 API 响应的 `Server-Timing: pra_gateway` 表示云端路由、认证及 DO 往返的墙钟时间。Workers 的时钟只在 I/O 后推进，不能用它测量 CPU 执行时间；工具往返减去本机执行时间也包含传输、排队及调度，不能当成纯网络延迟，详见 [Cloudflare 计时限制](https://developers.cloudflare.com/workers/runtime-apis/performance/)。模拟模型与真实模型数据应分别解释。
+
+
+新发布还会将 `sourceBuild` 编译进 Worker，并逐项核对源码映射中的应用及科研模块内容是否属于声明的 Git 提交。发布入口重新编译网页和 Worker，拒绝把已有 `dist` 目录换一个提交号直接上传；构建前后必须仍是同一份干净提交。鉴权部署探测同时验证配置的 `build`、编译的 `sourceBuild` 和兼容契约。历史版本没有该字段时，不把它当作新的源码归属验证通过。

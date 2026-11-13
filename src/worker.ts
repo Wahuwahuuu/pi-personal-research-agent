@@ -1,3 +1,4 @@
+import {SOURCE_BUILD} from "./source-build.ts";
 import {beginModelTiming, finishModelTiming, markToolDispatch, taskTimings, apiTiming, type ModelMeasurement} from "./timing.ts";
 import {retentionCandidates,retentionPreview,confirmRetention} from "./data-retention.ts";
 import {RELEASE_CONTRACT} from "./release-contract.ts";
@@ -399,7 +400,7 @@ export class PersonalAgent extends DurableObject<Env> {
       ...this.state,
       cursor:this.repository.cursor(),
       budget:this.sharedBudgetSnapshot?{...this.sharedBudgetSnapshot,scope:"application"}:{...this.budgetLedger.snapshot(),scope:"user",needsRefresh:true},
-      build:this.env.BUILD_ID??"development",release:RELEASE_CONTRACT,
+      build:this.env.BUILD_ID??"development",sourceBuild:SOURCE_BUILD,release:RELEASE_CONTRACT,
       tasks: this.state.tasks.map(({ modelPrompt, ...t }) => t),
       deviceOnline: !!this.device(),
       mode: this.env.MODEL_MODE,
@@ -545,14 +546,14 @@ export class PersonalAgent extends DurableObject<Env> {
         throw new Problem("UNAUTHORIZED", 401);
       if(path==="/api/device/verify"){
         if(r.method!=="GET")throw new Problem("METHOD_DENIED",405);
-        return json({protocol:1,accountScope:await digest(this.ownerId),build:this.env.BUILD_ID??"development",release:RELEASE_CONTRACT});
+        return json({protocol:1,accountScope:await digest(this.ownerId),build:this.env.BUILD_ID??"development",sourceBuild:SOURCE_BUILD,release:RELEASE_CONTRACT});
       }
       return this.upgrade(r, "device", await digest(bearer(r)!));
     }
     if (!(await this.authorized(r, "user")))
       throw new Problem("UNAUTHORIZED", 401);
-    if(path==="/api/deployment"&&r.method==="GET")return json({build:this.env.BUILD_ID??"development",release:RELEASE_CONTRACT});
-    if(path==="/api/recovery/schema"&&r.method==="GET")return json({build:this.env.BUILD_ID??"development",release:RELEASE_CONTRACT,...recoverySchemaDetails(this.database)});
+    if(path==="/api/deployment"&&r.method==="GET")return json({build:this.env.BUILD_ID??"development",sourceBuild:SOURCE_BUILD,release:RELEASE_CONTRACT});
+    if(path==="/api/recovery/schema"&&r.method==="GET")return json({build:this.env.BUILD_ID??"development",sourceBuild:SOURCE_BUILD,release:RELEASE_CONTRACT,...recoverySchemaDetails(this.database)});
     if(path==="/api/recovery/checkpoints"&&r.method==="POST")return this.checkpointRequest(r);
     if(path==="/api/recovery/restore"&&r.method==="POST")return this.checkpointRequest(r,true);
     const workspaceResponse=await this.workspaceRoute(r,path);if(workspaceResponse)return workspaceResponse;
@@ -929,7 +930,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const memoryRevision=path.match(/^\/api\/memories\/([^/]+)\/revisions$/);
     if(memoryRevision&&r.method==="GET")return json(this.memoryIndex.revisions(memoryRevision[1]));
     if(path==="/api/overview"&&r.method==="GET")return json({
-      build:this.env.BUILD_ID??"development",release:RELEASE_CONTRACT,settings:this.workspace.settings(),
+      build:this.env.BUILD_ID??"development",sourceBuild:SOURCE_BUILD,release:RELEASE_CONTRACT,settings:this.workspace.settings(),
       projects:this.workspace.projects({limit:50}),conversations:conversationPage(this.state,{limit:30},this.repository),
       tasks:[...this.state.tasks].sort((a,b)=>b.created-a.created).slice(0,50).map(t=>({...taskSummary(t),answer:t.answer?.slice(0,240)})),
       notices:[...this.state.notices].sort((a,b)=>b.created-a.created).slice(0,50),plans:this.state.plans,
