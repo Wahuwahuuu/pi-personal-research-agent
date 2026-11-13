@@ -18,9 +18,15 @@ export class Workspace {
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_settings(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_mutations(id TEXT PRIMARY KEY,operation TEXT NOT NULL,input TEXT NOT NULL,result TEXT NOT NULL,created INTEGER NOT NULL)");
  }
- once<T>(id:unknown,operation:string,input:unknown,fn:()=>T):T{
+ replay<T>(id:unknown,operation:string,input:unknown):{value:T}|undefined{
   const key=text(id,128),encoded=createHash("sha256").update(JSON.stringify(input)).digest("hex"),old=this.db.sql.exec<{operation:string;input:string;result:string}>("SELECT operation,input,result FROM pra_mutations WHERE id=?",key).toArray()[0];
-  if(old){if(old.operation!==operation||old.input!==encoded)throw new Problem("REQUEST_CONFLICT",409);const result=JSON.parse(old.result);if(result?._deleted)throw new Problem("RESOURCE_DELETED",410);return result;}
+  if(!old)return;
+  if(old.operation!==operation||old.input!==encoded)throw new Problem("REQUEST_CONFLICT",409);
+  const result=JSON.parse(old.result);if(result?._deleted)throw new Problem("RESOURCE_DELETED",410);return{value:result};
+ }
+ once<T>(id:unknown,operation:string,input:unknown,fn:()=>T):T{
+  const key=text(id,128),old=this.replay<T>(key,operation,input);if(old)return old.value;
+  const encoded=createHash("sha256").update(JSON.stringify(input)).digest("hex");
   return this.db.transactionSync(()=>{const result=fn();this.db.sql.exec("INSERT INTO pra_mutations VALUES(?,?,?,?,?)",key,operation,encoded,JSON.stringify(result),Date.now());return result;});
  }
  settings():Settings {return this.db.sql.exec<{value:string}>("SELECT value FROM pra_settings WHERE id=1").toArray().map(r=>JSON.parse(r.value))[0]??{...defaultSettings};}

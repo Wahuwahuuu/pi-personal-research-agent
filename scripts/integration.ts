@@ -322,12 +322,25 @@ try {
   await api("memories/" + m.id, "DELETE");
   assert.ok(!(await api("state")).memories.some((entry:any)=>entry.id===m.id));
   checks.push("memory create/correct/delete persisted");
+  const replayInput={requestId:"memory-replay",category:"preference",content:"MEMORY_REPLAY_CANARY"};
+  const memoryReplayed=await Promise.all(Array.from({length:10},()=>api("memories","POST",replayInput)));
+  assert.equal(new Set(memoryReplayed.map(e=>e.id)).size,1);const replayId=memoryReplayed[0].id;
+  await api("memories","POST",{...replayInput,content:"changed"},409);
+  await api("memories","POST",{requestId:"memory-correction",id:replayId,content:"MEMORY_CORRECTED_CANARY"});
+  assert.equal((await api("memories","POST",replayInput)).content,"MEMORY_CORRECTED_CANARY");
+  const memoryRemoval={requestId:"memory-removal"};
+  await Promise.all(Array.from({length:5},()=>api("memories/"+replayId,"DELETE",memoryRemoval)));
+  await api("memories","POST",replayInput,410);
+  checks.push("concurrent memory writes deduplicate, stale edits cannot undo corrections, deleted content cannot replay");
   await stopChild(server);
   server = child(serverArgs);
   await until(async () => {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
+  await api("memories/"+replayId,"DELETE",memoryRemoval);
+  await api("memories","POST",replayInput,410);
+  checks.push("memory deletion receipts and non-resurrection survive an actual workerd restart");
   const restored = await api("state");
   assert.equal(
     restored.tasks.find((t: any) => t.id === research.id)?.status,

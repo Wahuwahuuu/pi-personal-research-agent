@@ -25,6 +25,7 @@ import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries} from "../packages/research/memory.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
 import {MAX_PROJECT_PAPERS,Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
+import {mutateMemory,type MemoryMutation} from "./memory-mutations.ts";
 import { IdentityRegistry } from "./identity.ts";
 export { IdentityRegistry };
 import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
@@ -393,6 +394,15 @@ export class PersonalAgent extends DurableObject<Env> {
     return cloudMemory(this.state.cloudMemory!,papers,this.ownerId,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""],{
       projectId,...(projectId?{recall:(query:string,ids:readonly string[],preferences:boolean,recent:boolean)=>this.memoryIndex.recall(query,ids,projectId,preferences,recent)}:{})
     });
+  }
+  async applyMemoryMutation(action:MemoryMutation){
+    // Catch inside the gate so a rejected edit does not reset the DO or disconnect clients.
+    const outcome=await this.ctx.blockConcurrencyWhile(async()=>{
+      try{return{ok:true as const,value:await mutateMemory({workspace:this.workspace,state:this.state,service:projectId=>this.memoryService(projectId),save:()=>this.save()},action)};}
+      catch(error){this.state=this.repository.load();this.memoryIndex=new MemoryIndex(this.database);return{ok:false as const,error};}
+    });
+    if(!outcome.ok)throw outcome.error;
+    this.publish();return json(outcome.value);
   }
   save() {
     this.state.memories=memoryView(this.state.cloudMemory!.entries);
@@ -849,24 +859,8 @@ export class PersonalAgent extends DurableObject<Env> {
       this.publish();
       return json(t);
     }
-    if (path === "/api/memories" && r.method === "POST") {
-      const b = await this.body(r);
-      const prior=this.state.cloudMemory!.entries.find(e=>e.id===b.id),projectId=prior?.projectId??(typeof b.projectId==="string"?this.workspace.getProject(b.projectId).id:undefined);
-      if(b.category!==undefined&&!["preference","constraint","conclusion","question"].includes(b.category as string))throw new Problem("INVALID_MEMORY_CATEGORY");
-      if(b.category==="conclusion"&&!prior?.sources?.length)throw new Problem("EVIDENCE_REQUIRED");
-      const m = await this.memoryService(projectId).save({id:typeof b.id==="string"?b.id:undefined,kind:prior?.kind??(b.category==="preference"?"preference":"note"),category:b.category??prior?.category??"constraint",paper_ids:prior?.paper_ids??[],content:text(b.content,1200),edited:true} as any);
-      this.save();
-      this.publish();
-      return json(m);
-    }
-    if (path.startsWith("/api/memories/") && r.method === "DELETE") {
-      const id=path.split("/").at(-1)!;
-      if(!this.state.cloudMemory!.entries.some(m=>m.id===id))throw new Problem("NOT_FOUND",404);
-      await this.memoryService().remove(id);
-      this.workspace.forgetEntity(id);this.save();
-      this.publish();
-      return json({ ok: true });
-    }
+    if (path === "/api/memories" && r.method === "POST") return this.applyMemoryMutation({kind:"save",body:await this.body(r)});
+    if (path.startsWith("/api/memories/") && r.method === "DELETE") return this.applyMemoryMutation({kind:"delete",id:path.split("/").at(-1)!,body:await this.body(r,true)});
     if (path === "/api/plans/draft" && r.method === "POST") return json(draftPlan((await this.body(r)).input));
     if (path === "/api/plans" && r.method === "POST") {
       const b=await this.body(r),projectId=this.workspace.getProject(typeof b.projectId==="string"?b.projectId:"default").id;
@@ -1023,8 +1017,9 @@ export class PersonalAgent extends DurableObject<Env> {
     if(timing&&r.method==="GET")return json(taskTimings(this.state,getTask(this.state,timing[1])));
     if(task&&r.method==="GET"){const {modelPrompt,...t}=getTask(this.state,task[1]);return json(t);}
   }
-  async body(r: Request) {
+  async body(r: Request, optional=false) {
     const raw = await r.text();
+    if(optional&&!raw)return {};
     if (raw.length > 16000) throw new Problem("BODY_TOO_LARGE", 413);
     if (
       new URL(r.url).pathname !== "/api/login" &&
