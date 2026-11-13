@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'">
+<title>连接本机 · Aster</title><style>
+:root{color-scheme:light dark;--bg:#f7f9f8;--surface:#fff;--text:#213732;--muted:#53665f;--line:#d9e2de;--accent:#226d5b;--hover:#e8eeeb;--error:#a22e36;--error-bg:#fff0f0}
+@media(prefers-color-scheme:dark){:root{--bg:#151c1a;--surface:#1b2421;--text:#e3ece7;--muted:#a6b7af;--line:#35453d;--accent:#8bceb5;--hover:#2a3730;--error:#ffb0b5;--error-bg:#3c2528}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.65 "Segoe UI","Microsoft YaHei",sans-serif;caret-color:var(--accent);scrollbar-color:var(--line) var(--bg)}
+::selection{background:var(--accent);color:var(--bg)}:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+main{max-width:760px;margin:auto;padding:30px 32px 34px}h1{font-size:26px;line-height:1.3;margin:0 0 10px;font-weight:650}h2{font-size:18px;line-height:1.4;margin:26px 0 14px}p{margin:7px 0 15px;max-width:72ch}.muted,small{color:var(--muted)}ol{display:flex;gap:22px;padding:16px 0 18px;margin:16px 0 22px;list-style:none;border-bottom:1px solid var(--line);color:var(--muted)}li[aria-current="step"]{color:var(--accent);font-weight:650}label{display:block;font-weight:600;margin:16px 0 5px}input,select,button{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--line);border-radius:6px;padding:9px 11px}input,select{width:100%}input::placeholder{color:var(--muted)}button{cursor:pointer;white-space:nowrap}button:hover:not(:disabled){background:var(--hover)}button:disabled{cursor:default;opacity:.5}.primary{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}.primary:hover:not(:disabled){filter:brightness(.92);background:var(--accent)}
+.field-row{display:flex;gap:8px}.field-row input{min-width:0;flex:1}.actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:24px}small{display:block;margin-top:5px}details{margin-top:20px}summary{cursor:pointer;text-underline-offset:3px}summary:hover{text-decoration:underline}.compact{display:grid;grid-template-columns:1fr 130px;gap:18px}#alert{background:var(--error-bg);color:var(--error);padding:12px 14px;border-radius:6px;margin-bottom:18px}#alert p{margin:0}#progress{min-height:24px;color:var(--accent);margin:18px 0 0}.path{overflow-wrap:anywhere;font-size:12px}fieldset{padding:0;border:0;margin:0;min-width:0}fieldset:disabled{opacity:.75}footer{border-top:1px solid var(--line);padding-top:14px;margin-top:28px;font-size:12px;color:var(--muted)}[hidden]{display:none!important}
+@media(max-width:620px){main{padding:22px 20px}ol{gap:16px;font-size:13px}.compact{grid-template-columns:1fr}.field-row{flex-wrap:wrap}.field-row input{flex-basis:calc(100% - 100px)}}
+</style></head><body><main>
+<h1>连接这台电脑</h1><p class="muted">让 Aster 在这里检索、阅读和整理你的论文。完整论文保存在本机，研究所需的证据片段会发送到云端。</p>
+<ol aria-label="设置进度"><li id="step-prepare" aria-current="step">1. 准备资料</li><li id="step-pair">2. 配对设备</li><li id="step-start">3. 启动节点</li></ol>
+<div id="alert" role="alert" tabindex="-1" hidden><p id="error"></p></div>
+<p id="loading" role="status">正在检查本机安装状态…</p>
+<button id="reload-status" hidden>重新检查安装状态</button>
+<form id="prepare" hidden><fieldset id="prepare-fields">
+<label for="endpoint">研究工作区地址</label><input id="endpoint" type="url" placeholder="https://你的工作区.workers.dev" required autocomplete="url">
+<label for="directory">资料存放目录</label><div class="field-row"><input id="directory" aria-describedby="directory-help" readonly required placeholder="使用右侧按钮选择目录"><button id="choose-directory" aria-label="选择资料目录" type="button">选择目录</button></div><small id="directory-help">会在此目录下新建 papers（论文）和 node（节点缓存），已有同名目录不会被覆盖。</small>
+<label for="models">已有检索模型目录</label><div class="field-row"><input id="models" aria-describedby="models-help" readonly required placeholder="选择 embedding 和重排模型所在目录"><button id="choose-models" aria-label="选择模型目录" type="button">选择目录</button></div><small id="models-help">只读取并校验模型文件，不在这里下载或修改模型。</small>
+<label for="runtime">已安装的运行环境</label><select id="runtime" required></select><p id="no-runtime" class="muted" hidden>未找到兼容的运行环境。请先按安装文档准备 Python 和模型，再重新打开此窗口。</p>
+<details><summary>网络与本机端口</summary><div class="compact"><div><label for="proxy">代理地址（可选）</label><input id="proxy" type="url" placeholder="http://127.0.0.1:7890" autocomplete="off"></div><div><label for="port">服务端口</label><input id="port" type="number" value="48731" min="1024" max="65535" required></div></div></details>
+<div class="actions"><button id="check" class="primary">检查并继续</button></div>
+</fieldset></form>
+<form id="pair" hidden><fieldset id="pair-fields"><h2>配对到你的工作区</h2><p>在网页“设置 → 设备”中生成独立设备凭证，粘贴到这里。</p><p id="preview" class="muted path"></p>
+<label for="credential">设备配对凭证</label><input id="credential" aria-describedby="credential-help" type="password" required minlength="32" maxlength="256" autocomplete="off" spellcheck="false"><small id="credential-help">凭证在本机使用 Windows 账户加密保存。这里不需要模型 API 密钥。</small>
+<div class="actions"><button id="install" class="primary">验证并配对</button><button id="back" type="button">返回修改</button></div></fieldset></form>
+<section id="finish" hidden><h2 id="finish-title" tabindex="-1">设备已配对</h2><p id="finish-copy">接下来准备并校验已提交的本机程序；成功后才能启动。准备失败可以重试，不需要重新输入凭证。</p>
+<p id="config-path" class="muted path"></p><div class="actions"><button id="activate" class="primary">准备本机程序</button><button id="start" class="primary" hidden>启动托盘与服务</button></div>
+<div id="startup-controls" hidden><h2>下次登录时</h2><p class="muted">登录 Windows 后自动启动节点。关闭网页或此窗口，不会停止已启动的服务。</p><button id="startup">启用登录启动</button><p id="startup-status" role="status"></p></div></section>
+<p id="progress" role="status" aria-live="polite"></p>
+<footer>设置只连接本机科研工具，云端继续管理对话、记忆与任务。校验和保存过程中，请等待当前步骤完成后关闭窗口。</footer>
+</main><script>
+"use strict";
+const $=id=>document.getElementById(id);
+let connected=false,busy=false,checked=null,stage="prepare",registered=false,operation=0,polling=false;
+const errors={LOCAL_DIRECTORY_REQUIRED:"目录不可用，请重新选择一个可访问的本机目录。",ABSOLUTE_LOCAL_PATH_REQUIRED:"请选择资料目录和模型目录。",SETUP_DIRECTORY_OVERLAP:"资料目录不能包含模型目录或整个程序目录，请选择独立的资料目录。",SETUP_DIRECTORY_IN_USE:"资料目录已被使用或含 papers / node 目录。请返回选择新的目录。",LOCAL_PORT_IN_USE:"本机端口已被占用，请在“网络与本机端口”中更换端口。",INVALID_ENDPOINT:"工作区地址无效，请使用不含路径、查询参数或凭证的 HTTPS 地址。",INVALID_PROXY:"代理地址无效，请使用不带凭证的 HTTP 或 HTTPS 地址。",DEVICE_CREDENTIAL_REJECTED:"配对凭证已失效或不属于此工作区，请在网页重新生成后重试。",INVALID_DEVICE_CREDENTIAL:"配对凭证格式不正确，请复制完整的设备凭证。",DEVICE_VERIFICATION_FAILED:"暂时无法验证设备，请检查工作区地址、网络和代理后重试。",RUNTIME_CHECK_FAILED:"运行环境或模型校验未通过，请检查安装的依赖和模型文件后重试。",RUNTIME_SOURCE_CHANGED:"运行环境与当前程序版本不兼容，请按安装文档准备匹配的环境。",NODE_ALREADY_CONFIGURED:"此配置已经存在。请重新打开窗口继续准备或启动，不会覆盖已有配置。",COMMITTED_BUILD_REQUIRED:"程序目录有未提交的修改，请先完成提交，再重试准备。",LOCAL_APPLICATION_PREPARATION_FAILED:"本机程序准备失败，请检查网络与依赖安装条件后重试。配对结果已保留。",STARTUP_REGISTRATION_FAILED:"登录启动未设置成功，请检查 Windows 计划任务权限后重试。当前服务不受影响。",SETUP_BUSY:"另一项设置操作正在进行，请稍后重试。",SETUP_ACTION_FAILED:"操作未完成。请检查安装条件后重试；已配对的配置会保留。"};
+const phases={checking:"正在校验运行环境与模型文件…",pairing:"正在向工作区验证设备…",saving:"正在加密保存设备凭证…",preparing:"正在准备并校验本机程序…",starting:"正在启动并等待本机服务就绪…"};
+function showError(code){$("error").textContent=errors[code]||"操作未完成（"+String(code||"UNKNOWN").slice(0,80)+"），请检查安装条件后重试。";$("alert").hidden=false;requestAnimationFrame(()=>{$("alert").scrollIntoView({block:"nearest"});$("alert").focus({preventScroll:true});});}
+function controls(){for(const el of document.querySelectorAll("button"))el.disabled=busy||!connected;$("prepare-fields").disabled=busy;$("pair-fields").disabled=busy;if(!$("runtime").options.length)$("check").disabled=true;}
+function show(next){stage=next;for(const name of ["prepare","pair","finish"])$(name).hidden=name!==next;for(const name of ["prepare","pair","start"])$("step-"+name).removeAttribute("aria-current");$("step-"+(next==="finish"?"start":next)).setAttribute("aria-current","step");}
+async function action(name,...args){if(busy||!connected)return;operation++;busy=true;controls();$("alert").hidden=true;$("progress").textContent=phases[name==="check"?"checking":name==="install"?"pairing":name==="activate"?"preparing":name==="start"?"starting":name]||"正在处理…";
+ try{const r=await window.pywebview.api[name](...args);if(!r.ok){showError(r.error);return;}return r.value;}catch{showError("SETUP_ACTION_FAILED");}finally{busy=false;controls();$("progress").textContent="";}}
+function raw(){return{endpoint:$("endpoint").value.trim(),directory:$("directory").value,models:$("models").value,runtime:$("runtime").value,port:Number($("port").value),proxy:$("proxy").value.trim()};}
+function ready(build,startup){registered=startup===true;$("startup").textContent=registered?"移除登录启动":"启用登录启动";$("startup-status").textContent=startup===true?"已为此配置启用当前用户登录启动。":startup===false?"尚未启用登录启动。":"登录启动状态尚未确认。";$("finish-title").textContent="本机程序已就绪";$("finish-copy").textContent="已校验版本 "+String(build).slice(0,8)+"。可以启动托盘与科研服务；联网状态会在托盘中显示。";$("activate").hidden=true;$("start").hidden=false;$("startup-controls").hidden=false;}
+for(const name of ["directory","models"])$("choose-"+name).onclick=async()=>{const value=await action("choose_directory");if(typeof value==="string")$(name).value=value;};
+$("prepare").onsubmit=async event=>{event.preventDefault();const value=raw();if(!value.directory||!value.models){showError("ABSOLUTE_LOCAL_PATH_REQUIRED");return;}const result=await action("check",value);if(result){checked=value;$("preview").textContent="论文："+result.library+" · 缓存："+result.data;show("pair");$("credential").focus();}};
+$("back").onclick=()=>{checked=null;$("credential").value="";$("alert").hidden=true;show("prepare");$("endpoint").focus();};
+$("pair").onsubmit=async event=>{event.preventDefault();const credential=$("credential").value;$("credential").value="";const result=await action("install",checked,credential);if(result?.configured){show("finish");$("config-path").textContent="配置保存在："+result.config;$("finish-title").focus();}};
+$("activate").onclick=async()=>{const result=await action("activate");if(result?.ready){ready(result.build,result.startup);$("finish-title").focus();}};
+$("start").onclick=async()=>{const result=await action("start");if(result?.started){$("finish-title").textContent="本机服务已启动";$("finish-copy").textContent="托盘已接管本机服务。连接、模型加载和论文导入状态可在托盘窗口中查看。";$("start").textContent="打开托盘窗口";$("finish-title").focus();}};
+$("startup").onclick=async()=>{const result=await action("startup",registered);if(result){registered=result.registered;$("startup").textContent=registered?"移除登录启动":"启用登录启动";$("startup-status").textContent=registered?"已为此配置启用当前用户登录启动。":"已移除此配置的登录启动。";}};
+async function init(){if(busy)return;connected=!!window.pywebview?.api;if(!connected)return;controls();const result=await action("status");$("loading").hidden=true;$("reload-status").hidden=!!result;if(!result)return;
+ if(result.configured){show("finish");$("config-path").textContent="配置保存在："+result.config;if(result.ready)ready(result.build,result.startup);}
+ else{show("prepare");$("runtime").replaceChildren();for(const row of result.runtimes){const option=document.createElement("option");option.value=row.manifest;option.textContent=(row.device==="cuda"?"GPU · CUDA":"CPU")+" · "+row.id.slice(0,8);$("runtime").append(option);}$("no-runtime").hidden=!!result.runtimes.length;}controls();}
+$("reload-status").onclick=init;
+window.addEventListener("pywebviewready",init);init();
+setInterval(async()=>{if(!connected||!busy||polling)return;const current=operation;polling=true;try{const p=await window.pywebview.api.progress();if(busy&&current===operation&&phases[p.phase])$("progress").textContent=phases[p.phase];}catch{}finally{polling=false;}},500);
+</script></body></html>

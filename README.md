@@ -71,6 +71,20 @@ node scripts/switch-runtime.ts --config ".local/node.json" --rollback ".local/ru
 
 ## 本地节点
 
+准备好上述运行环境后，可以打开图形设置窗口，无需编辑 JSON：
+
+```powershell
+powershell -NoProfile -File scripts/start-setup.ps1
+# 独立配置不会覆盖默认节点
+powershell -NoProfile -File scripts/start-setup.ps1 -Config ".local/second-node.json"
+```
+
+窗口按顺序检查资料目录、已有模型与兼容运行环境，再接收网页生成的设备配对凭证。资料目录下会新建 `papers` 和 `node`；已有同名目录、占用端口或其他配置使用的资料目录会被拒绝。设备凭证仅经标准输入验证，并由 Windows DPAPI 保存，不进入命令行或配置 JSON。配对后准备已提交的固定程序版本，成功后显式启动托盘或启用登录启动；准备失败保留配对，可重新打开窗口重试。首次准备程序需要干净的已提交源码和 Node 依赖下载连接，代理沿用窗口中的配置。
+
+`-Runtime` 可指定已校验的 `status.json` 来启动窗口；`-Release` 可指定本仓库已准备的固定应用目录。首次安装 Python 和准备模型仍使用上方安装流程。资料目录中的小型所有权文件用于防止两个配置共用同一节点目录，不含凭证；失败重试使用原配置和目录。
+
+下面的命令行安装方式继续支持已有索引及高级配置。
+
 先复制 `local/node.example.json` 到 `.local/node-install.json`，填入云端地址、本机 Python、模型和论文库目录，再运行 `powershell -NoProfile -File scripts/setup-node.ps1`。脚本先检查 Python 3.12、固定依赖、CUDA（如选用）、模型文件及已有索引，再以隐藏输入接收网页设置中生成的设备凭证。支持已启用 Passkey 的账户，不读取管理员密码或模型密钥。凭证经只读接口验证后使用 Windows DPAPI 保存，配置写入 `.local/node.json`；已有配置、密钥和数据目录不会被覆盖。独立安装可指定 `-Template` 与 `-Config`。默认模板使用显式空论文库：配置 Python、模型和 libraryRoot 路径后即可启动，首次导入后才建立索引并加载检索模型。已有索引可使用 local/node-existing-index.example.json，填入论文库、索引路径和 YOUR_INDEX_VERSION；CPU/CUDA 身份必须与原构建一致。缺失的已有索引不会静默改成空库，已有本机配置也不会自动覆盖。
 
 ```powershell
@@ -112,7 +126,7 @@ powershell -NoProfile -File scripts/start-desktop.ps1 -Show
 
 关闭窗口会保留托盘与节点；再次运行带 -Show 的启动命令可重开已有窗口。`stop-node.ps1` 会协同停止节点与托盘，主动停止后不自动拉起；下次登录或手动启动托盘会恢复。管理独立配置可传入 `-Config "完整配置路径"`，不会停止其他配置的节点。托盘“停止本机服务并退出”先请求停止，失败时保留操作入口。节点意外退出后尝试重新启动；导出诊断只含运行状态和计数，不含凭证、路径或论文原文。
 
-登录启动脚本默认启动托盘；纯后台节点仍可用 install-startup.ps1 -NodeOnly 注册。现有计划任务只有在重新运行安装脚本时才改变。实际 Windows 登录、休眠与恢复行为仍需在部署机器验收。
+登录启动脚本默认启动托盘；纯后台节点仍可用 install-startup.ps1 -NodeOnly 注册。独立配置使用 -Config，查询状态可加 -Status，移除时使用同一 -Config 与 -Remove。任务按配置隔离，注册和移除前核对当前用户、动作和所有权，不覆盖其他程序的同名任务。现有计划任务只有在重新运行安装脚本时才改变。实际 Windows 登录、休眠与恢复行为仍需在部署机器验收。
 
 ## 关注主题与主动科研
 

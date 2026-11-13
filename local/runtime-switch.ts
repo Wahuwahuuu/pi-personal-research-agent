@@ -60,17 +60,17 @@ export async function validateRuntimeEnvironment(config:InstallConfig,root:strin
    (config.python.device==="cuda"&&resources.cudaAvailable!==true))throw Error("RUNTIME_CHECK_FAILED");
  }
 }
-async function candidate(root:string,path:string,config:InstallConfig){
+export async function verifyRuntimeCandidate(root:string,path:string,device?:string){
  const manifest=await owned(join(root,".local/runtimes"),resolve(path));
  if(manifest!==join(dirname(manifest),"status.json"))throw Error("RUNTIME_MANIFEST_REQUIRED");
  const value=JSON.parse((await file(manifest)).toString());
- if(value.format!==1||value.status!=="ready"||value.device!==config.python.device)throw Error("RUNTIME_NOT_COMPATIBLE");
+ if(value.format!==1||value.status!=="ready"||(!["cpu","cuda"].includes(value.device)||(device!==undefined&&value.device!==device)))throw Error("RUNTIME_NOT_COMPATIBLE");
  const checks=[["definitionSha256","packages/retrieval/pyproject.toml"],["lockSha256","packages/retrieval/uv.lock"],["checkSha256","local/check-runtime.py"]];
  for(const [field,name] of checks)if(value[field]!==sha(await file(join(root,name))))throw Error("RUNTIME_SOURCE_CHANGED");
  const python=join(dirname(manifest),"python/Scripts/python.exe"),pythonw=join(dirname(manifest),"python/Scripts/pythonw.exe");
  if(value.python!==python||value.pythonw!==pythonw)throw Error("RUNTIME_MANIFEST_CHANGED");
  await owned(dirname(manifest),python);await owned(dirname(manifest),pythonw);
- return {manifest,python};
+ return {manifest,python,device:value.device as "cpu"|"cuda"};
 }
 export async function withRuntimeConfiguration<T>(filePath:string,controls:RuntimeSwitchControls,action:(root:string,current:Buffer,config:InstallConfig)=>Promise<T>):Promise<T>{
  if((controls.platform??process.platform)!=="win32")throw Error("WINDOWS_REQUIRED");
@@ -91,7 +91,7 @@ export async function pauseAndReserve(path:string,config:InstallConfig,controls:
 export async function switchRuntime(configPath:string,manifestPath:string,controls:RuntimeSwitchControls={}){
  configPath=resolve(configPath);
  return withRuntimeConfiguration(configPath,controls,async(root,current,config)=>{
-  const next=await candidate(root,manifestPath,config),original=JSON.parse(current.toString());
+  const next=await verifyRuntimeCandidate(root,manifestPath,config.python.device),original=JSON.parse(current.toString());
   if(original.python.executable===next.python&&original.libraryPython===next.python)throw Error("RUNTIME_ALREADY_SELECTED");
   const updated={...original,python:{...original.python,executable:next.python},libraryPython:next.python};
   const checked=installationConfig(updated);await validateRuntimeEnvironment(checked,root,controls.run??runRuntimeCommand);
@@ -99,7 +99,7 @@ export async function switchRuntime(configPath:string,manifestPath:string,contro
   const release=await pauseAndReserve(configPath,config,controls);
   try{
    if(sha(await file(configPath))!==sha(current))throw Error("NODE_CONFIGURATION_CHANGED");
-   const latest=await candidate(root,manifestPath,config);if(latest.python!==next.python)throw Error("RUNTIME_MANIFEST_CHANGED");
+   const latest=await verifyRuntimeCandidate(root,manifestPath,config.python.device);if(latest.python!==next.python)throw Error("RUNTIME_MANIFEST_CHANGED");
    const local=await directory(root,".local"),receipts=await directory(local,"runtime-switches"),id=randomUUID(),recordPath=await directory(receipts,id);
    const after=Buffer.from(JSON.stringify(updated,null,2)+"\n");
    const receipt:Receipt={format:1,id,config:configPath,status:"prepared",beforeSha256:sha(current),afterSha256:sha(after),created:new Date().toISOString(),manifest:next.manifest};

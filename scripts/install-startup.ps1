@@ -1,12 +1,44 @@
-﻿param([switch]$Remove,[switch]$NodeOnly)
+param([switch]$Remove,[switch]$NodeOnly,[string]$Config,[switch]$Status)
 $ErrorActionPreference='Stop'
-$name = 'Pi Personal Research Agent Local Node'
-if ($Remove) { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue; exit }
-$script = Join-Path $PSScriptRoot $(if($NodeOnly){'start-node.ps1'}else{'start-desktop.ps1'})
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "' + $script + '"')
-$identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
-$principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
-Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
-Write-Output '已注册当前用户登录启动；默认托盘管理本机节点，未立即启动。'
+$project=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$defaultConfig=Join-Path $project '.local\node.json'
+if (-not $Config) { $Config=$defaultConfig }
+$Config=[IO.Path]::GetFullPath($Config)
+if ($Config -match '["\r\n]') { throw 'INVALID_CONFIGURATION_PATH' }
+$sha=[Security.Cryptography.SHA256]::Create()
+try { $hash=([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Config.ToLowerInvariant())))).Replace('-','').ToLowerInvariant() }
+finally { $sha.Dispose() }
+$isDefault=$Config -eq $defaultConfig
+$name=if($isDefault){'Pi Personal Research Agent Local Node'}else{'Pi Personal Research Agent '+$hash.Substring(0,16)}
+$description='PRA_CONFIG_SHA256='+$hash
+$identity=[Security.Principal.WindowsIdentity]::GetCurrent()
+$existing=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+if ($existing) {
+    $owned=$existing.Description -eq $description
+    $userMatches=@($identity.Name,$identity.User.Value) -contains [string]$existing.Principal.UserId
+    $allowed=@()
+    foreach($entry in @('start-node.ps1','start-desktop.ps1')){
+        $path=Join-Path $PSScriptRoot $entry
+        $base='-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$path+'"'
+        $allowed+=($base+' -Config "'+$Config+'"')
+        if($isDefault){$allowed+=$base}
+    }
+    $actions=@($existing.Actions)
+    $actionMatches=$actions.Count -eq 1 -and ([IO.Path]::GetFileName([string]$actions[0].Execute) -eq 'powershell.exe') -and ($allowed -contains [string]$actions[0].Arguments)
+    $legacy=$isDefault -and [string]::IsNullOrEmpty([string]$existing.Description)
+    if (-not $userMatches -or -not $actionMatches -or (-not $owned -and -not $legacy)) { throw 'STARTUP_TASK_NOT_OWNED' }
+}
+if ($Status) { @{registered=[bool]$existing}|ConvertTo-Json -Compress; exit }
+if ($Remove) {
+    if($existing){Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop}
+    Write-Output 'Startup removed for this configuration.'
+    exit
+}
+if (-not (Test-Path -LiteralPath $Config -PathType Leaf)) { throw 'NODE_CONFIGURATION_REQUIRED' }
+$script=Join-Path $PSScriptRoot $(if($NodeOnly){'start-node.ps1'}else{'start-desktop.ps1'})
+$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -File "'+$script+'" -Config "'+$Config+'"')
+$trigger=New-ScheduledTaskTrigger -AtLogOn -User $identity.Name
+$principal=New-ScheduledTaskPrincipal -UserId $identity.Name -LogonType Interactive -RunLevel Limited
+$settings=New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName $name -Description $description -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force | Out-Null
+Write-Output 'Startup registered for this configuration. The service has not been started.'
