@@ -1482,7 +1482,7 @@ export class PersonalAgent extends DurableObject<Env> {
             const conversation=this.state.conversations!.find(c=>c.id===t.conversationId)!;
             if(!t.workflow.translation){
               const service=this.memoryService(conversation.projectId);
-              await service.remember(conversation.id,t.id,t.input,conversation.domain!,t.status,t.workflow.memory?.digest);
+              await service.remember(conversation.id,t.id,t.input,conversation.domain!,t.status,t.workflow.memory?.digest,undefined,{explicitInstructions:true});
               if(t.workflow.memory?.digest){
                 try{
                   const entries=digestEntries(t.workflow.memory.digest,t.researchEvidence??[],this.catalog(t.researchIndex!).papers,conversation.id,t.id,conversation.projectId);

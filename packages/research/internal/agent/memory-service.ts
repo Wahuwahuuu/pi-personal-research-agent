@@ -1,3 +1,11 @@
+/** Only a direct user instruction may replace an explicitly edited memory slot. */
+export function explicitMemoryInstruction(question:string):boolean {
+  const value=question.trim().normalize("NFKC");
+  if (/[?？“”‘’"']/u.test(value)||/假如|假设|如果|例如|比如|怎么|如何|是否|能否/u.test(value)) return false;
+  if (/^(?:请)?(?:帮我)?记住(?:一下)?(?:[：:，,\s]+|(?=[我这今以当]))\S/u.test(value)) return true;
+  return /^(?:请)?(?:以后|今后|后续|默认)(?:请)?(?:用|使用|以)(?:简体)?(?:中文|汉语|英文|英语)(?:回答|回复)(?:我)?[。！!]?$/u.test(value) ||
+    /^(?:请)?(?:以后|今后|后续|默认)(?:请)?(?:(?:回答|回复)(?:请)?(?:保持)?(?:简洁|简短|精简|详细)(?:些|一些|一点)?|(?:简洁|简短|精简|详细)(?:回答|回复))[。！!]?$/u.test(value);
+}
 import {createHash} from "node:crypto";
 import {RuntimeFailure,redactText,object,type WorkerTransport,type Paper} from "./contracts.ts";
 import type {ReadingNote,DomainState} from "./domain-memory.ts";
@@ -37,7 +45,7 @@ export class LongTermMemory {
   async remove(id:string){if(!uuid.test(id))throw new RuntimeFailure('INVALID_INPUT','Invalid memory ID');await this.operation({action:'delete',id});}
   async clear(){await this.operation({action:'clear'});}
   async removeSession(source_session:string){await this.operation({action:'delete_session',source_session});}
-  async remember(session:string,turn:string,question:string,state:DomainState,status:string,digest?:MemoryDigest,signal?:AbortSignal){
+  async remember(session:string,turn:string,question:string,state:DomainState,status:string,digest?:MemoryDigest,signal?:AbortSignal,options:{explicitInstructions?:boolean}={}){
     if(signal?.aborted||!this.enabled||status!=='completed')return {saved:0,note:this.enabled?'本轮未自动写入长期记忆。':'长期记忆已暂停。'};
     const pending:Array<Parameters<LongTermMemory['save']>[0]>=[];
     if(/以后|今后|之后|后续|默认|始终|一直|记住|我的偏好|我喜欢|我希望|我习惯/iu.test(question)){
@@ -51,10 +59,11 @@ export class LongTermMemory {
     }
     const explicit=/^(?:请)?(?:帮我)?记住(?:一下)?(?:[：:，,\s]+|(?=[我这今以当]))([\s\S]+)/u.exec(question.trim())?.[1]?.trim();
     if(explicit&&(!pending.some(item=>item.kind==='preference')||/研究|论文|方向|主题|项目/u.test(explicit)))pending.push({kind:'note',content:clip(explicit,1000),slot:'note:'+sha(explicit),source_session:session,source_turn:turn});
+    if(options.explicitInstructions&&explicitMemoryInstruction(question))for(const entry of pending)entry.edited=true;
     const note=state.reading_notes?.find(note=>note.source_turn===turn);
     if(note?.paper_ids.some(id=>this.papers.has(id))&&note.execution_state!=='working'&&!(note.execution_state==='partial'&&!note.citations.length))pending.push(...this.reading(session,note,digest));
     let saved=0;const entries=pending.slice(0,20).flatMap(entry=>{try{return [{...entry,content:this.clean(entry.content)}];}catch{return [];}});
-    if(entries.length&&!signal?.aborted)try{const data=await this.operation({action:'upsert_batch',entries},signal);if(Array.isArray(data.entries))saved=data.entries.map(row=>this.entry(row)).length;}catch{/* 可选记忆保存不影响正常回答。 */}
+    if(entries.length&&!signal?.aborted)try{const data=await this.operation({action:'upsert_batch',entries},signal);if(Array.isArray(data.entries))saved=data.entries.map(row=>this.entry(row)).filter(entry=>entry.source_turn===turn).length;}catch{/* 可选记忆保存不影响正常回答。 */}
     return {saved,note:saved?`已保存 ${saved} 条长期记忆。`:pending.length?'本轮回答已保留，长期记忆未能写入。':'本轮没有需要长期保存的新内容。'};
   }
   private reading(session:string,note:ReadingNote,digest?:MemoryDigest):Array<Parameters<LongTermMemory['save']>[0]>{

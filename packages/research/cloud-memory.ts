@@ -20,10 +20,10 @@ export function recordMemoryInputs(state:CloudMemoryState,turn:string,ids:readon
  const sources=state.entries.filter(e=>ids.includes(e.id)).map(e=>e.source_turn).filter(Boolean);
  d[turn]={memories:[...new Set([...(prior?.memories??[]),...ids])],turns:[...new Set([...(prior?.turns??[]),...turns,...sources].filter(id=>id!==turn))],lineageVersion:prior&&prior.lineageVersion!==1?undefined:1};
 }
-export function invalidateMemoryInputs(state:CloudMemoryState,memoryIds:readonly string[],sourceTurns:readonly string[],preserve:readonly string[]=[]){
+export function invalidateMemoryInputs(state:CloudMemoryState,memoryIds:readonly string[],sourceTurns:readonly string[],preserve:readonly string[]=[],preserveTurns:readonly string[]=[]){
  const ids=new Set(memoryIds),turns=new Set([...(state.invalidatedTurns??[]),...sourceTurns]),keep=new Set(preserve);
  let changed=true;while(changed){changed=false;
-  for(const [turn,input]of Object.entries(state.dependencies??{}))if(!turns.has(turn)&&(input.memories.some(id=>ids.has(id))||input.turns.some(id=>turns.has(id)))){turns.add(turn);changed=true;}
+  for(const [turn,input]of Object.entries(state.dependencies??{}))if(!turns.has(turn)&&!preserveTurns.includes(turn)&&(input.memories.some(id=>ids.has(id))||input.turns.some(id=>turns.has(id)))){turns.add(turn);changed=true;}
   for(const entry of state.entries)if(!keep.has(entry.id)&&!entry.edited&&turns.has(entry.source_turn)&&!sourceTurns.includes(entry.source_turn)&&!ids.has(entry.id)){ids.add(entry.id);changed=true;}
  }
  const removed=state.entries.filter(e=>ids.has(e.id)&&!keep.has(e.id));
@@ -38,11 +38,15 @@ export function cloudMemory(state:CloudMemoryState,papers:readonly Paper[],owner
   const projectId=input.kind==="preference"?undefined:input.projectId??options.projectId;
   const prior=state.entries.find(e=>input.id?e.id===input.id:e.slot===input.slot&&e.projectId===projectId);
   if(input.id&&!prior)throw Error("UNKNOWN_MEMORY");
+  if(input.source_turn&&state.invalidatedTurns?.includes(input.source_turn))return prior;
+  if(input.edited&&prior&&input.source_turn&&prior.source_turn===input.source_turn){
+    if(input.content!==prior.content)throw Error("MEMORY_SOURCE_CONFLICT");
+    return prior;
+  }
   const slot=input.slot??prior?.slot??"manual:"+createHash("sha256").update(input.content).digest("hex");
   if(!input.edited&&(state.deletedSlots.includes(tombstoneSlot({slot,projectId:prior?.projectId??projectId}))||prior?.edited))return prior;
   if(input.edited)state.deletedSlots=state.deletedSlots.filter(s=>s!==tombstoneSlot({slot,projectId:prior?.projectId??projectId}));
-  if(input.edited&&prior)invalidateMemoryInputs(state,[prior.id],prior.source_turn?[prior.source_turn]:[],[prior.id]);
-  if(!input.edited&&input.source_turn&&state.invalidatedTurns?.includes(input.source_turn))return prior;
+  if(input.edited&&prior)invalidateMemoryInputs(state,[prior.id],prior.source_turn?[prior.source_turn]:[],[prior.id],input.source_turn?[input.source_turn]:[]);
   const now=new Date().toISOString();
   const entry:CloudMemoryEntry={id:prior?.id??crypto.randomUUID(),kind:input.kind??prior?.kind??"note",content:input.content,paper_ids:input.paper_ids??prior?.paper_ids??[],source_session:input.source_session??prior?.source_session??"",source_turn:input.source_turn??prior?.source_turn??"",created_at:prior?.created_at??now,updated_at:now,slot,edited:input.edited??prior?.edited??false,
    projectId:prior?.projectId??projectId,category:input.category??prior?.category??(input.kind==="preference"?"preference":input.kind==="reading"?"reading":"constraint"),

@@ -65,3 +65,33 @@ test("legacy unscoped tombstones do not suppress independent project memories, w
  await assert.rejects(independent.save({kind:"preference",slot:"preference:language",content:"Old preference",source_turn:"different-source"}));
  assert.equal(state.entries.length,1);assert.ok(state.deletedSlots.includes("shared-reading"));
 });
+
+test("new explicit preference instructions override edited values while stale replay remains blocked",async()=>{
+ const state=newCloudMemory(),m=cloudMemory(state,papers,"owner"),d=new DomainMemory("v");
+ const prior=await m.save({kind:"preference",slot:"preference:language",content:"回答语言：中文",edited:true,source_session:"c1",source_turn:"old-turn"});
+ const {recordMemoryInputs}=await import("../packages/research/cloud-memory.ts");
+ recordMemoryInputs(state,"derived",[prior.id],[]);
+ await m.save({kind:"note",content:"Derived with old language",source_session:"c2",source_turn:"derived"});
+ recordMemoryInputs(state,"new-turn",[prior.id],["old-turn"]);
+ await m.remember("c3","new-turn","以后用英文回答",d.state,"completed",undefined,undefined,{explicitInstructions:true});
+ assert.equal(state.entries.find(e=>e.id===prior.id)?.content,"回答语言：英文");
+ assert.equal(state.entries.find(e=>e.id===prior.id)?.edited,true);
+ assert.ok(state.invalidatedTurns?.includes("derived"));
+ assert.ok(!state.entries.some(e=>e.source_turn==="derived"));
+ await m.remember("c3","new-turn","以后用英文回答",d.state,"completed",undefined,undefined,{explicitInstructions:true});
+ assert.ok(!state.invalidatedTurns?.includes("new-turn"),"idempotent confirmation must not invalidate itself");
+ await m.remove(prior.id);
+ await m.remember("c3","new-turn","以后用英文回答",d.state,"completed",undefined,undefined,{explicitInstructions:true});
+ assert.equal(state.entries.length,0,"deleted explicit source cannot resurrect through replay");
+ await m.remember("c4","fresh-turn","请记住：以后用中文回答",d.state,"completed",undefined,undefined,{explicitInstructions:true});
+ assert.equal(state.entries.length,1);
+ assert.equal(state.entries[0].content,"回答语言：中文");
+});
+test("quoted and hypothetical preference statements do not replace an edited user preference",async()=>{
+ for(const question of ["例如以后用英文回答","假如以后用英文回答","记住这句话怎么翻译：以后用英文回答？","不要记住：以后用英文回答","“以后用英文回答”是什么意思？"]){
+  const state=newCloudMemory(),m=cloudMemory(state,papers,"owner"),d=new DomainMemory("v");
+  const prior=await m.save({kind:"preference",slot:"preference:language",content:"回答语言：中文",edited:true,source_session:"c",source_turn:"old"});
+  await m.remember("c","new",question,d.state,"completed",undefined,undefined,{explicitInstructions:true});
+  assert.equal(state.entries.find(e=>e.id===prior.id)?.content,"回答语言：中文",question);
+ }
+});
