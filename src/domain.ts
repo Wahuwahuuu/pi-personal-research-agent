@@ -1,3 +1,4 @@
+import type {ModelCallTiming, ToolTiming} from "./timing.ts";
 export const TASK_CAPACITY=5000;
 import type {ControlReceipt} from "./conversation-control.ts";
 import type {ProactiveState} from "./proactive-research.ts";
@@ -53,8 +54,10 @@ export interface Task {
   modelStarted?: number;
   modelPrompt?: string;
   modelAdmitted?: boolean;
+  modelTimings?: ModelCallTiming[];
 }
 export interface Operation {
+  timing?: ToolTiming;
   deliveryVersion?: 1;
   id: string;
   taskId: string;
@@ -225,7 +228,7 @@ export function acceptResult(
   indexVersion: string,
   result: unknown,
   now = Date.now(),
-  executionMs = 0,
+  executionMs?: number,
 ): "accepted" | "duplicate" | "discarded" {
   const op = s.operations.find((o) => o.id === id);
   if (!op) throw new Problem("UNKNOWN_OPERATION", 404);
@@ -239,9 +242,12 @@ export function acceptResult(
   if (op.state === "done") return "duplicate";
   if (indexVersion !== op.indexVersion) throw new Problem("INDEX_CHANGED", 409);
   validateEvidence(op.tool, result, indexVersion);
-  if (!Number.isFinite(executionMs) || executionMs < 0 || executionMs > 180000)
+  if (executionMs !== undefined && (!Number.isFinite(executionMs) || executionMs < 0 || executionMs > 180000))
     throw new Problem("INVALID_EXECUTION_TIME");
-  t.activeMs += executionMs;
+  t.activeMs += executionMs ?? 0;
+  op.timing ??= {dispatches: 0, firstDispatchedAt: now};
+  op.timing.receivedAt = now;
+  if (executionMs !== undefined) op.timing.localExecutionMs = executionMs;
   op.result = result;
   op.state = "done";
   t.evidence = result;

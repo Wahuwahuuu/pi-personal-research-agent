@@ -1,3 +1,4 @@
+import {elapsed, type ModelMeasurement} from "./timing.ts";
 import {projectProviderMessages} from "./provider-context.ts";
 import { BUDGET_STOPS } from "./budget.ts";
 import {modelResponse} from "./model-response.ts";
@@ -24,8 +25,9 @@ export interface LiveConfig {
 export function liveModels(
   config: LiveConfig,
   before: (messages:readonly Message[]) => void | Promise<void>,
-  after: (usage?: { input: number; output: number }) => void | Promise<void>,
+  after: (usage?: { input: number; output: number }, timing?: ModelMeasurement) => void | Promise<void>,
   fetcher: typeof fetch = fetch,
+  clock: () => number = Date.now,
 ) {
   if (
     config.authorized !== "explicitly-authorized" ||
@@ -61,6 +63,8 @@ export function liveModels(
     void (async () => {
       let admitted = false,
         settled = false, dispatched=false,ownsSlot=false;
+      let startedAt: number | undefined;
+      const measured = (status: ModelMeasurement["status"]): ModelMeasurement => ({status, elapsedMs: startedAt === undefined ? null : elapsed(startedAt, clock())});
       try {
         if(active)throw Error("MODEL_CONCURRENCY");
         active=true;ownsSlot=true;
@@ -86,6 +90,7 @@ export function liveModels(
         admitted = true;
         options?.signal?.throwIfAborted();
         dispatched=true;
+        startedAt=clock();
         const response = await fetcher(endpoint, {
           method: "POST",
           headers: {
@@ -115,6 +120,7 @@ export function liveModels(
           events.push({type:"text_delta",contentIndex:0,delta,partial:message});config.onVisible?.(visible);
         };
         const data=await modelResponse(response,config.apiKey,pushText);
+        const timing=measured("response_received");
         const rawMessage = data.choices?.[0]?.message;
         const content = rawMessage?.content ?? "";
         const rawCalls = rawMessage?.tool_calls ?? [];
@@ -140,7 +146,7 @@ export function liveModels(
             : undefined;
         // The callback may commit locally before a later acknowledgement fails.
         settled = true;
-        try{await after(usage);}catch{throw Error("BILLING_UNAVAILABLE");}
+        try{await after(usage,timing);}catch{throw Error("BILLING_UNAVAILABLE");}
         if (
           typeof content !== "string" ||
           (!content.trim() && !calls.length) ||
@@ -172,7 +178,7 @@ export function liveModels(
         const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","MODEL_CONCURRENCY","MODEL_SUBMISSION_MISMATCH","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
         const code=error instanceof Error&&known.has(error.message)?error.message:"MODEL_REQUEST_FAILED";
         config.onFailure?.(code);
-        if (admitted && !settled) {settled=true;try{await after(dispatched?undefined:{input:0,output:0});}catch{config.onFailure?.("BILLING_UNAVAILABLE");}}
+        if (admitted && !settled) {settled=true;try{await after(dispatched?undefined:{input:0,output:0},measured(dispatched?"interrupted":"not_dispatched"));}catch{config.onFailure?.("BILLING_UNAVAILABLE");}}
         message.stopReason = options?.signal?.aborted ? "aborted" : "error";
         message.errorMessage = "MODEL_REQUEST_FAILED";
         events.push({

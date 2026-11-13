@@ -1,3 +1,4 @@
+import {beginModelTiming, finishModelTiming, markToolDispatch, taskTimings, apiTiming, type ModelMeasurement} from "./timing.ts";
 import {retentionCandidates,retentionPreview,confirmRetention} from "./data-retention.ts";
 import {RELEASE_CONTRACT} from "./release-contract.ts";
 import {resolveConversationControl, recordConversationControl} from "./conversation-control.ts";
@@ -195,6 +196,7 @@ export class PersonalAgent extends DurableObject<Env> {
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
+        let timingCall: {taskId:string;call:number}|undefined;
         const outputLimit=()=>this.state.tasks.some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
         const before = async (messages:readonly {role:string;content?:unknown}[]) => {
           if(this.recoveryBlocked)throw new Problem("RECOVERY_IN_PROGRESS",503);
@@ -223,30 +225,34 @@ export class PersonalAgent extends DurableObject<Env> {
             this.database.transactionSync(()=>{
               reserve(this.state,budget,52000,reservedOutput);
               if(budget!==t)t.calls++;
+              timingCall={taskId:t.id,call:beginModelTiming(t,env.MODEL_MODE==="mock"?"mock":"live")};
               if(reservationId)this.budgetLedger.reserve(request);
               this.save();
             });
           } catch(error) {
             Object.assign(this.state.usage,previousUsage);budget.calls=previousCalls;if(budget!==t)t.calls=previousChildCalls;this.state=this.repository.load();
             if(reservationId){this.queueBill(reservationId,{input:0,output:0});await this.flushBills();}
-            reservationId=undefined;throw error;
+            reservationId=undefined;timingCall=undefined;throw error;
           }
         };
-        const after = async (usage?: { input: number; output: number }) => {
+        const after = async (usage?: { input: number; output: number }, timing?: ModelMeasurement) => {
           const previousUsage={...this.state.usage};
           try {
             this.database.transactionSync(()=>{
               settle(this.state,52000,reservedOutput,usage);
+              const admitted=timingCall;
+              const task=admitted&&this.state.tasks.find(t=>t.id===admitted.taskId);
+              if(task)finishModelTiming(task,admitted.call,timing);
               if(reservationId){this.budgetLedger.settle(reservationId,usage);this.queueBill(reservationId,usage);}
               this.save();
             });
           } catch(error) {Object.assign(this.state.usage,previousUsage);this.state=this.repository.load();throw error;}
-          reservationId=undefined;
+          reservationId=undefined;timingCall=undefined;
           if(env.MODEL_MODE!=="mock")await this.flushBills();
         };
         const models =
           env.MODEL_MODE === "mock"
-            ? mockModels(before, (input, output) => after({ input, output }), (code)=>{const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;})
+            ? mockModels(before, (input, output, timing) => after({ input, output },timing), (code)=>{const task=this.state.tasks.find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;})
             : liveModels(
                 {
                   authorized: env.ALLOW_PAID_CALLS ?? "",
@@ -1008,6 +1014,8 @@ export class PersonalAgent extends DurableObject<Env> {
       return json({...page,items:page.items.map(taskSummary)});
     }
     const task=path.match(/^\/api\/tasks\/([^/]+)$/);
+    const timing=path.match(/^\/api\/tasks\/([^/]+)\/timing$/);
+    if(timing&&r.method==="GET")return json(taskTimings(this.state,getTask(this.state,timing[1])));
     if(task&&r.method==="GET"){const {modelPrompt,...t}=getTask(this.state,task[1]);return json(t);}
   }
   async body(r: Request) {
@@ -1253,7 +1261,7 @@ export class PersonalAgent extends DurableObject<Env> {
                 text(m.indexVersion, 256),
                 m.result,
                 (v) => this.catalog(v),
-                m.executionMs ?? 0,
+                m.executionMs,
               )
             : acceptResult(
                 this.state,
@@ -1261,7 +1269,7 @@ export class PersonalAgent extends DurableObject<Env> {
                 text(m.indexVersion, 256),
                 m.result,
                 Date.now(),
-                m.executionMs ?? 0,
+                m.executionMs,
               );
         this.save();
         this.send(ws, {
@@ -1540,6 +1548,7 @@ export class PersonalAgent extends DurableObject<Env> {
           failResearch(this.state, t, "LOCAL_RETRY_LIMIT");
         else {
           this.deletions.custody.dispatch(op,attachment.hash);
+          markToolDispatch(op);
           op.state = "sent";
           op.deadline = Date.now() + 60000;
           op.attempts = (op.attempts ?? 0) + 1;
@@ -1842,6 +1851,7 @@ export class PersonalAgent extends DurableObject<Env> {
                 t.error = "INDEX_CHANGED";
               } else if (op.state === "pending") {
                 this.deletions.custody.dispatch(op,a.hash);
+                markToolDispatch(op);
                 op.state = "sent";
                 op.deadline = Date.now() + 60000;
                 t.status = "waiting_device";
@@ -1975,6 +1985,12 @@ export default {
     if(env.CLOUDFLARE_METRICS_TOKEN&&env.OWNER_ID)ctx.waitUntil(env.IDENTITIES.getByName("accounts:"+env.OWNER_ID).refreshPlatform());
   },
   async fetch(r:Request,env:Env):Promise<Response> {
+    const started=Date.now();
+    const response=await routeRequest(r,env);
+    return new URL(r.url).pathname.startsWith("/api/")?apiTiming(response,started):response;
+  },
+};
+async function routeRequest(r:Request,env:Env):Promise<Response> {
     try {
       const url=new URL(r.url);
       if(!url.pathname.startsWith("/api/"))return env.ASSETS.fetch(r);
@@ -1994,5 +2010,4 @@ export default {
       if(url.pathname==="/api/recovery"&&r.method==="GET")return json(await identities.recoveryView(identity.id));
       return env.AGENTS.getByName(identity.id).fetch(r);
     } catch {return json({error:"SERVICE_UNAVAILABLE"},503);}
-  },
-};
+}

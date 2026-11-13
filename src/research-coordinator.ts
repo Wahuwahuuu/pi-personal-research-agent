@@ -81,7 +81,7 @@ export function acceptResearchResult(
   version: string,
   raw: unknown,
   catalog: (version: string) => ResearchCatalog,
-  executionMs = 0,
+  executionMs?: number,
 ) {
   const op = s.operations.find((o) => o.id === id);
   if (!op) throw new Problem("UNKNOWN_OPERATION", 404);

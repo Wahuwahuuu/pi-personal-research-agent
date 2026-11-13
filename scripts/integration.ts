@@ -228,6 +228,16 @@ try {
   );
   assert.equal(researchDone.engine, "durable");
   assert.equal(researchDone.calls, 5);
+  const phaseResponse=await fetch(base+"/api/tasks/"+research.id+"/timing",{headers:{Cookie:cookie}});
+  assert.equal(phaseResponse.status,200);assert.match(phaseResponse.headers.get("server-timing")!,/pra_gateway;dur=[0-9]+/);
+  const phases=await phaseResponse.json() as any;
+  assert.equal(phases.model.length,5);assert.equal(phases.modelCallsWithoutTiming,0);
+  assert.ok(phases.model.every((m:any)=>m.mode==="mock"&&m.status==="response_received"&&m.elapsedMs!==null));
+  assert.equal(phases.tools.length,2);
+  assert.ok(phases.tools.every((m:any)=>m.sample==="single_delivery"&&m.localExecutionMs!==null&&m.roundTripMs!==null));
+  assert.ok(!JSON.stringify(phases).includes("Evidence."));
+  checks.push("per-task timings persist five labelled model measurements and two real node round trips without prompt or evidence content");
+
   const verification=await fetch(base+"/api/device/verify",{headers:{Authorization:"Bearer "+pair.token}});
   assert.equal(verification.status,200);assert.equal((await verification.json() as any).protocol,1);
   assert.equal((await api("state")).deviceOnline,true);
@@ -594,6 +604,7 @@ try {
   await readerLocal("purged",{id:readerReceipt.id});
 
   await until(async()=> (await api("deletions/"+research.conversationId)).status==="completed");
+  assert.equal((await fetch(base+"/api/tasks/"+research.id+"/timing",{headers:{Cookie:cookie}})).status,404);
   const localDb=new DatabaseSync(resolve(directory,"node/node.sqlite"),{readOnly:true});
   for(const id of removedOps){assert.equal(localDb.prepare("SELECT id FROM outbox WHERE id=?").all(id).length,0);assert.equal(localDb.prepare("SELECT id FROM deleted_operations WHERE id=?").all(id).length,1);}
   localDb.close();

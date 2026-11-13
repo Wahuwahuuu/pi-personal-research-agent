@@ -1,3 +1,4 @@
+import {elapsed, type ModelMeasurement} from "./timing.ts";
 import { BUDGET_STOPS } from "./budget.ts";
 import {projectProviderMessages} from "./provider-context.ts";
 import { createModels, createProvider } from "@earendil-works/pi-ai/models";
@@ -12,8 +13,9 @@ import {
 export const MODEL = { provider: "pra", id: "deterministic-v1" };
 export function mockModels(
   before: (messages:readonly Message[]) => void | Promise<void>,
-  after: (input: number, output: number) => void | Promise<void>,
+  after: (input: number, output: number, timing?: ModelMeasurement) => void | Promise<void>,
   onFailure?: (code: string) => void,
+  clock: () => number = Date.now,
 ) {
   let active=false;
   const stream: ProviderStreams["stream"] = (model, context) => {
@@ -41,6 +43,7 @@ export function mockModels(
         if(active)throw Error("MODEL_CONCURRENCY");
         active=true;ownsSlot=true;
         await before(context.messages);
+        const startedAt=clock();
         const source = JSON.stringify(projectProviderMessages(context.messages));
         const input = Math.ceil(new TextEncoder().encode(source).length / 3);
         const names = getCurrentTools(context.messages).map((t) => t.name);
@@ -88,7 +91,7 @@ export function mockModels(
             toolCall: call,
             partial: message,
           });
-          await after(input, 40);
+          await after(input, 40, {status:"response_received",elapsedMs:elapsed(startedAt,clock())});
           events.push({ type: "done", reason: "toolUse", message });
           events.end(message);
           return;
@@ -135,7 +138,7 @@ export function mockModels(
           content,
           partial: message,
         });
-        await after(input, 40);
+        await after(input, 40, {status:"response_received",elapsedMs:elapsed(startedAt,clock())});
         events.push({ type: "done", reason: "stop", message });
         events.end(message);
       } catch (error) {
