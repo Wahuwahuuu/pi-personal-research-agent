@@ -19,7 +19,7 @@ function Get-ScheduledTask {
  $d='PRA_CONFIG_SHA256='+$hash
  if($global:fixture.kind -eq 'foreign-description'){$d='unrelated'}
  if($global:fixture.kind -eq 'foreign-action'){$a='-File "C:\\Unrelated\\task.ps1"'}
- $user=$i.Name;if($global:fixture.kind -eq 'foreign-user'){$user='unrelated-user'}
+ $user=$i.Name;if($global:fixture.kind -eq 'owned-short'){$user=$i.Name.Split('\\')[-1]};if($global:fixture.kind -eq 'foreign-user'){$user='unrelated-user'}
  return [pscustomobject]@{Description=$d;Principal=[pscustomobject]@{UserId=$user};Actions=@([pscustomobject]@{Execute='powershell.exe';Arguments=$a})}
 }
 function New-ScheduledTaskAction {param($Execute,$Argument);return [pscustomobject]@{Execute=$Execute;Arguments=$Argument}}
@@ -46,6 +46,8 @@ test("startup registration is configuration-scoped and refuses foreign tasks bef
    for(const remove of [false,true]){const r=run(a,kind,{remove});assert.equal(r.ok,false);assert.ok(!r.output.includes('"mutation"'));}
   }
   assert.equal(run(a,"owned",{remove:true}).ok,true);
+  assert.equal(run(a,"owned-short",{remove:true}).ok,true);
+  assert.equal(JSON.parse(run(a,"owned-short",{status:true}).output).registered,true);
   const status=run(a,"owned",{status:true});assert.equal(status.ok,true);assert.equal(JSON.parse(status.output).registered,true);assert.ok(!status.output.includes('"mutation"'));
   assert.equal(JSON.parse(run(a,"none",{status:true}).output).registered,false);
  }finally{assert.ok(relative(resolve(tmpdir()),root).startsWith("pra-startup-"));await rm(root,{recursive:true,force:true,maxRetries:5});}

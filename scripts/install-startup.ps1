@@ -15,7 +15,12 @@ $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 $existing=Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
 if ($existing) {
     $owned=$existing.Description -eq $description
-    $userMatches=@($identity.Name,$identity.User.Value) -contains [string]$existing.Principal.UserId
+    $userMatches=$false
+    try {
+        $principalId=[string]$existing.Principal.UserId
+        $principalSid=if($principalId -match '^S-1-'){[Security.Principal.SecurityIdentifier]::new($principalId)}else{([Security.Principal.NTAccount]::new($principalId)).Translate([Security.Principal.SecurityIdentifier])}
+        $userMatches=$principalSid.Value -eq $identity.User.Value
+    } catch { $userMatches=$false }
     $allowed=@()
     foreach($entry in @('start-node.ps1','start-desktop.ps1')){
         $path=Join-Path $PSScriptRoot $entry
