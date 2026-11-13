@@ -9,6 +9,7 @@ const events=[];let uploaded=false,statusChecks=0;
 const event=value=>{events.push(value);writeFileSync("events.json",JSON.stringify(events));};
 childProcess.execFileSync=(exe,args,options={})=>{
  if(exe==="git"){
+  if(args[0]==="show"&&args[1]===build+":src/worker.ts")return "fixture worker\n";
   if(args[0]==="rev-parse")return build+"\n";
   if(args[0]==="status"){statusChecks++;return scenario==="changed"&&statusChecks>1?" M src/worker.ts\n":"";}
  }
@@ -27,7 +28,9 @@ childProcess.execFileSync=(exe,args,options={})=>{
   if(command==="deploy"){
    const file=args[args.indexOf("--config")+1],cfg=JSON.parse(readFileSync(file,"utf8"));
    if(args.includes("--dry-run")){
+    if(cfg.define?.__PRA_SOURCE_BUILD__!==JSON.stringify(build))throw Error("SOURCE_BUILD_NOT_EMBEDDED");
     const output=args[args.indexOf("--outdir")+1];mkdirSync(output,{recursive:true});writeFileSync(resolve(output,"worker.js"),"// frozen-worker");
+    writeFileSync(resolve(output,"worker.js.map"),JSON.stringify({sources:["../../src/worker.ts"],sourcesContent:[scenario==="stale-bundle"?"stale source":"fixture worker\n"]}));
     writeFileSync("dist/web/index.html","subsequent-unrelated-build");event("build-worker");return "";
    }
    if(readFileSync(resolve(cfg.assets.directory,"index.html"),"utf8")!=="frozen-assets")throw Error("UNFROZEN_ASSETS");
@@ -47,13 +50,13 @@ globalThis.fetch=async(raw,init={})=>{
  if(target.origin!==url)throw Error("UNEXPECTED_ORIGIN");
  if(target.pathname==="/api/device/verify"){
   if(scenario==="denied"||scenario==="resume-initial"||(scenario==="revoked-after-upload"&&uploaded))return Response.json({}, {status:401});
-  return Response.json({protocol:1,accountScope:"f".repeat(64),build:uploaded?build:"old",...(uploaded?{release:scenario==="wrong-contract-after-upload"?{...RELEASE_CONTRACT,family:"different-family"}:RELEASE_CONTRACT}:{})});
+  return Response.json({protocol:1,accountScope:"f".repeat(64),build:uploaded?build:"old",...(uploaded?{sourceBuild:scenario==="wrong-source-after-upload"?"old":build,release:scenario==="wrong-contract-after-upload"?{...RELEASE_CONTRACT,family:"different-family"}:RELEASE_CONTRACT}:{})});
  }
  if(target.pathname==="/api/auth/status")return Response.json({bootstrapAvailable:["initial","resume-initial"].includes(scenario)});
  if(target.pathname==="/api/login"){
   if(!["initial","resume-initial"].includes(scenario))throw Error("BOOTSTRAP_MUST_STAY_CLOSED");
   return Response.json({}, {headers:{"set-cookie":"pra_session="+"c".repeat(64)+"; HttpOnly; Secure"}});
  }
- if(["/api/state","/api/deployment"].includes(target.pathname))return Response.json({build:uploaded?build:"old",...(uploaded?{release:scenario==="wrong-contract-after-upload"?{...RELEASE_CONTRACT,family:"different-family"}:RELEASE_CONTRACT}:{})});
+ if(["/api/state","/api/deployment"].includes(target.pathname))return Response.json({build:uploaded?build:"old",...(uploaded?{sourceBuild:scenario==="wrong-source-after-upload"?"old":build,release:scenario==="wrong-contract-after-upload"?{...RELEASE_CONTRACT,family:"different-family"}:RELEASE_CONTRACT}:{})});
  throw Error("UNEXPECTED_EXTERNAL_REQUEST");
 };

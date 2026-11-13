@@ -6,7 +6,7 @@ import {resolve,join,sep} from "node:path";
 import {pathToFileURL} from "node:url";
 import {spawnSync} from "node:child_process";
 const root=process.cwd(),url="https://pi-personal-research-agent.validation.workers.dev",build="a".repeat(40);
-for(const scenario of ["success","live-success","denied","changed","revoked-after-upload","wrong-contract-after-upload","initial","resume-initial"])test("deployment CLI "+scenario+" freezes publication and never verifies an unserved build",()=>{
+for(const scenario of ["success","live-success","denied","changed","revoked-after-upload","wrong-contract-after-upload","wrong-source-after-upload","stale-bundle","initial","resume-initial"])test("deployment CLI "+scenario+" freezes publication and never verifies an unserved build",()=>{
  const directory=mkdtempSync(join(tmpdir(),"pra-deploy-"));
  try{
   mkdirSync(resolve(directory,".local"),{recursive:true});
@@ -26,16 +26,16 @@ for(const scenario of ["success","live-success","denied","changed","revoked-afte
   const events=JSON.parse(readFileSync(resolve(directory,"events.json"),"utf8")) as string[];
   if(["success","live-success","initial","resume-initial"].includes(scenario)){
    assert.equal(child.status,0,child.stderr);const stored=JSON.parse(readFileSync(resolve(directory,".local/deployment.json"),"utf8"));
-   assert.equal(stored.build,build);assert.equal(stored.servingBuildVerified,true);
+   assert.equal(stored.sourceProof.build,build);assert.equal(stored.sourceProof.files,1);assert.equal(stored.build,build);assert.equal(stored.servingBuildVerified,true);
    assert.equal(stored.verification,["success","live-success"].includes(scenario)?"device":"session");
    assert.equal(events.filter(e=>e==="upload").length,1);
    assert.equal(events.filter(e=>e==="install-secret").length,["success","live-success"].includes(scenario)?0:1);
    assert.equal(events.filter(e=>e==="HTTP /api/login").length,["success","live-success"].includes(scenario)?0:1);
   }else{
    assert.notEqual(child.status,0);assert.deepEqual(JSON.parse(readFileSync(resolve(directory,".local/deployment.json"),"utf8")),previous);
-   assert.equal(events.filter(e=>e==="upload").length,["revoked-after-upload","wrong-contract-after-upload"].includes(scenario)?1:0);
+   assert.equal(events.filter(e=>e==="upload").length,["revoked-after-upload","wrong-contract-after-upload","wrong-source-after-upload"].includes(scenario)?1:0);
    assert.equal(events.includes("HTTP /api/login"),false);
-   if(["revoked-after-upload","wrong-contract-after-upload"].includes(scenario))assert.equal(JSON.parse(readFileSync(resolve(directory,".local/deployment-pending.json"),"utf8")).servingBuildVerified,false);
+   if(["revoked-after-upload","wrong-contract-after-upload","wrong-source-after-upload"].includes(scenario))assert.equal(JSON.parse(readFileSync(resolve(directory,".local/deployment-pending.json"),"utf8")).servingBuildVerified,false);
    else assert.equal(existsSync(resolve(directory,".local/deployment-pending.json")),false);
   }
  }finally{
