@@ -42,6 +42,10 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  IDENTITY_RETRY_NOT_CONFIGURED: "账户设置暂不可用，请让部署者检查服务配置。",
+  IDENTITY_RETRY_KEY_CHANGED: "服务凭证已更新，这次操作无法重放。请刷新页面后重新操作。",
+  INVITATION_UNAVAILABLE: "这份邀请已使用或过期。如需邀请另一位使用者，请创建新邀请。",
+  RECOVERY_CODES_CHANGED: "这组恢复码已被更新或使用，不能再次显示。请生成一组新恢复码。",
   CONTROL_REQUIRES_MESSAGE: "请在会话中回复任务序号或重新发送操作要求。控制回执不能作为科研任务继续执行。",
   CONTROL_TARGET_CHANGED: "任务状态已变化，尚未执行操作。请重新发送要求，确认当前任务。",
   RECOVERY_REQUEST_STORAGE: "浏览器无法保存本次请求标识。请允许此站点使用会话存储后重试，当前尚未发起恢复。",

@@ -701,7 +701,7 @@ try {
   await api("tasks/"+long.id+"/cancel","POST",{});
   checks.push("long-goal pause/amend/priority are idempotent through real DO; another conversation completes, offline resume keeps task identity and allowance");
   checks.push(...await verifyLibraryQueue(base,api));
-  const authReport=await verifyIdentity(base,cookie,admin);checks.push(...authReport.checks);
+  const authReport=await verifyIdentity(base,cookie,admin,async()=>{await stopChild(server);server=child(serverArgs);await until(async()=>(await fetch(base)).ok,60000);});checks.push(...authReport.checks);
   // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
   for (const p of [...children].reverse()) await stopChild(p);
   let scanned = 0;

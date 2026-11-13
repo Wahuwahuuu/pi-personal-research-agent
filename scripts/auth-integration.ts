@@ -22,7 +22,7 @@ function authenticator(origin:string){
   }
  };
 }
-export async function verifyIdentity(base:string,initialCookie:string,admin:string){
+export async function verifyIdentity(base:string,initialCookie:string,admin:string,restart?:()=>Promise<void>){
  const checks:string[]=[],secrets:string[]=[];
  async function request(path:string,cookie="",method="GET",body?:unknown,extra:Record<string,string>={}){
   const r=await fetch(base+"/api/"+path,{method,headers:{Cookie:cookie,"Content-Type":"application/json",...extra},body:body===undefined?undefined:JSON.stringify(body)});
@@ -40,11 +40,17 @@ export async function verifyIdentity(base:string,initialCookie:string,admin:stri
  const signed=owner.login(login.value.options),ownerLogin=await ok("auth/login/verify","","POST",{id:login.value.id,response:signed});
  assert.equal((await request("auth/login/verify","","POST",{id:login.value.id,response:signed})).r.status,401);
  checks.push("real WebAuthn registration and signature verified; wrong origin, replay and bootstrap after enrollment rejected");
- const invite=await ok("auth/invites",ownerCookie,"POST",{name:"Synthetic member"});secrets.push(invite.value.code);
+ const invitation={requestId:crypto.randomUUID(),name:"Synthetic member"};
+ const invitationCopies=await Promise.all(Array.from({length:5},()=>ok("auth/invites",ownerCookie,"POST",invitation))),invite=invitationCopies[0];secrets.push(invite.value.code);
+ for(const copy of invitationCopies)assert.deepEqual(copy.value,invite.value);
+ if(restart){await restart();assert.deepEqual((await ok("auth/invites",ownerCookie,"POST",invitation)).value,invite.value);}
+ assert.equal((await request("auth/invites",ownerCookie,"POST",{...invitation,name:"Changed"})).r.status,409);
+ checks.push("concurrent invitation retries and process restart preserve one usable invitation");
  const memberStart=await ok("auth/register/options","","POST",{invite:invite.value.code});
  const memberRegistered=await ok("auth/register/verify","","POST",{id:memberStart.value.id,response:member.register(memberStart.value.options)});
  const memberCookie=memberRegistered.cookie;secrets.push(...memberRegistered.value.recoveryCodes);
  assert.notEqual(memberRegistered.value.account.id,registered.value.account.id);
+ assert.equal((await request("auth/invites",ownerCookie,"POST",invitation)).value.error,"INVITATION_UNAVAILABLE");
  assert.equal((await request("auth/register/options","","POST",{invite:invite.value.code})).r.status,403);
  assert.equal((await request("auth/invites",memberCookie,"POST",{name:"Unauthorized"})).r.status,403);
  assert.equal((await request("platform",memberCookie,"POST",{})).r.status,403);
@@ -118,5 +124,21 @@ export async function verifyIdentity(base:string,initialCookie:string,admin:stri
  await ok("auth/logout",recovered.cookie,"POST",{});
  assert.equal((await request("state",recovered.cookie)).r.status,401);
  checks.push("one-time recovery revoked every old owner session; logout and another account's isolation verified");
+ const extra=authenticator(base),extraStart=await ok("auth/register/options",memberCookie,"POST",{}),extraResponse=extra.register(extraStart.value.options);
+ await ok("auth/register/verify",memberCookie,"POST",{id:extraStart.value.id,response:extraResponse});
+ const removal={requestId:crypto.randomUUID()},removalPath="auth/credentials/"+extraResponse.id;
+ await Promise.all(Array.from({length:5},()=>ok(removalPath,memberCookie,"DELETE",removal)));
+ const rotation={requestId:crypto.randomUUID()},rotations=await Promise.all(Array.from({length:5},()=>ok("auth/recovery",memberCookie,"POST",rotation))),first=rotations[0];secrets.push(...first.value.recoveryCodes);
+ for(const copy of rotations)assert.deepEqual(copy.value,first.value);
+ if(restart){await restart();assert.deepEqual((await ok("auth/recovery",memberCookie,"POST",rotation)).value,first.value);await ok(removalPath,memberCookie,"DELETE",removal);}
+ const nextRotation={requestId:crypto.randomUUID()},second=await ok("auth/recovery",memberCookie,"POST",nextRotation);secrets.push(...second.value.recoveryCodes);
+ assert.equal((await request("auth/recovery",memberCookie,"POST",rotation)).value.error,"RECOVERY_CODES_CHANGED");
+ assert.equal((await request("auth/recover","","POST",{code:first.value.recoveryCodes[0]})).r.status,401);
+ const memberRecovered=await ok("auth/recover","","POST",{code:second.value.recoveryCodes[0]});
+ assert.equal((await request("auth/recovery",memberRecovered.cookie,"POST",nextRotation)).value.error,"RECOVERY_CODES_CHANGED");
+ const credentials=(await ok("auth/me",memberRecovered.cookie)).value.credentials;assert.equal(credentials.length,1);
+ assert.equal((await request("auth/credentials/"+credentials[0].id,memberRecovered.cookie,"DELETE",{requestId:crypto.randomUUID()})).value.error,"LAST_PASSKEY");
+ await ok("auth/logout",memberRecovered.cookie,"POST",{});
+ checks.push("recovery rotation and credential revocation survive concurrent retries and restart without restoring used codes or deleting the last passkey");
  return{checks,secrets};
 }

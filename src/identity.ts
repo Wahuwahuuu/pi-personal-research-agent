@@ -1,3 +1,4 @@
+import {IdentityMutations} from "./identity-mutations.ts";
 import {readBudgetDeployment,type BudgetDeployment} from "./budget-transfer.ts";
 import {BUDGET_STOPS} from "./budget.ts";
 import {PlatformResources,type PlatformStatus} from "./platform-resources.ts";
@@ -18,6 +19,7 @@ const publicAccount=(a:Account)=>({id:a.id,name:a.name,role:a.role});
 const token=()=>crypto.randomUUID().replaceAll("-","")+crypto.randomUUID().replaceAll("-","");
 export class IdentityRegistry extends DurableObject<Env> {
  store:IdentityStore;
+ mutations:IdentityMutations;
  budget:SharedBudget;
  discovery:DiscoveryGate;
  recovery:RecoveryStore;
@@ -32,7 +34,7 @@ export class IdentityRegistry extends DurableObject<Env> {
   super(ctx,env);
   let depth=0;
   const db:StateStorage={sql:{exec(query,...bindings){const rows=ctx.storage.sql.exec(query,...bindings);return{toArray:()=>rows.toArray() as any};}},transactionSync:fn=>{if(depth)return fn();return ctx.storage.transactionSync(()=>{depth++;try{return fn();}finally{depth--;}});}};
-  this.store=new IdentityStore(db);this.budget=new SharedBudget(db);this.discovery=new DiscoveryGate(db);this.recovery=new RecoveryStore(db);this.platform=new PlatformResources(db);
+  this.store=new IdentityStore(db);this.mutations=new IdentityMutations(this.store);this.budget=new SharedBudget(db);this.discovery=new DiscoveryGate(db);this.recovery=new RecoveryStore(db);this.platform=new PlatformResources(db);
  }
  async refreshPlatform(requestId?:string):Promise<PlatformStatus>{
   if(requestId&&this.platform.knownRequest(requestId))return this.platform.status();
@@ -97,7 +99,7 @@ export class IdentityRegistry extends DurableObject<Env> {
   await this.env.AGENTS.getByName(a.id).acceptIdentity(a.id,hash,expires);
   return new Response(JSON.stringify({account:publicAccount(a),...extra}),{headers:{"Content-Type":"application/json","Cache-Control":"no-store","Set-Cookie":`pra_session=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400${new URL(r.url).protocol==="https:"?"; Secure":""}`}});
  }
- async body(r:Request){const raw=await r.text();if(raw.length>24000)throw new Problem("BODY_TOO_LARGE",413);try{const v=JSON.parse(raw);if(!v||typeof v!=="object"||Array.isArray(v))throw Error();return v;}catch{throw new Problem("INVALID_JSON");}}
+ async body(r:Request,optional=false){const raw=await r.text();if(optional&&!raw)return {};if(raw.length>24000)throw new Problem("BODY_TOO_LARGE",413);try{const v=JSON.parse(raw);if(!v||typeof v!=="object"||Array.isArray(v))throw Error();return v;}catch{throw new Problem("INVALID_JSON");}}
  async fetch(r:Request){
   try{return await this.route(r);}catch(e){return json({error:e instanceof Problem?e.code:"AUTHENTICATION_FAILED"},e instanceof Problem?e.status:400);}
  }
@@ -186,15 +188,13 @@ export class IdentityRegistry extends DurableObject<Env> {
   if(path==="/api/auth/me"&&r.method==="GET")return json({account:publicAccount(identity),credentials:this.store.credentials(identity.id).map(({id,name,created})=>({id,name,created}))});
   if(path==="/api/auth/invites"&&r.method==="POST"){
    if(identity.role!=="owner")throw new Problem("FORBIDDEN",403);
-   const b=await this.body(r),code=token(),id=this.store.addInvite(await digest(code),text(b.name,80));
-   this.store.audit(identity.id,"invitation_created");return json({code,userId:id,expiresInDays:7});
+   return json(await this.mutations.invite(identity.id,this.env.ADMIN_TOKEN,await this.body(r)));
   }
   if(path==="/api/auth/recovery"&&r.method==="POST"){
-   const recoveryCodes=Array.from({length:8},()=>token().slice(0,32));this.store.setRecovery(identity.id,await Promise.all(recoveryCodes.map(digest)));
-   this.store.audit(identity.id,"recovery_codes_rotated");return json({recoveryCodes});
+   return json(await this.mutations.recovery(identity.id,this.env.ADMIN_TOKEN,await this.body(r,true)));
   }
   const credentialMatch=path.match(/^\/api\/auth\/credentials\/([^/]+)$/);
-  if(credentialMatch&&r.method==="DELETE"){this.store.removeCredential(identity.id,credentialMatch[1]);return json({ok:true});}
+  if(credentialMatch&&r.method==="DELETE")return json(await this.mutations.revoke(identity.id,credentialMatch[1],await this.body(r,true)));
   if(path==="/api/auth/audit"&&r.method==="GET")return json(this.store.db.sql.exec("SELECT seq,event,created FROM identity_audit WHERE user_id=? ORDER BY seq DESC LIMIT 100",identity.id).toArray());
   throw new Problem("NOT_FOUND",404);
  }
