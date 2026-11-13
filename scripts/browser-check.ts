@@ -159,7 +159,12 @@ async function verifyImportBrowser(){
    await page.setViewportSize({width:390,height:844});await screenshot("imports-indexing-mobile");
    await route("settings/devices");
    await expect(page.getByText("本机已连接，正在建立论文索引；检索任务会在完成后继续。",{exact:true})).toBeVisible();
-   checks.push("connected but indexing node remains visibly connected across header, library and device settings; no false reconnect prompt");
+   await route("chat");
+   await expect(page.locator(".connection-note")).toContainText("本机已连接，正在建立论文索引");
+   await expect(page.locator(".connection-note")).not.toContainText("电脑未连接");
+   await page.setViewportSize({width:1440,height:900});await screenshot("imports-chat-indexing-desktop");
+   await page.setViewportSize({width:390,height:844});await screenshot("imports-chat-indexing-mobile");
+   checks.push("connected but indexing node remains visibly connected across header, library, empty chat and device settings; no false reconnect prompt");
    send({type:"ready",phase:"empty"});
    await until(async()=>(await api("overview")).deviceState.phase==="empty").catch(async()=>{throw Error("EMPTY_READY_FAILED "+JSON.stringify({errors:protocolErrors,state:(await api("overview")).deviceState}));});
    await route("papers");

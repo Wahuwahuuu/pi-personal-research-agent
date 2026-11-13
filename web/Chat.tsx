@@ -1,3 +1,4 @@
+import {deviceView} from "./device-state.ts";
 import { ContextWindow } from "./ContextWindow.tsx";
 import { TaskControls } from "./TaskControls.tsx";
 import { useEffect, useRef, useState } from "react";
@@ -193,7 +194,7 @@ export function Chat({
             </div>
             {!data.deviceOnline && (
               <p className="connection-note">
-                <Icon name="desktop" size={16} /> 电脑未连接，云端对话仍然可用。
+                <Icon name="desktop" size={16} /> {deviceView(data).detail} 云端对话仍然可用。
               </p>
             )}
           </div>
