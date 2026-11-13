@@ -199,3 +199,23 @@ test("optional memory respects its actual source window and budget exhaustion pr
  const out=advanceWorkflow(pending,c,JSON.stringify({readings:[{paper_id:"fixture-paper",topic:"a",progress:"b",key_points:[{text:"c",chunk_id:"hidden",quote:"omitted"}],open_questions:[]}]}));
  assert.equal(out.answer,done.answer);assert.equal(pending.memory?.state,"failed");
 });
+
+
+test("imported indexed text remains discoverable when independent abstract metadata is absent",()=>{
+ const c=setup(),w=newWorkflow();
+ c.catalog={indexVersion:"v",papers:[{paper_id:"body",title:"Text paper",abstract:""},{paper_id:"both",title:"Both",abstract:"Original abstract"},{paper_id:"hidden",title:"Private other scope",abstract:""}],evidence:[{paper_id:"body",paragraph_id:"p",chunk_id:"c",start:0,end:4,index_version:"v",text_sha256:"a".repeat(64)}]};
+ c.conversation.scope=["body","both"];
+ const preparation=JSON.parse(workflowPrompt(w,c));
+ assert.deepEqual(preparation.catalog.map((p:any)=>[p.paper_id,p.independent_abstract,p.indexed_text]),[["body",false,true],["both",true,false]]);
+ advanceWorkflow(w,c,prepared("single_paper_qa",["body"]));
+ const agent=JSON.parse(workflowPrompt(w,c));assert.deepEqual(agent.reading_availability,[{paper_id:"body",independent_abstract:false,indexed_text:true}]);
+ assert.match(agent.reading_rule,/omitting section/);assert.ok(!JSON.stringify(agent.reading_availability).includes("hidden"));
+ assert.deepEqual(workflowTools(w,2),["search_papers","retrieve_chunks"]);
+});
+
+test("reading capability projection stays bounded and reports omitted metadata honestly",()=>{
+ const c=setup(),w=newWorkflow();c.catalog={indexVersion:"v",evidence:[],papers:Array.from({length:100},(_,i)=>({paper_id:"paper-"+i+"x".repeat(150),title:"Synthetic",abstract:""}))};
+ w.phase="agent";const p=JSON.parse(workflowPrompt(w,c));assert.ok(p.reading_availability.length<100);
+ assert.equal(p.reading_availability_omitted,100-p.reading_availability.length);
+ assert.ok(Buffer.byteLength(JSON.stringify(p.reading_availability))<=2500);
+});

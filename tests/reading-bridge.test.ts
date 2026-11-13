@@ -177,3 +177,19 @@ for (const suffix of ["","v2"]) for (const parserVersion of [1,2]) test("complet
 function requireSeparator() {
   return process.platform === "win32" ? "\\" : "/";
 }
+
+
+test("an unavailable independent abstract reports the gap without fabricating or rerouting evidence",async()=>{
+ const root=await mkdtemp(join(tmpdir(),"pra-empty-abstract-")),indexVersion="v",body="Original indexed body.",paper_id="local-synthetic";
+ const chunk={paper_id,paragraph_id:"p0",chunk_id:"v:p0",section:"Page 1",text:body,start:0,end:body.length,index_version:indexVersion,citation:"[v:p0]",truncated:false};
+ const catalog={indexVersion,papers:[{paper_id,title:"Synthetic imported PDF",abstract:""}],evidence:[{...chunk,text_sha256:sha(body)}]};let reads=0;
+ try{
+  const reading=await createLocalReading({root,indexVersion,papers:catalog.papers,evidence:catalog.evidence,worker:{async request(_name,params){reads++;assert.equal("section" in params,false);return{backend:"fixture",index_version:indexVersion,chunks:[chunk]};}}});
+  const params={paper_ids:[paper_id],section:"abstract"};const empty=await reading.execute("retrieve_chunks",params,new AbortController().signal);
+  assert.ok("chunks" in empty.result);assert.equal(reads,0);assert.deepEqual(empty.result.chunks,[]);assert.match(empty.result.reading_note??"",/does not mean the paper body is absent/);
+  const op:Operation={id:"op",taskId:"task",tool:"retrieve_chunks",params,indexVersion,state:"done",deadline:1};
+  assert.match((checkedResult(op,empty.result,catalog) as any).reading_note,/omitting section/);
+  const original=await reading.execute("retrieve_chunks",{paper_ids:[paper_id],query:"method"},new AbortController().signal);
+  assert.ok("chunks" in original.result);assert.equal(reads,1);assert.equal(original.result.chunks[0].chunk_id,chunk.chunk_id);assert.equal(original.result.chunks[0].text,body);
+ }finally{await rm(root,{recursive:true,force:true});}
+});

@@ -79,6 +79,12 @@ function progress(w:ResearchWorkflow,c:WorkflowContext,execution?:TurnExecution,
 }
 const byteSize=(v:unknown)=>new TextEncoder().encode(JSON.stringify(v)).length;
 function boundedItems<T>(items:readonly T[],maximum:number):T[]{const result:T[]=[];let used=2;for(const item of items){const n=byteSize(item)+1;if(used+n<=maximum){result.push(item);used+=n;}}return result;}
+const READING_AVAILABILITY_RULE="Independent abstract metadata and indexed paper text are separate capabilities. If independent_abstract=false and indexed_text=true, read the existing paper with retrieve_chunks(query, paper_ids), omitting section; do not request an unavailable abstract, infer the body is absent, or invent abstract citation IDs. Empty section results are not proof the whole paper is unavailable. Catalog metadata is navigation, not source evidence.";
+function readingAvailability(w:ResearchWorkflow,c:WorkflowContext){
+ const indexed=new Set(c.catalog.evidence.map(e=>e.paper_id)),selected=new Set(targets(w));
+ return c.catalog.papers.filter(p=>(!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id))&&(!selected.size||selected.has(p.paper_id)))
+  .map(p=>({paper_id:p.paper_id,independent_abstract:!!p.abstract.trim(),indexed_text:indexed.has(p.paper_id)}));
+}
 export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations?:unknown):string{
   if(w.phase==="memory"){
     const used=new Set([...w.memory!.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]));
@@ -106,7 +112,8 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
     reading_notes:domain.reading_notes?.length??0,memories:memories.length,answers_included:answersIncluded};
   summary.context_rule="Only conversation_only is included as recent discussion. Some fields are explicitly truncated. Other archived turns are not visible here; ask for missing context rather than claiming to remember it.";
   const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{...w.contextWindow,archived_turns:c.conversation.history.length},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:memories,memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
-  if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({paper_id:p.paper_id,title:p.title})),18000)});
+  const available=readingAvailability(w,c),availableByPaper=new Map(available.map(a=>[a.paper_id,a])),visibleAvailability=boundedItems(available,2500);
+  if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({...availableByPaper.get(p.paper_id),paper_id:p.paper_id,title:p.title})),18000),reading_rule:READING_AVAILABILITY_RULE});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,...projectToolOutcomes(c.operations),visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);
   if(w.phase==="comparison"){
@@ -117,7 +124,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Results remain complete in durable storage. The model sees each whole source at most once.
   const delivered=(observations as any)?.observations??[];
   const projected=delivered.map((o:any)=>({...o,result:{...o.result,...(o.result?.chunks?{chunks:undefined,chunk_ids:o.result.chunks.map((e:any)=>e.chunk_id)}:{})}}));
-  const payload:any={stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
+  const payload:any={stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
     ...(c.calls>=5?{final_instruction:"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));

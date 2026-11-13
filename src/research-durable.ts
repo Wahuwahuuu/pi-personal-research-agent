@@ -65,7 +65,7 @@ export function createResearchRegistry(ports: ResearchPorts) {
     description:
       name === "search_papers"
         ? "Find papers in the authorized catalog."
-        : "Read original evidence. section=abstract reads complete original abstracts; content_type=table/equation/all reads structured originals. Follow selection.next_offset to continue. Cite returned chunk IDs.",
+        : "Read original evidence. Use paper_ids and query without section for indexed paper text. section=abstract reads independent abstracts only where the catalog marks them available; an unavailable abstract does not mean the paper body is absent; content_type=table/equation/all reads structured originals. Follow selection.next_offset to continue. Cite returned chunk IDs.",
     parameters: name === "search_papers" ? searchSchema : productRetrieveSchema,
     replay: "safe",
     executionMode: "sequential",

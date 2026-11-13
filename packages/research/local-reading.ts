@@ -17,6 +17,10 @@ export async function createLocalReading(options:{root:string;indexVersion:strin
    validatePaperParams(tool,params,scoped);
    if(tool==="search_papers")return {result:searchResult(await options.worker.request(tool,{query:String(params.query),limit:Number(params.limit??5),allowed_paper_ids:[...(scoped.getScope().length?scoped.getScope():ids)]},signal),scoped,Number(params.limit??5)),sources:[]};
    const result=await retrieveOriginal(options.worker,scoped,params as unknown as OriginalReadParams,signal);
+   if(params.section==="abstract"){
+    const missing=(params.paper_ids as string[]).filter(id=>!p2.abstractSources!.has(id));
+    if(missing.length)result.reading_note="Independent abstract metadata is unavailable for: "+JSON.stringify(missing)+". This does not mean the paper body is absent. Use retrieve_chunks with query and paper_ids, omitting section, to inspect indexed original text. Cite only actual returned chunks.";
+   }
    const sources=result.chunks.filter(c=>scientific.sources.has(c.chunk_id)).map(c=>({...scientific.sources.get(c.chunk_id)!}));
    // The wire carries worker-format citations; the cloud validates and formats the display citation.
    return {result:{...result,chunks:result.chunks.map(c=>({...c,citation:"["+c.chunk_id+"]"}))},sources};
