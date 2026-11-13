@@ -16,11 +16,18 @@ export async function api<T = any>(
     headers: body ? { "Content-Type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
   });
-  const value = await r.json();
+  if (r.status === 401 && !path.startsWith("auth/") && path !== "login")
+    window.dispatchEvent(new Event("session-expired"));
+  let value: any;
+  try { value = await r.json(); }
+  catch {
+    // Platform failures can return HTML. Preserve the status and the pending mutation ID.
+    throw new ApiError(r.ok ? "INVALID_SERVER_RESPONSE" : r.status >= 500 ? "SERVICE_UNAVAILABLE" : "REQUEST_FAILED", r.ok ? 502 : r.status);
+  }
   if (!r.ok) {
-    if (r.status === 401 && !path.startsWith("auth/") && path !== "login")
-      window.dispatchEvent(new Event("session-expired"));
-    throw new ApiError(value.error ?? "REQUEST_FAILED", r.status);
+    const code = typeof value?.error === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(value.error)
+      ? value.error : r.status >= 500 ? "SERVICE_UNAVAILABLE" : "REQUEST_FAILED";
+    throw new ApiError(code, r.status);
   }
   return value;
 }
@@ -42,6 +49,9 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  SERVICE_UNAVAILABLE: "云端服务暂时无法响应，操作结果尚未确认。请稍后重试。",
+  INVALID_SERVER_RESPONSE: "未收到完整的服务响应，操作结果尚未确认。请稍后重试。",
+  INTERNAL_ERROR: "服务暂时无法完成这次请求。请稍后重试。",
   IDENTITY_RETRY_NOT_CONFIGURED: "账户设置暂不可用，请让部署者检查服务配置。",
   IDENTITY_RETRY_KEY_CHANGED: "服务凭证已更新，这次操作无法重放。请刷新页面后重新操作。",
   INVITATION_UNAVAILABLE: "这份邀请已使用或过期。如需邀请另一位使用者，请创建新邀请。",
