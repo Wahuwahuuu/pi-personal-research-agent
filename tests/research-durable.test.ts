@@ -84,3 +84,17 @@ test("identical Pi IDs in separate stores produce different device operation IDs
  };
  assert.notEqual(await run("business-task-a"),await run("business-task-b"));
 });
+
+
+test("real Pi never executes a complete-looking tool from a length-truncated response",async()=>{
+ let operations=0,requests=0,settlements=0;
+ const registry=createResearchRegistry({catalog:()=>({papers:[],indexVersion:"fixture",scope:[],evidence:new Map()}),
+  async execute(){operations++;return {};},async waiting(){return false;},async remember(){},async evidence(){return [];}});
+ const models=liveModels({authorized:"explicitly-authorized",apiKey:"synthetic-key",baseUrl:"https://example.invalid/v1",modelId:"fixture"},()=>{requests++;},()=>{settlements++;},(async()=>Response.json({choices:[{message:{content:null,tool_calls:[{id:"cut",type:"function",function:{name:"search_papers",arguments:'{"query":"paper"}'}}]},finish_reason:"length"}],usage:{prompt_tokens:5,completion_tokens:2048}})) as typeof fetch);
+ const harness=await Harness.open(new MemoryStorage(),{models,registry,settings:{retry:{maxRetries:0}}},ctx);
+ try{
+  const c=await harness.root(ctx,{agent:{model:{provider:"pra",modelId:"fixture"},maxTurns:6}});
+  const result=await(await c.submit({type:"input",content:"Find a paper"},ctx)).wait(ctx);
+  assert.notEqual(result.status,"done");assert.equal(operations,0);assert.equal(requests,1);assert.equal(settlements,1);
+ }finally{await harness.close(ctx);}
+});

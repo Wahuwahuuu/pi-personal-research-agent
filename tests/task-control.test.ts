@@ -245,3 +245,12 @@ test("budget exhaustion inside Pi checkpoints the same goal and never resets tot
  assert.equal(next.t.status,"waiting_user");assert.equal(next.t.error,"VALIDATION_BUDGET");
  assert.equal(next.t.goal!.segments.length,1);assert.equal(next.s.usage.requests,500);
 });
+
+
+test("validation output exhaustion respects the active research phase before opening another segment",()=>{
+ const {s,t}=fixture();t.calls=6;t.workflow={phase:"agent",warnings:[]};
+ s.usage.output=995000;
+ handleModelBudget(s,t);
+ assert.equal(t.error,"VALIDATION_BUDGET");assert.equal(t.status,"waiting_user");assert.equal(t.goal!.segments.length,1);
+ assert.equal(s.usage.output,995000);assert.equal(t.calls,6);
+});

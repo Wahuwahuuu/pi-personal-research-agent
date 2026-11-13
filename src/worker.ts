@@ -1,3 +1,4 @@
+import {modelOutputLimit} from "./model-limits.ts";
 import {memoryView} from "./memory-view.ts";
 import {activeTasks,taskByRequest} from "./task-queries.ts";
 import {SOURCE_BUILD} from "./source-build.ts";
@@ -201,7 +202,7 @@ export class PersonalAgent extends DurableObject<Env> {
       harness: async ({ storage, context, onWake }) => {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
         let timingCall: {taskId:string;call:number}|undefined;
-        const outputLimit=()=>activeTasks(this.state).some(t=>t.status==="running"&&t.workflow?.phase==="translation")?8192:2048;
+        const outputLimit=()=>modelOutputLimit(activeTasks(this.state).find(t=>t.status==="running"&&t.modelOperation));
         const before = async (messages:readonly {role:string;content?:unknown}[]) => {
           if(this.recoveryBlocked)throw new Problem("RECOVERY_IN_PROGRESS",503);
           const t=activeTasks(this.state).find(t=>t.status==="running"&&t.modelOperation);
@@ -263,7 +264,7 @@ export class PersonalAgent extends DurableObject<Env> {
                   apiKey: env.MODEL_API_KEY ?? "",
                   baseUrl: env.MODEL_BASE_URL ?? "",
                   modelId: env.MODEL_ID ?? "",
-                  maxOutput:outputLimit,
+                  maxOutput:()=>reservedOutput,
                   onFailure:(code)=>{const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;},
                   onVisible:(text)=>{
                     const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");

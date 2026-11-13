@@ -125,6 +125,8 @@ const messages: Record<string, string> = {
   MODEL_CONCURRENCY: "同一时刻已有模型请求执行，本次额外请求已停止。",
   MODEL_SUBMISSION_MISMATCH: "这一步的上下文已变化，已停止旧请求，原有研究记录保留。",
   MODEL_BUDGET: "本次任务已达到调用上限，可查看已有结果和未完成部分。",
+  MODEL_OUTPUT_TRUNCATED: "回答达到输出长度上限，未生成完整结果。已保留检索证据，请缩小问题范围后继续。",
+  EMPTY_RESEARCH_ANSWER: "本次回答未生成完整可读内容，检索证据已保留。",
   NOT_FOUND: "这条记录不存在或已删除。",
   RESOURCE_DELETED: "这条记录已删除，不能重新提交原操作。",
   VERSION_CONFLICT: "内容已有更新，请重新打开最新版本后修改。",

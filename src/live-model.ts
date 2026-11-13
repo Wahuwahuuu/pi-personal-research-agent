@@ -64,6 +64,7 @@ export function liveModels(
       let admitted = false,
         settled = false, dispatched=false,ownsSlot=false;
       let startedAt: number | undefined;
+      let outputLimit=2048;
       const measured = (status: ModelMeasurement["status"]): ModelMeasurement => ({status, elapsedMs: startedAt === undefined ? null : elapsed(startedAt, clock())});
       try {
         if(active)throw Error("MODEL_CONCURRENCY");
@@ -88,6 +89,8 @@ export function liveModels(
           throw new Error("CONTEXT_LIMIT");
         await before(context.messages);
         admitted = true;
+        outputLimit=config.maxOutput?.() ?? 2048;
+        if(!Number.isSafeInteger(outputLimit)||outputLimit<1||outputLimit>8192)throw Error("INVALID_OUTPUT_LIMIT");
         options?.signal?.throwIfAborted();
         dispatched=true;
         startedAt=clock();
@@ -101,7 +104,7 @@ export function liveModels(
             model: config.modelId,
             messages,
             ...(declarations.length ? {tools:declarations,tool_choice:"auto"} : {}),
-            max_tokens: config.maxOutput?.() ?? 2048,
+            max_tokens: outputLimit,
             stream: true,
             stream_options: {include_usage:true},
             ...(config.modelId.startsWith("qwen")
@@ -123,18 +126,6 @@ export function liveModels(
         const timing=measured("response_received");
         const rawMessage = data.choices?.[0]?.message;
         const content = rawMessage?.content ?? "";
-        const rawCalls = rawMessage?.tool_calls ?? [];
-        if (!Array.isArray(rawCalls) || rawCalls.length > 10) throw new Error("INVALID_TOOLS");
-        const callIds=new Set<string>();
-        const calls:ToolCall[]=rawCalls.map((call: any) => {
-          if (call.type!=="function" || typeof call.id!=="string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(call.id) ||
-              callIds.has(call.id) || !tools.some(t=>t.name===call.function?.name) || typeof call.function?.arguments!=="string")
-            throw new Error("INVALID_TOOL_CALL");
-          callIds.add(call.id);
-          const args=JSON.parse(call.function.arguments);
-          if (!args || Array.isArray(args) || typeof args!=="object") throw new Error("INVALID_ARGUMENTS");
-          return {type:"toolCall",id:call.id,name:call.function.name,arguments:args};
-        });
         const input = data.usage?.prompt_tokens,
           output = data.usage?.completion_tokens;
         const usage =
@@ -147,6 +138,23 @@ export function liveModels(
         // The callback may commit locally before a later acknowledgement fails.
         settled = true;
         try{await after(usage,timing);}catch{throw Error("BILLING_UNAVAILABLE");}
+        message.usage.input = usage?.input ?? 52000;
+        message.usage.output = usage?.output ?? outputLimit;
+        message.usage.totalTokens = message.usage.input + message.usage.output;
+        // A truncated tool envelope is never executable, even if its JSON prefix parses.
+        if(data.choices?.[0]?.finish_reason==="length")throw Error("MODEL_OUTPUT_TRUNCATED");
+        const rawCalls = rawMessage?.tool_calls ?? [];
+        if (!Array.isArray(rawCalls) || rawCalls.length > 10) throw new Error("INVALID_TOOLS");
+        const callIds=new Set<string>();
+        const calls:ToolCall[]=rawCalls.map((call: any) => {
+          if (call.type!=="function" || typeof call.id!=="string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(call.id) ||
+              callIds.has(call.id) || !tools.some(t=>t.name===call.function?.name) || typeof call.function?.arguments!=="string")
+            throw new Error("INVALID_TOOL_CALL");
+          callIds.add(call.id);
+          const args=JSON.parse(call.function.arguments);
+          if (!args || Array.isArray(args) || typeof args!=="object") throw new Error("INVALID_ARGUMENTS");
+          return {type:"toolCall",id:call.id,name:call.function.name,arguments:args};
+        });
         if (
           typeof content !== "string" ||
           (!content.trim() && !calls.length) ||
@@ -155,9 +163,6 @@ export function liveModels(
           /<\/?(?:think|thinking|analysis)>/i.test(JSON.stringify(calls))
         )
           throw new Error("UNSAFE_OR_UNSUPPORTED_RESPONSE");
-        message.usage.input = usage?.input ?? 52000;
-        message.usage.output = usage?.output ?? config.maxOutput?.() ?? 2048;
-        message.usage.totalTokens = message.usage.input + message.usage.output;
         if(!started)pushText(content);
         events.push({
           type: "text_end",
@@ -171,11 +176,11 @@ export function liveModels(
           events.push({type:"toolcall_start",contentIndex,partial:message});
           events.push({type:"toolcall_end",contentIndex,toolCall:call,partial:message});
         }
-        message.stopReason=data.choices?.[0]?.finish_reason==="length"?"length":calls.length?"toolUse":"stop";
+        message.stopReason=calls.length?"toolUse":"stop";
         events.push({ type: "done", reason: message.stopReason, message });
         events.end(message);
       } catch (error) {
-        const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","MODEL_CONCURRENCY","MODEL_SUBMISSION_MISMATCH","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM"]);
+        const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","MODEL_CONCURRENCY","MODEL_SUBMISSION_MISMATCH","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM","MODEL_OUTPUT_TRUNCATED","INVALID_OUTPUT_LIMIT"]);
         const code=error instanceof Error&&known.has(error.message)?error.message:"MODEL_REQUEST_FAILED";
         config.onFailure?.(code);
         if (admitted && !settled) {settled=true;try{await after(dispatched?undefined:{input:0,output:0},measured(dispatched?"interrupted":"not_dispatched"));}catch{config.onFailure?.("BILLING_UNAVAILABLE");}}

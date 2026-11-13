@@ -69,12 +69,14 @@ function bodyFrom(output:string,adaptations:string[]):{raw:Record<string,unknown
         const fields=value,alternatives=['final_answer','response','text','content'].filter(key=>typeof fields[key]==='string'&&String(fields[key]).trim());
         if(alternatives.length===1){adaptations.push('answer_field_normalized');return {raw:fields,body:fields[alternatives[0]] as string};}
       }
-      if(record(value)&&(Object.hasOwn(value,'status')||Object.hasOwn(value,'answer_kind')||Object.hasOwn(value,'exact_quotes')))return null;
+      if(record(value)&&(Object.hasOwn(value,'status')||Object.hasOwn(value,'answer_kind')||Object.hasOwn(value,'exact_quotes')||Object.hasOwn(value,'execution')))return null;
     }
   }catch{
     const extracted=completeAnswerString(output.trim());
     if(extracted!==undefined){adaptations.push('complete_body_preserved_from_incomplete_envelope');return {raw:{},body:extracted};}
   }
+  // Broken envelopes are protocol data, not user-facing prose. Keep ordinary Markdown compatible.
+  if(/^\s*(?:```(?:json)?\s*)?\{/.test(output)&&/"(?:answer|execution|status|answer_kind|exact_quotes|paper_coverage|final_answer)"\s*:/.test(output))return null;
   adaptations.push('ordinary_answer_text_accepted');return {raw:{},body:output.trim()};
 }
 
