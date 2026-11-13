@@ -37,6 +37,7 @@ childProcess.execFileSync=(exe,args,options={})=>{
    if(readFileSync(cfg.main,"utf8")!=="// frozen-worker")throw Error("UNFROZEN_WORKER");
    if(args.includes("--var"))throw Error("MODEL_VARIABLES_NOT_FROZEN");
    if(scenario==="live-success"&&(cfg.vars.MODEL_MODE!=="live"||cfg.vars.MODEL_ID!=="qwen3.7-flash"||!cfg.vars.MODEL_BASE_URL))throw Error("FROZEN_MODEL_CONFIG_MISSING");
+   if(scenario==="budget-success"){const budget=JSON.parse(cfg.vars.BUDGET_DEPLOYMENT);if(budget.frozen!==true||budget.carryovers[0].validation.requests!==10)throw Error("FROZEN_BUDGET_CONFIG_MISSING");}
    event("upload");uploaded=true;return url;
   }
  }

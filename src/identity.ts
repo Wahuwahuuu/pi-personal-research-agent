@@ -1,3 +1,5 @@
+import {readBudgetDeployment,type BudgetDeployment} from "./budget-transfer.ts";
+import {BUDGET_STOPS} from "./budget.ts";
 import {PlatformResources,type PlatformStatus} from "./platform-resources.ts";
 import {collectPlatformMetrics} from "./platform-analytics.ts";
 import {RecoveryStore,type RecoveryCheckpoint} from "./recovery-store.ts";
@@ -20,6 +22,11 @@ export class IdentityRegistry extends DurableObject<Env> {
  discovery:DiscoveryGate;
  recovery:RecoveryStore;
  platform:PlatformResources;
+ private budgetConfiguration?:BudgetDeployment;
+ private configureBudget(){
+  if(!this.budgetConfiguration){const config=readBudgetDeployment(this.env.BUDGET_DEPLOYMENT);this.budget.transfer.apply(config.carryovers);this.budgetConfiguration=config;}
+  return this.budgetConfiguration;
+ }
  private platformRefresh?:Promise<PlatformStatus>;
  constructor(ctx:DurableObjectState,env:Env){
   super(ctx,env);
@@ -73,12 +80,13 @@ export class IdentityRegistry extends DurableObject<Env> {
  }
  async reserveBudget(owner:string,request:Parameters<BudgetLedger["reserve"]>[0]){
   if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");
+  try{if(this.configureBudget().frozen)return{ok:false as const,error:"BUDGET_FROZEN"};}catch(error){if(error instanceof Problem&&BUDGET_STOPS.has(error.code))return{ok:false as const,error:error.code};throw error;}
   if(request.background){const resources=await this.platformStatus();if(resources.blocked)return{ok:false as const,error:resources.reason!};}
   if(!await this.prepareBudgets())return{ok:false as const,error:"VALIDATION_MIGRATION_REQUIRED"};
   return this.budget.reserve(owner,request);
  }
  async settleBudget(owner:string,id:string,usage?:ModelUsage){return this.budget.settle(owner,id,usage);}
- async budgetSnapshot(){return this.budget.snapshot();}
+ async budgetSnapshot(){const config=this.configureBudget();return{...this.budget.snapshot(),admissionFrozen:config.frozen};}
  async budgetCalls(owner:string,after:string,limit:number){return this.budget.calls(owner,after,limit);}
  async authenticate(hash:string){return this.store.session(hash)??null;}
  async deviceOwner(hash:string){return this.store.deviceOwner(hash)??null;}
@@ -99,6 +107,19 @@ export class IdentityRegistry extends DurableObject<Env> {
   const owner=this.env.OWNER_ID;
   this.store.clean();
   if(r.method==="POST")this.store.rate(await digest((r.headers.get("CF-Connecting-IP")??"local")+":"+path),30);
+  if(path==="/api/budget/transfer"){
+   if(!identity)throw new Problem("UNAUTHORIZED",401);
+   if(identity.role!=="owner")throw new Problem("FORBIDDEN",403);
+   const config=this.configureBudget();
+   if(r.method==="GET")return json({...this.budget.transfer.view(),admissionFrozen:config.frozen});
+   if(r.method==="POST"){
+    const b=await this.body(r);text(b.requestId,128);
+    if(!config.frozen)throw new Problem("BUDGET_FREEZE_REQUIRED",409);
+    if(!await this.prepareBudgets())throw new Problem("VALIDATION_MIGRATION_REQUIRED",503);
+    return json(this.budget.sealTransfer());
+   }
+   throw new Problem("METHOD_NOT_ALLOWED",405);
+  }
   if(path==="/api/platform"||path==="/api/platform/refresh"){
    if(!identity)throw new Problem("UNAUTHORIZED",401);
    if(path==="/api/platform"&&r.method==="GET")return json({...this.platform.view(),...await this.platformStatus(),workerName:this.env.RESOURCE_WORKER_NAME,cloudMonitoringConfigured:!!(this.env.CLOUDFLARE_METRICS_TOKEN&&this.env.CLOUDFLARE_ACCOUNT_ID&&this.env.RESOURCE_WORKER_NAME)});

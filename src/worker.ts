@@ -83,6 +83,7 @@ export interface Env {
   ADMIN_TOKEN: string;
   OWNER_ID: string;
   MODEL_MODE: string;
+  BUDGET_DEPLOYMENT?: string;
   RESEARCH_ENGINE?: string;
   BUILD_ID?: string;
   RESOURCE_WORKER_NAME?:string;
@@ -1998,7 +1999,7 @@ async function routeRequest(r:Request,env:Env):Promise<Response> {
       if(!sameOrigin(r))return json({error:"ORIGIN_DENIED"},403);
       if(!env.OWNER_ID)return json({error:"OWNER_NOT_CONFIGURED"},503);
       const identities=env.IDENTITIES.getByName("accounts:"+env.OWNER_ID);
-      if(url.pathname==="/api/login"||url.pathname==="/api/platform"||url.pathname==="/api/platform/refresh"||url.pathname.startsWith("/api/auth/"))return identities.fetch(r);
+      if(url.pathname==="/api/budget/transfer"||url.pathname==="/api/login"||url.pathname==="/api/platform"||url.pathname==="/api/platform/refresh"||url.pathname.startsWith("/api/auth/"))return identities.fetch(r);
       if(url.pathname==="/api/device/connect"||url.pathname==="/api/device/verify"){
         const value=bearer(r);if(!value)return json({error:"UNAUTHORIZED"},401);
         const userId=await identities.deviceOwner(await digest(value));

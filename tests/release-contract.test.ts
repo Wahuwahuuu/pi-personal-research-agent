@@ -41,3 +41,10 @@ test("effective model variables are serializable in a frozen configuration witho
  assert.deepEqual(modelDeploymentVariables(settings),{MODEL_MODE:"live",MODEL_ID:settings.modelId,MODEL_BASE_URL:settings.baseUrl});
  assert.deepEqual(modelDeploymentVariables(),{});
 });
+
+
+test("pre-transfer builds cannot be used to roll back a sealed billing ledger even with the same application schema",()=>{
+ const prior={...RELEASE_CONTRACT,family:"pra-v1-state3-pi2-20261113"};
+ assert.equal(prior.appStateSchema,RELEASE_CONTRACT.appStateSchema);
+ assert.throws(()=>assertReleaseCompatible(RELEASE_CONTRACT,prior),/INCOMPATIBLE_RELEASE_CONTRACT/);
+});

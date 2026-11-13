@@ -1,11 +1,12 @@
+import {BudgetTransfer} from "./budget-transfer.ts";
 import {ValidationBudget} from "./validation-budget.ts";
 import {BudgetLedger,BUDGET_STOPS,type ModelUsage} from "./budget.ts";
 import {Problem} from "./domain.ts";
 import type {StateStorage} from "./state-store.ts";
 export class SharedBudget {
- readonly ledger:BudgetLedger;readonly db:StateStorage;readonly validation:ValidationBudget;
+ readonly ledger:BudgetLedger;readonly db:StateStorage;readonly validation:ValidationBudget;readonly transfer:BudgetTransfer;
  constructor(db:StateStorage){
-  this.db=db;this.ledger=new BudgetLedger(db);this.validation=new ValidationBudget(db);
+  this.db=db;this.ledger=new BudgetLedger(db);this.validation=new ValidationBudget(db);this.transfer=new BudgetTransfer(db,this.validation);
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_budget_imports(owner TEXT PRIMARY KEY)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_budget_owners(id TEXT PRIMARY KEY,owner TEXT NOT NULL)");
  }
@@ -24,6 +25,7 @@ export class SharedBudget {
   });
  }
  reserve(owner:string,request:Parameters<BudgetLedger["reserve"]>[0],now=Date.now()){
+  if(this.transfer.view().sealed)return{ok:false as const,error:"BUDGET_TRANSFER_SEALED"};
   // A model HTTP attempt has a 90-second timeout. Stale reservations stay charged,
   // rather than becoming free when the coordinating object is restarted.
   for(const row of this.db.sql.exec<{id:string;owner:string}>("SELECT c.id,o.owner FROM pra_model_calls c JOIN pra_budget_owners o ON o.id=c.id WHERE c.status='reserved' AND c.created<?",now-180000).toArray())this.settle(row.owner,row.id);
@@ -44,7 +46,12 @@ export class SharedBudget {
    return{...result,budget:this.snapshot()};
   });
  }
- snapshot(now=Date.now()){return{...this.ledger.snapshot(now),validation:this.validation.snapshot(),scope:"application" as const};}
+ sealTransfer(now=Date.now()){
+  // The same conservative recovery as ordinary admission, with no refund for late receipts.
+  for(const row of this.db.sql.exec<{id:string;owner:string}>("SELECT c.id,o.owner FROM pra_model_calls c JOIN pra_budget_owners o ON o.id=c.id WHERE c.status='reserved' AND c.created<?",now-180000).toArray())this.settle(row.owner,row.id);
+  return this.transfer.seal(now);
+ }
+ snapshot(now=Date.now()){const transfer=this.transfer.view();return{...this.ledger.snapshot(now),validation:this.validation.snapshot(),scope:"application" as const,transferSealed:transfer.sealed,importedBudgetSources:transfer.importedSources.length};}
  calls(owner:string,after="",limit=50){
   if(!Number.isSafeInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
   const items=this.db.sql.exec<any>("SELECT c.* FROM pra_model_calls c JOIN pra_budget_owners o ON o.id=c.id WHERE o.owner=? AND c.id>? ORDER BY c.id LIMIT ?",owner,after,limit+1).toArray();

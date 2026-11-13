@@ -1,3 +1,4 @@
+import {budgetDeploymentVariables,readBudgetDeployment} from "../src/budget-transfer.ts";
 import {verifyCloudflareOrigin} from "./cloudflare-origin.ts";
 import {acquireDeploymentLock} from "./deployment-lock.ts";
 import {execFileSync} from "node:child_process";
@@ -15,6 +16,8 @@ const build=git(["rev-parse","HEAD"]);
 function committed(){if(git(["status","--porcelain","--untracked-files=normal"])||git(["rev-parse","HEAD"])!==build)throw Error("COMMITTED_BUILD_REQUIRED");}
 committed();
 async function optionalJson(path:string){try{return JSON.parse(await readFile(path,"utf8"));}catch(error){if((error as NodeJS.ErrnoException).code==="ENOENT")return undefined;throw Error("INVALID_LOCAL_DEPLOYMENT_CONFIGURATION");}}
+const budgetSettings=await optionalJson(".local/budget-deployment.json");
+const budgetVariables=budgetDeploymentVariables(budgetSettings);
 const rawSettings=await optionalJson(".local/model-settings.json"),settings=rawSettings?parseModelSettings(rawSettings):undefined;
 const cli=(args:string[],input?:string)=>{
  try{return execFileSync(process.execPath,["node_modules/wrangler/bin/wrangler.js",...args],{encoding:"utf8",windowsHide:true,env,stdio:["pipe","pipe","pipe"],input,timeout:240000});}
@@ -65,8 +68,8 @@ const release=resolve(".local/releases",build+"-"+Date.now());await mkdir(releas
 await cp(resolve("dist/web"),resolve(release,"assets"),{recursive:true});
 const config=JSON.parse((await readFile("wrangler.jsonc","utf8")).replace(/,\s*([}\]])/g,"$1"));
 if(config.name!==name)throw Error("UNRECOGNIZED_WORKER_NAME");
-config.main=resolve("src/worker.ts");config.assets.directory=resolve(release,"assets");config.vars={...config.vars,...modelDeploymentVariables(settings),BUILD_ID:build};
-assertReleaseVariables(config.vars);
+config.main=resolve("src/worker.ts");config.assets.directory=resolve(release,"assets");config.vars={...config.vars,...modelDeploymentVariables(settings),...budgetVariables,BUILD_ID:build};
+assertReleaseVariables(config.vars);readBudgetDeployment(config.vars.BUDGET_DEPLOYMENT);
 const effectiveMode=config.vars.MODEL_MODE??"mock";
 if(!["mock","live"].includes(effectiveMode))throw Error("INVALID_MODEL_MODE");
 const effectiveModel=effectiveMode==="live"?parseModelSettings({mode:"live",modelId:config.vars.MODEL_ID,baseUrl:config.vars.MODEL_BASE_URL,thinking:"off"}):undefined;
