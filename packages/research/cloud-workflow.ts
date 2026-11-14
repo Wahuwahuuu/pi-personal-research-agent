@@ -7,7 +7,7 @@ import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
 import {parseQuestionPreparation,planPreparedRetrieval,QUESTION_PREPARATION_INSTRUCTION,type PreparedQuestion} from "./internal/agent/question-preparation.ts";
 import {TurnExecutionTracker,executionFromOutput,parseTurnExecution,COMPLETION_CHECK_INSTRUCTION,TURN_EXECUTION_INSTRUCTION,type TurnExecution} from "./internal/agent/turn-execution.ts";
-import {prepareWorkbenchAnswer,WORKBENCH_ANSWER_INSTRUCTION} from "./internal/agent/workbench-answer.ts";
+import {prepareWorkbenchAnswer,normalizeVisibleCitationGroups,WORKBENCH_ANSWER_INSTRUCTION} from "./internal/agent/workbench-answer.ts";
 import {MultiPaperComparison,COMPARISON_CHECK_INSTRUCTION,type ComparisonReport} from "./internal/agent/multi-paper.ts";
 import {TaskProgressTracker,GOAL_PROGRESS_INSTRUCTION,type TaskProgress} from "./internal/agent/task-progress.ts";
 import type {Chunk,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
@@ -131,7 +131,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
   const ordered=m?m.window(30000):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
   // A repair must be able to recheck its own cited originals. Unknown IDs never create evidence.
-  const repairIds=w.citationRepair?citationIds(w.citationRepair.answer):[],repair=repairIds.flatMap(id=>byId.has(id)?[byId.get(id)!]:[]),preferred=new Set(repair.map(e=>e.chunk_id));
+  const repairIds=w.citationRepair?citationIds(normalizeVisibleCitationGroups(w.citationRepair.answer,byId)):[],repair=repairIds.flatMap(id=>byId.has(id)?[byId.get(id)!]:[]),preferred=new Set(repair.map(e=>e.chunk_id));
   const evidence=boundedItems([...repair,...ordered.filter(e=>!preferred.has(e.chunk_id))],Math.max(0,Math.min(22000,40000-byteSize(payload))));
   w.visibleSourceIds=evidence.map(e=>e.chunk_id);
   payload.evidence=evidence;

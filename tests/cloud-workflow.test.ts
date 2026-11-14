@@ -238,3 +238,29 @@ test("repair priority never truncates oversized evidence or invents a source for
  w.citationRepair={answer:"Check [cite:oversized] and [cite:small] but not [cite:unknown",claims:[]};
  const p=JSON.parse(workflowPrompt(w,c));assert.deepEqual(p.evidence.map((e:any)=>e.chunk_id),["small"]);assert.equal(p.evidence[0].text,"whole");assert.equal(p.evidence_window.omitted,1);
 });
+
+
+test("explicit grouped citations normalize only when every full source ID is visible",async()=>{
+ const {prepareWorkbenchAnswer}=await import("../packages/research/internal/agent/workbench-answer.ts");
+ const a={paper_id:"fixture-paper",chunk_id:"a",paragraph_id:"p",index_version:"fixture-v1",section:"body",start:0,end:13,text:"Score is 80%."};
+ const b={...a,chunk_id:"b",text:"Score is 90%."};
+ const evidence=new Map([["a",a],["b",b]]);
+ const result=prepareWorkbenchAnswer("Reported scores: 80% and 90% [cite:a; cite:b].",{evidence,allowAnswer:true})!;
+ assert.equal(result.visibleCitationCount,2);assert.equal(result.needsCitationRepair,false);assert.equal(result.value.answer,"Reported scores: 80% and 90% [cite:a][cite:b].");
+ assert.ok(result.adaptations.includes("visible_citation_format_normalized"));
+ for(const marker of ["[cite:a; cite:missing]","[cite:a; cite:B]","[cite:a; b]","[cite:1; cite:2]"]){
+  const invalid=prepareWorkbenchAnswer("Claim "+marker,{evidence,allowAnswer:true})!;
+  assert.equal(invalid.visibleCitationCount,0);assert.equal(invalid.needsCitationRepair,true);assert.ok(invalid.value.answer.includes("引用未定位"));
+ }
+});
+
+test("grouped citation repair prioritizes exact archived originals without increasing the evidence window",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));c.calls=4;
+ c.evidence=Array.from({length:20},(_,i)=>({paper_id:"fixture-paper",paragraph_id:"paragraph-"+i,chunk_id:"chunk-"+i,index_version:c.catalog.indexVersion,section:"body",start:0,end:1800,text:"x".repeat(1800)}));
+ w.citationRepair={answer:"Check [cite:chunk-19; cite:chunk-18] and reject [cite:chunk-17; cite:unknown].",claims:[]};
+ const prompt=JSON.parse(workflowPrompt(w,c));
+ assert.deepEqual(prompt.evidence.slice(0,2).map((e:any)=>e.chunk_id),["chunk-19","chunk-18"]);
+ assert.equal(prompt.evidence[0].text,c.evidence[19].text);assert.equal(prompt.evidence[1].text,c.evidence[18].text);
+ assert.ok(!prompt.evidence.some((e:any)=>["chunk-17","unknown"].includes(e.chunk_id)));
+ assert.ok(Buffer.byteLength(JSON.stringify(prompt.evidence))<=22000);assert.ok(Buffer.byteLength(JSON.stringify(prompt))<=45000);
+});

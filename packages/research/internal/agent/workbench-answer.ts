@@ -85,6 +85,15 @@ export function workbenchCoverageInstruction(ids:readonly string[],papers:readon
   return `Address each selected paper separately: ${JSON.stringify(ids.map(id=>({paper_id:id,title:papers.find(paper=>paper.paper_id===id)?.title??id})))}. Use its actual title as the heading and table label; optional paper IDs follow titles, never replace them. Then explain actual findings or the bounded evidence gap. Use each paper's own visible citations. Do not force a Twitter-text question onto an unrelated speech/dialogue paper. If time/tool allowance prevents covering a paper, say so. paper_coverage metadata is optional; clear readable coverage in the answer is the priority.`;
 }
 
+/** Split an explicit source group only when every complete ID is already known. */
+export function normalizeVisibleCitationGroups(text:string,evidence:{has(id:string):boolean}):string{
+  return text.replace(/\[\s*cite\s*:\s*([^\]\n]+)\]/giu,(marker:string,body:string)=>{
+    if(evidence.has(body.trim())||! /;\s*cite\s*:/iu.test(body))return marker;
+    const ids=body.split(/;\s*cite\s*:\s*/iu).map(id=>id.trim());
+    return ids.every(id=>id.length>0&&evidence.has(id))?ids.map(id=>`[cite:${id}]`).join(''):marker;
+  });
+}
+
 /** Presentation normalization is separate from the strict research answer contract. */
 export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):WorkbenchAnswer|null{
   const adaptations:string[]=[],notices:string[]=[],citationIssues:string[]=[];
@@ -100,6 +109,8 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
   if(execution?.state==='clarification')status='clarification';
   else if(execution?.state==='working'||execution?.state==='partial')status='partial';
   if(Object.keys(raw).some(key=>!['status','answer_kind','answer','final_answer','exact_quotes','paper_coverage','execution'].includes(key)))adaptations.push('auxiliary_answer_fields_ignored');
+  const grouped=normalizeVisibleCitationGroups(body,context.evidence);
+  if(grouped!==body){body=grouped;adaptations.push('visible_citation_format_normalized');}
   // Exact identity only. Numeric reference labels are never guessed into source IDs.
   body=body.replace(/\[\[cite:([^\]\n]+)\]\]/gu,(marker,id:string)=>context.evidence.has(id)?`[cite:${id}]`:marker);
   body=body.replace(/\[\s*(?:cite\s*:\s*)?([^\]\n]+?)\s*\]|【\s*cite\s*:\s*([^】\n]+?)\s*】/giu,(marker:string,ordinary:string|undefined,wide:string|undefined)=>{
