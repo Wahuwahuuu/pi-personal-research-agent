@@ -266,7 +266,7 @@ export class PersonalAgent extends DurableObject<Env> {
                   baseUrl: env.MODEL_BASE_URL ?? "",
                   modelId: env.MODEL_ID ?? "",
                   maxOutput:()=>reservedOutput,
-                  onFailure:(code)=>{const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running");if(task)task.modelFailure=code;},
+                  onFailure:(code,detail)=>{const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running");if(task){task.modelFailure=code;task.modelFailureDetail=detail;}},
                   onVisible:(text)=>{
                     const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");
                     if(!task||Date.now()-lastPreview<1000)return;
@@ -840,7 +840,7 @@ export class PersonalAgent extends DurableObject<Env> {
         }
         if (t.engine === "durable") {
           if(!t.error||!BUDGET_STOPS.has(t.error))throw new Problem("NEW_TASK_REQUIRED",409);
-          t.status="queued";t.error=undefined;t.modelFailure=undefined;t.modelOperation=undefined;t.modelAdmitted=false;
+          t.status="queued";t.error=undefined;t.modelFailure=undefined;t.modelFailureDetail=undefined;t.modelOperation=undefined;t.modelAdmitted=false;
           this.save();await this.maintenance.arm();return json(t);
         }
         t.status = "queued";
@@ -1640,7 +1640,7 @@ export class PersonalAgent extends DurableObject<Env> {
       t.status = "running";
       t.runOpen = true;
       t.preview=undefined;
-      t.modelFailure=undefined;
+      t.modelFailure=undefined;t.modelFailureDetail=undefined;
       t.resumeSeq = (t.resumeSeq ?? 0) + 1;
       t.modelOperation = t.id + ":research:" + t.resumeSeq;
       t.modelStarted = Date.now();

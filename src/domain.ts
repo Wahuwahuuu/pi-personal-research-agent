@@ -1,3 +1,4 @@
+import type {ToolCallFailureDetail} from "./live-model.ts";
 import {taskByRequest} from "./task-queries.ts";
 import type {ModelCallTiming, ToolTiming} from "./timing.ts";
 export const TASK_CAPACITY=5000;
@@ -47,6 +48,7 @@ export interface Task {
   answer?: string;
   preview?: string;
   modelFailure?: string;
+  modelFailureDetail?: ToolCallFailureDetail;
   error?: string;
   evidence?: unknown;
   operationId?: string;

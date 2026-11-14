@@ -155,7 +155,7 @@ export function resumeTask(s: State, t: Task) {
     ? "waiting_device"
     : "queued";
   t.error = undefined;
-  t.modelFailure = undefined;
+  t.modelFailure = undefined; t.modelFailureDetail = undefined;
   t.updated = Date.now();
 }
 export function amendTask(s: State, t: Task, value: unknown) {
@@ -204,7 +204,7 @@ export function handleModelBudget(s: State, t: Task) {
     s.usage.output + s.usage.reservedOutput + modelOutputLimit(t) > 1000000;
   const a = taskAllowance(t);
   if (!validationExhausted && t.goal && (a.calls <= 0 || a.activeMs <= 0)) {
-    if (nextSegment(t, "segment_budget")) { t.modelFailure = undefined; return; }
+    if (nextSegment(t, "segment_budget")) { t.modelFailure = undefined; t.modelFailureDetail = undefined; return; }
     if (t.status === "paused") return;
   }
   t.status = "waiting_user";

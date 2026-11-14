@@ -12,6 +12,7 @@ import {
   type ProviderStreams,
   type Message,
 } from "@earendil-works/pi-ai";
+export type ToolCallFailureDetail = "tool_type" | "tool_id" | "duplicate_tool_id" | "undeclared_tool" | "tool_arguments";
 export interface LiveConfig {
   authorized: string;
   apiKey: string;
@@ -19,7 +20,7 @@ export interface LiveConfig {
   modelId: string;
   maxOutput?:()=>number;
   onVisible?:(text:string)=>void;
-  onFailure?:(code:string)=>void;
+  onFailure?:(code:string,detail?:ToolCallFailureDetail)=>void;
 }
 /** Only visible text crosses this adapter into Pi persistence. Provider-native reasoning is never forwarded. */
 export function liveModels(
@@ -65,6 +66,7 @@ export function liveModels(
         settled = false, dispatched=false,ownsSlot=false;
       let startedAt: number | undefined;
       let outputLimit=2048;
+      let failureDetail:ToolCallFailureDetail|undefined;
       const measured = (status: ModelMeasurement["status"]): ModelMeasurement => ({status, elapsedMs: startedAt === undefined ? null : elapsed(startedAt, clock())});
       try {
         if(active)throw Error("MODEL_CONCURRENCY");
@@ -147,9 +149,12 @@ export function liveModels(
         if (!Array.isArray(rawCalls) || rawCalls.length > 10) throw new Error("INVALID_TOOLS");
         const callIds=new Set<string>();
         const calls:ToolCall[]=rawCalls.map((call: any) => {
-          if (call.type!=="function" || typeof call.id!=="string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(call.id) ||
-              callIds.has(call.id) || !tools.some(t=>t.name===call.function?.name) || typeof call.function?.arguments!=="string")
-            throw new Error("INVALID_TOOL_CALL");
+          failureDetail = call?.type!=="function" ? "tool_type" :
+            typeof call.id!=="string" || !/^[a-zA-Z0-9_-]{1,200}$/.test(call.id) ? "tool_id" :
+            callIds.has(call.id) ? "duplicate_tool_id" :
+            !tools.some(t=>t.name===call.function?.name) ? "undeclared_tool" :
+            typeof call.function?.arguments!=="string" ? "tool_arguments" : undefined;
+          if(failureDetail)throw new Error("INVALID_TOOL_CALL");
           callIds.add(call.id);
           const args=JSON.parse(call.function.arguments);
           if (!args || Array.isArray(args) || typeof args!=="object") throw new Error("INVALID_ARGUMENTS");
@@ -182,7 +187,7 @@ export function liveModels(
       } catch (error) {
         const known=new Set([...BUDGET_STOPS,"MODEL_BUDGET","MODEL_CONCURRENCY","MODEL_SUBMISSION_MISMATCH","CONTEXT_LIMIT","MODEL_HTTP_ERROR","EMPTY_RESPONSE","RESPONSE_TOO_LARGE","INVALID_TOOLS","INVALID_TOOL_CALL","INVALID_ARGUMENTS","UNSAFE_OR_UNSUPPORTED_RESPONSE","UNSAFE_RESPONSE","INVALID_CONTENT","INCOMPLETE_STREAM","MODEL_OUTPUT_TRUNCATED","INVALID_OUTPUT_LIMIT"]);
         const code=error instanceof Error&&known.has(error.message)?error.message:"MODEL_REQUEST_FAILED";
-        config.onFailure?.(code);
+        config.onFailure?.(code,code==="INVALID_TOOL_CALL"?failureDetail:undefined);
         if (admitted && !settled) {settled=true;try{await after(dispatched?undefined:{input:0,output:0},measured(dispatched?"interrupted":"not_dispatched"));}catch{config.onFailure?.("BILLING_UNAVAILABLE");}}
         message.stopReason = options?.signal?.aborted ? "aborted" : "error";
         message.errorMessage = "MODEL_REQUEST_FAILED";
