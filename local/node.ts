@@ -260,6 +260,8 @@ async function execute(op: Operation) {
       executionMs: Math.ceil(performance.now() - started),
     });
   } catch {
+    // Cancellation stops the Python process; ready must wait for its replacement.
+    if (abort.signal.aborted && snapshots) unavailable("loading");
     frame(op.id, {
       type: "operation_error",
       operationId: op.id,
