@@ -311,3 +311,19 @@ test("exhausted and older completion checkpoints with invalid answers remain exp
  for(const calls of [5,6]){const c=setup("Hello"),w=newWorkflow();advanceWorkflow(w,c,prepared("session_update"));w.phase="completion";w.candidate='{"answer":"unfinished';c.calls=calls;
   const result=advanceWorkflow(w,c,JSON.stringify({state:"complete",remaining_needs:[],needs_sources:false}));if(calls===5){assert.deepEqual(result,{});assert.equal(w.phase,"agent");assert.equal(w.answerRepairAttempts,1);}else{assert.equal(result.status,"waiting_user");assert.equal(w.phase,"finished");assert.equal(w.answerRepairAttempts,undefined);}}
 });
+
+
+test("agent evidence window counts JSON string escaping and preserves complete source identities",()=>{
+ const c=setup('Compare quoted measurements and equations'),w=newWorkflow();advanceWorkflow(w,c,prepared('answer',['fixture-paper']));c.calls=2;
+ c.evidence=Array.from({length:20},(_,i)=>({paper_id:'fixture-paper',chunk_id:'quoted-'+i,paragraph_id:'p'+i,section:'Methods',text:'\\'.repeat(1500)+'原文🧪',start:0,end:1503,index_version:'fixture-v1',citation:'[cite:quoted-'+i+']',truncated:false}));
+ const stored=JSON.stringify(c.evidence);const encoded=workflowPrompt(w,c),body=JSON.parse(encoded);
+ assert.ok(Buffer.byteLength(JSON.stringify(encoded))<=40000);assert.ok(body.evidence.length>0&&body.evidence.length<c.evidence.length);
+ assert.deepEqual(w.visibleSourceIds,body.evidence.map((e:any)=>e.chunk_id));assert.equal(body.evidence_window.omitted,c.evidence.length-body.evidence.length);
+ for(const e of body.evidence)assert.deepEqual(e,c.evidence.find(s=>s.chunk_id===e.chunk_id));assert.equal(JSON.stringify(c.evidence),stored);assert.equal(body.request,c.input);
+});
+test("configured system contract is not duplicated in the managed agent prompt and irreducible input is refused",()=>{
+ const c=setup('Keep the full current correction'),w=newWorkflow();advanceWorkflow(w,c,prepared('answer',['fixture-paper']));c.calls=2;
+ const independent=JSON.parse(workflowPrompt(w,c));assert.ok(independent.instruction);
+ const managed=JSON.parse(workflowPrompt(w,c,undefined,{systemInstructionProvided:true}));assert.equal(managed.instruction,undefined);assert.equal(managed.request,c.input);assert.equal(managed.answer_contract,independent.answer_contract);
+ c.input='🧪'.repeat(12000);assert.throws(()=>workflowPrompt(w,c,undefined,{systemInstructionProvided:true}),/CONTEXT_LIMIT/);assert.equal(c.calls,2);
+});

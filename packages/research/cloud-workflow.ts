@@ -102,7 +102,7 @@ function readingAvailability(w:ResearchWorkflow,c:WorkflowContext){
  return c.catalog.papers.filter(p=>(!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id))&&(!selected.size||selected.has(p.paper_id)))
   .map(p=>({paper_id:p.paper_id,independent_abstract:!!p.abstract.trim(),indexed_text:indexed.has(p.paper_id)}));
 }
-export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations?:unknown):string{
+export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations?:unknown,options:{systemInstructionProvided?:boolean}={}):string{
   if(w.phase==="memory"){
     const used=new Set([...w.memory!.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]));
     const sources=boundedItems(c.evidence.filter(e=>used.has(e.chunk_id)),22000);w.memory!.visibleSourceIds=sources.map(s=>s.chunk_id);
@@ -141,17 +141,29 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Results remain complete in durable storage. The model sees each whole source at most once.
   const delivered=(observations as any)?.observations??[];
   const projected=delivered.map((o:any)=>({...o,result:{...o.result,...(o.result?.chunks?{chunks:undefined,chunk_ids:o.result.chunks.map((e:any)=>e.chunk_id)}:{})}}));
-  const payload:any={stage:"agent",instruction:agentInstruction(w),...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
+  const payload:any={stage:"agent",instruction:options.systemInstructionProvided?undefined:agentInstruction(w),...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
     ...(c.calls>=5?{final_instruction:w.answerRepairPending?"No allowance remains for tools or a separate completion check. Give the supported answer and actual gaps as plain Markdown; do not add JSON metadata.":"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
   const ordered=m?m.window(30000):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
   // A repair must be able to recheck its own cited originals. Unknown IDs never create evidence.
   const repairIds=w.citationRepair?citationIds(normalizeVisibleCitationGroups(w.citationRepair.answer,byId)):[],repair=repairIds.flatMap(id=>byId.has(id)?[byId.get(id)!]:[]),preferred=new Set(repair.map(e=>e.chunk_id));
-  const evidence=boundedItems([...repair,...ordered.filter(e=>!preferred.has(e.chunk_id))],Math.max(0,Math.min(22000,40000-byteSize(payload))));
+  // Count the prompt as the JSON string actually nested in the provider request.
+  // The remaining 8 KB is reserved for the locked Pi system/tool envelope; the
+  // adapter still validates the entire request against its unchanged 48 KB limit.
+  const evidence:Chunk[]=[];
+  const window={archived:c.evidence.length,visible:0,omitted:c.evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
+  payload.evidence=evidence;payload.evidence_window=window;
+  const fits=()=>byteSize(JSON.stringify(payload))<=40000;
+  if(!fits())throw Error("CONTEXT_LIMIT"); // Never silently shorten the user's request or corrections.
+  let evidenceBytes=2;
+  for(const source of [...repair,...ordered.filter(e=>!preferred.has(e.chunk_id))]){
+    const size=byteSize(source)+1;if(evidenceBytes+size>22000)continue;
+    evidence.push(source);window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;
+    if(fits())evidenceBytes+=size;
+    else {evidence.pop();window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;}
+  }
   w.visibleSourceIds=evidence.map(e=>e.chunk_id);
-  payload.evidence=evidence;
-  payload.evidence_window={archived:c.evidence.length,visible:evidence.length,omitted:c.evidence.length-evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
   return JSON.stringify(payload);
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return !w.cloudOnly&&w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}

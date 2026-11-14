@@ -1626,7 +1626,7 @@ export class PersonalAgent extends DurableObject<Env> {
         ].filter(id=>!this.state.cloudMemory!.invalidatedTurns?.includes(id)));
         context.project=this.workspace.getProject(context.conversation.projectId);context.researchDirection=this.workspace.settings().researchDirection;
       }
-      const prompt = this.proactive.control(t)?this.proactive.prompt(t,context!.memories):t.workflow ? workflowPrompt(t.workflow,context!, observations.ids.length ? JSON.parse(observations.prompt) : undefined) : observations.ids.length
+      const prompt = this.proactive.control(t)?this.proactive.prompt(t,context!.memories):t.workflow ? workflowPrompt(t.workflow,context!, observations.ids.length ? JSON.parse(observations.prompt) : undefined,{systemInstructionProvided:true}) : observations.ids.length
         ? observations.prompt
         : JSON.stringify({
             instruction:
@@ -1665,7 +1665,7 @@ export class PersonalAgent extends DurableObject<Env> {
         failResearch(
           this.state,
           t,
-          e instanceof Problem ? e.code : "RESEARCH_ADMISSION_FAILED",
+          e instanceof Problem ? e.code : e instanceof Error&&e.message==="CONTEXT_LIMIT"?"CONTEXT_LIMIT":"RESEARCH_ADMISSION_FAILED",
         );
       else throw e; // Saved admission intent remains replayable.
     }

@@ -98,3 +98,22 @@ test("real Pi never executes a complete-looking tool from a length-truncated res
   assert.notEqual(result.status,"done");assert.equal(operations,0);assert.equal(requests,1);assert.equal(settlements,1);
  }finally{await harness.close(ctx);}
 });
+
+
+test("large managed evidence fits the actual Pi system and tool envelope without truncating sources",async()=>{
+ const {workflowPrompt,workflowInstruction,newWorkflow,advanceWorkflow}=await import('../packages/research/cloud-workflow.ts');
+ const {nodeCatalog}=await import('../local/catalog.ts');const catalog=await nodeCatalog(undefined,true);
+ const evidence=Array.from({length:20},(_,i)=>({paper_id:'fixture-paper',chunk_id:'large-'+i,paragraph_id:'p'+i,section:'Methods',text:'\\'.repeat(1500)+'原文🧪',start:0,end:1503,index_version:'fixture-v1',citation:'[cite:large-'+i+']',truncated:false}));
+ const c={id:'t',input:'Explain the original equations and the relevant table.',calls:2,evidence,catalog,conversation:{id:'c',title:'Research',projectId:'p',scope:[],created:0,history:[]},memories:[],operations:[]};
+ const w=newWorkflow();advanceWorkflow(w,c,JSON.stringify({intent:'answer',targets:['fixture-paper'],rewrite:c.input,queries:[],constraints:[]}));
+ const prompt=workflowPrompt(w,c,{observations:[{operationId:'op',tool:'retrieve_chunks',result:{index_version:'fixture-v1',chunks:evidence}}]},{systemInstructionProvided:true});let sent:any,admitted=0;
+ const models=liveModels({authorized:'explicitly-authorized',apiKey:'synthetic-key',baseUrl:'https://example.invalid/v1',modelId:'fixture'},()=>{admitted++;},()=>{},(async(_u,i)=>{sent=JSON.parse(String(i?.body));return Response.json({choices:[{message:{content:'Fixture answer'}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch);
+ const registry=createResearchRegistry({managed:()=>true,catalog:()=>{throw Error('NO_TOOLS')},execute:async()=>{throw Error('NO_TOOLS')},waiting:async()=>false,remember:async()=>{},evidence:async()=>[]});
+ const h=await Harness.open(new MemoryStorage(),{models,registry,settings:{retry:{maxRetries:0},compaction:{enabled:false}}},ctx);
+ try{const conversation=await h.root(ctx,{agent:{model:{provider:'pra',modelId:'fixture'},maxTurns:1,instructions:workflowInstruction(w)}});const result=await(await conversation.submit({type:'input',content:prompt},ctx)).wait(ctx);
+ assert.equal(result.status,'done');assert.equal(admitted,1);assert.ok(Buffer.byteLength(JSON.stringify({messages:sent.messages,tools:sent.tools}))<=48000);
+ assert.deepEqual(sent.tools.map((t:any)=>t.function.name),['search_papers','retrieve_chunks']);assert.ok(sent.messages.find((m:any)=>m.role==='system').content.includes('Put execution first'));
+ const body=JSON.parse(sent.messages.find((m:any)=>m.role==='user').content);assert.equal(body.instruction,undefined);assert.equal(body.request,c.input);assert.ok(body.evidence.length>0&&body.evidence.length<evidence.length);assert.deepEqual(w.visibleSourceIds,body.evidence.map((s:any)=>s.chunk_id));
+ for(const source of body.evidence)assert.deepEqual(source,evidence.find(s=>s.chunk_id===source.chunk_id));
+ }finally{await h.close(ctx);}
+});
