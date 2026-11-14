@@ -21,6 +21,17 @@ class ControllerTests(unittest.TestCase):
                     self.assertEqual(state.get("starting",False),valid)
 
 
+    def test_start_awaits_existing_initializing_node_without_spawning_a_duplicate(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path=Path(temp)/"node.json";path.write_text(json.dumps({"endpoint":"https://cloud.example","dataDir":temp}),encoding="utf8")
+            c=Controller(path)
+            with patch.object(c,"status",return_value={"ok":False,"starting":True,"phase":"loading"}),patch("controller.subprocess.Popen") as spawn:
+                self.assertEqual(c.start(),{"accepted":True,"existing":True,"starting":True})
+                spawn.assert_not_called()
+            with patch.object(c,"status",return_value={"ok":False,"phase":"stopped"}),patch("controller.shutil.which",return_value="node.exe"),patch("controller.subprocess.Popen") as spawn:
+                self.assertEqual(c.start(),{"accepted":True,"starting":True})
+                spawn.assert_called_once()
+
     def test_browser_bridge_cannot_supply_arbitrary_web_endpoints_or_commands(self):
         for value in ["file:///C:/private", "http://remote.example", "https://token@host/path", "https://host/?token=secret"]:
             with self.assertRaises(LocalError):safe_endpoint(value)

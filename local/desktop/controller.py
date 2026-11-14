@@ -114,7 +114,9 @@ class Controller:
     def start(self):
         with self._lock:
             if self.stop_requested(): raise LocalError("LOCAL_STOP_REQUESTED")
-            if self.status()["ok"]: return {"accepted":True,"existing":True}
+            state = self.status()
+            if state["ok"]: return {"accepted":True,"existing":True}
+            if state.get("starting"): return {"accepted":True,"existing":True,"starting":True}
             if self._node and self._node.poll() is None: return {"accepted":True,"starting":True}
             # A fixed executable and entry point; selected papers can never become process arguments.
             node = shutil.which("node.exe" if os.name == "nt" else "node")
