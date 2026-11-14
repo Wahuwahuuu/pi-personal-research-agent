@@ -95,6 +95,9 @@ export function normalizeVisibleCitationGroups(text:string,evidence:{has(id:stri
 }
 
 /** Presentation normalization is separate from the strict research answer contract. */
+/** Use the same complete-body boundary before scheduling a completion check. */
+export function hasWorkbenchAnswer(output:string):boolean{return !!bodyFrom(output,[])?.body.trim();}
+
 export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):WorkbenchAnswer|null{
   const adaptations:string[]=[],notices:string[]=[],citationIssues:string[]=[];
   const parsed=bodyFrom(output,adaptations);if(!parsed||!parsed.body.trim())return null;

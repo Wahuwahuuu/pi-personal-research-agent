@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {nodeCatalog} from "../local/catalog.ts";
-import {newWorkflow,advanceWorkflow,workflowPrompt,workflowTools,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {newWorkflow,advanceWorkflow,workflowPrompt,workflowInstruction,workflowTools,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 const catalog=await nodeCatalog(undefined,true);
 function setup(input="Explain the method"):WorkflowContext{return {id:"turn1",input,calls:1,evidence:[],catalog,conversation:{id:"c",title:"research",projectId:"p",scope:[],created:0,history:[]},memories:[],operations:[]};}
 const prepared=(intent="answer",targets:string[]=[])=>JSON.stringify({intent,targets,rewrite:"Explain the method",queries:[],constraints:[]});
@@ -292,4 +292,22 @@ test("unit repair survives checkpointing and reports the actual outstanding evid
  assert.ok(restored.execution.remaining_needs.includes("核对回答中的数值、单位及其原文依据"));
  assert.ok(!restored.execution.remaining_needs.includes("读取当前问题所需的论文原文"));
  assert.match(outcome.answer!,/该数值依据待核对/);
+});
+
+
+test("malformed answer packaging gets one bounded repair before a semantic completion check",()=>{
+ const c=setup("Explain the method"),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));
+ c.evidence=[{paper_id:"fixture-paper",chunk_id:"fixture-chunk",paragraph_id:"p1",section:"Methods",text:"Evidence.",start:0,end:9,index_version:"fixture-v1",citation:"[cite:fixture-chunk]",truncated:false}];c.operations=[{tool:"retrieve_chunks",params:{paper_ids:["fixture-paper"],query:"method"},state:"done"}];
+ c.calls=4;assert.deepEqual(advanceWorkflow(w,c,'{"execution":{"state":"complete","remaining_needs":[]},"answer":"Unclosed\nanswer'),{});assert.equal(w.phase,"agent");assert.equal(w.answerRepairAttempts,1);assert.match(w.warnings.join(" "),/Markdown/);assert.equal(c.calls,4);const repairPrompt=JSON.parse(workflowPrompt(w,c));assert.match(repairPrompt.answer_contract,/ordinary Markdown/);assert.ok(!workflowInstruction(w).includes("prefer one single JSON object"));
+ const restored=JSON.parse(JSON.stringify(w));c.calls=5;assert.deepEqual(advanceWorkflow(restored,c,"Evidence. [cite:fixture-chunk]"),{});assert.equal(restored.phase,"completion");
+ c.calls=6;const result=advanceWorkflow(restored,c,JSON.stringify({state:"complete",remaining_needs:[],needs_sources:true}));assert.equal(result.status,"completed");assert.match(result.answer!,/\[cite:fixture-chunk\]/);
+});
+test("format recovery cannot repeat after a checkpoint or reset the task budget",()=>{
+ const c=setup("Hello"),w=newWorkflow();advanceWorkflow(w,c,prepared("session_update"));c.calls=2;
+ const broken='{"execution":{"state":"complete","remaining_needs":[]},"answer":"';advanceWorkflow(w,c,broken);const restored=JSON.parse(JSON.stringify(w));c.calls=3;
+ const result=advanceWorkflow(restored,c,broken);assert.equal(result.status,"waiting_user");assert.equal(restored.phase,"finished");assert.equal(restored.answerRepairAttempts,1);assert.ok(result.answer!.trim());assert.ok(!result.answer!.includes('"execution"'));assert.equal(c.calls,3);
+});
+test("exhausted and older completion checkpoints with invalid answers remain explicit and unfinished",()=>{
+ for(const calls of [5,6]){const c=setup("Hello"),w=newWorkflow();advanceWorkflow(w,c,prepared("session_update"));w.phase="completion";w.candidate='{"answer":"unfinished';c.calls=calls;
+  const result=advanceWorkflow(w,c,JSON.stringify({state:"complete",remaining_needs:[],needs_sources:false}));if(calls===5){assert.deepEqual(result,{});assert.equal(w.phase,"agent");assert.equal(w.answerRepairAttempts,1);}else{assert.equal(result.status,"waiting_user");assert.equal(w.phase,"finished");assert.equal(w.answerRepairAttempts,undefined);}}
 });

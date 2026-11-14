@@ -7,7 +7,7 @@ import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
 import {parseQuestionPreparation,planPreparedRetrieval,QUESTION_PREPARATION_INSTRUCTION,type PreparedQuestion} from "./internal/agent/question-preparation.ts";
 import {TurnExecutionTracker,executionFromOutput,parseTurnExecution,COMPLETION_CHECK_INSTRUCTION,TURN_EXECUTION_INSTRUCTION,type TurnExecution} from "./internal/agent/turn-execution.ts";
-import {prepareWorkbenchAnswer,normalizeVisibleCitationGroups,WORKBENCH_ANSWER_INSTRUCTION} from "./internal/agent/workbench-answer.ts";
+import {hasWorkbenchAnswer,prepareWorkbenchAnswer,normalizeVisibleCitationGroups,WORKBENCH_ANSWER_INSTRUCTION} from "./internal/agent/workbench-answer.ts";
 import {MultiPaperComparison,COMPARISON_CHECK_INSTRUCTION,type ComparisonReport} from "./internal/agent/multi-paper.ts";
 import {TaskProgressTracker,GOAL_PROGRESS_INSTRUCTION,type TaskProgress} from "./internal/agent/task-progress.ts";
 import type {Chunk,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
@@ -27,6 +27,7 @@ export interface ResearchWorkflow {
   comparison?:ComparisonReport; comparisonRevision?:string; progress?:TaskProgress;
   visibleSourceIds?:string[];
   citationRepair?:{answer:string;claims:unknown[]};
+  answerRepairAttempts?:number;answerRepairPending?:boolean;
   warnings:string[];
 }
 export interface WorkflowContext {
@@ -40,8 +41,10 @@ export interface WorkflowContext {
 }
 const PERSONAL_CONTEXT_ROUTING = "For this personal agent, classify what the user is asking to do, not the research vocabulary in the message. Use intent=session_update for ordinary conversation and for recalling, explaining or correcting the user's saved preferences, project scope, decisions, constraints and unresolved questions. Answer those from the visible project, dialogue and personal memory; missing personal context calls for clarification, not literature discovery. Do not expand a question about the user's own decisions into questions about standard scientific practice. Use research intents when the user requests new papers, paper originals or verification of scientific claims; remembered findings never replace source evidence. Do not require a manual chat/research mode.";
 const automaticRouting=(w:ResearchWorkflow)=>w.automatic&&w.phase==="prepare"?PERSONAL_CONTEXT_ROUTING+"\n":"";
+const ANSWER_FORMAT_REPAIR_INSTRUCTION="Rewrite the response as ordinary Markdown with exact citations. Do not use a JSON envelope or execution metadata. Answer the original question from the visible evidence and state actual gaps.";
+const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+(w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION);
 export function workflowInstruction(w:ResearchWorkflow):string{
- const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION;
+ const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:agentInstruction(w);
  return automaticRouting(w)+(w.cloudOnly&&!(w.automatic&&w.phase==="prepare")?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals. For greetings and capabilities, answer briefly without citation markers or made-up source examples.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
 }
 export const newWorkflow=():ResearchWorkflow=>({phase:"prepare",warnings:[]});
@@ -80,6 +83,16 @@ function progress(w:ResearchWorkflow,c:WorkflowContext,execution?:TurnExecution,
   if(w.comparison)p.comparison(w.comparison);
   p.update(execution?.goal_updates,new Map(c.evidence.map(e=>[e.chunk_id,e])),!nonFactual(w));
   w.progress=execution?p.finish(execution,answer,[...answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1])):p.snapshot();
+}
+function repairAnswerFormat(w:ResearchWorkflow,c:WorkflowContext):{answer?:string;status?:"waiting_user"}{
+  if(c.calls<6&&(w.answerRepairAttempts??0)<1){
+    w.answerRepairAttempts=(w.answerRepairAttempts??0)+1;w.answerRepairPending=true;w.phase="agent";
+    w.warnings.push("The previous reply had no complete readable answer. Rewrite it once as ordinary Markdown from the visible evidence and original question, with exact citations. Do not use a JSON envelope or execution metadata. This repair uses the same remaining task budget.");
+    return {};
+  }
+  w.phase="finished";w.answerRepairPending=undefined;w.execution={state:"partial",remaining_needs:["恢复完整可读的回答"],needs_sources:!nonFactual(w),origin:"host"};
+  const answer="本轮回答的格式未能恢复，任务进度已保留。"+(c.evidence.length?"已取得的原文证据仍可查看。":"");
+  progress(w,c,w.execution,answer);return {answer,status:"waiting_user"};
 }
 const byteSize=(v:unknown)=>new TextEncoder().encode(JSON.stringify(v)).length;
 function boundedItems<T>(items:readonly T[],maximum:number):T[]{const result:T[]=[];let used=2;for(const item of items){const n=byteSize(item)+1;if(used+n<=maximum){result.push(item);used+=n;}}return result;}
@@ -128,8 +141,8 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Results remain complete in durable storage. The model sees each whole source at most once.
   const delivered=(observations as any)?.observations??[];
   const projected=delivered.map((o:any)=>({...o,result:{...o.result,...(o.result?.chunks?{chunks:undefined,chunk_ids:o.result.chunks.map((e:any)=>e.chunk_id)}:{})}}));
-  const payload:any={stage:"agent",instruction:WORKBENCH_ANSWER_INSTRUCTION+"\n"+TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION,...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
-    ...(c.calls>=5?{final_instruction:"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
+  const payload:any={stage:"agent",instruction:agentInstruction(w),...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
+    ...(c.calls>=5?{final_instruction:w.answerRepairPending?"No allowance remains for tools or a separate completion check. Give the supported answer and actual gaps as plain Markdown; do not add JSON metadata.":"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
   const ordered=m?m.window(30000):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
@@ -193,6 +206,8 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }else{
     w.candidate=output;
     declared=executionFromOutput(output);
+    if(declared?.state!=="working"&&!hasWorkbenchAnswer(output))return repairAnswerFormat(w,c);
+    w.answerRepairPending=undefined;
     const m=comparison(w,c),revision=c.evidence.map(e=>e.chunk_id).sort().join(",");
     if(m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}
     if(!declared&&c.calls<6){w.phase="completion";return {};}
@@ -210,7 +225,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
       w.phase="finished";const text="本轮没有完成所需原文读取。尚待处理："+decision.remaining_needs.join("；");progress(w,c,decision,text);
       return {answer:text,status:"waiting_user"};
     }
-    throw Error("EMPTY_RESEARCH_ANSWER");
+    return repairAnswerFormat(w,c);
   }
   const tracker=new TurnExecutionTracker(w.tracker);
   const retrievals=c.operations.filter(o=>o.tool==="retrieve_chunks");
