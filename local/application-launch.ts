@@ -23,7 +23,7 @@ export function applicationHealth(port:number):Promise<any>{
   req.on("error",e=>(e as NodeJS.ErrnoException).code==="ECONNREFUSED"?ok(undefined):no(Error("LOCAL_APPLICATION_HEALTH_FAILED")));
  });
 }
-/** Reserve the same config lock as upgrades until the selected process reports its actual build. */
+/** Reserve the upgrade lock until the selected process reports its build and management API readiness. */
 export async function launchApplication(configPath:string,desktop:boolean,show=false,controls:ApplicationLaunchControls={}):Promise<ChildProcess|undefined>{
  configPath=resolve(configPath);
  return withRuntimeConfiguration(configPath,controls,async(root,current,config)=>{
@@ -33,21 +33,30 @@ export async function launchApplication(configPath:string,desktop:boolean,show=f
   const matches=(value:any)=>value?.instanceId===controlKey(configPath)&&value.application?.build===selection.build&&value.application?.digest===selection.digest;
   const existing=await health(config.port);
   if(existing&&!matches(existing))throw Error("LOCAL_APPLICATION_RESTART_REQUIRED");
-  if(existing&&!desktop)return undefined;
+  const waitForReady=async(child?:ChildProcess,failed:()=>boolean=()=>false)=>{
+   const deadline=Date.now()+(controls.timeoutMs??60000);
+   do{
+    const value=await health(config.port);
+    if(matches(value)&&value.apiReady===true)return;
+    if(value&&!matches(value))throw Error("LOCAL_APPLICATION_RESTART_REQUIRED");
+    if(failed()||(child&&child.exitCode!==null))throw Error("LOCAL_APPLICATION_START_FAILED");
+    await (controls.delay??(ms=>new Promise(r=>setTimeout(r,ms))))(200);
+   }while(Date.now()<deadline);
+   throw Error("LOCAL_APPLICATION_START_TIMEOUT");
+  };
+  if(existing){
+   // An already running node belongs to its original launcher. Await it without
+   // spawning a duplicate or applying owned-process cleanup on timeout.
+   if(existing.apiReady!==true)await waitForReady();
+   if(!desktop)return undefined;
+  }
   if((await readFile(configPath)).compare(current)!==0)throw Error("NODE_CONFIGURATION_CHANGED");
   const executable=desktop?join(dirname(config.libraryPython),"pythonw.exe"):process.execPath;
   const args=desktop?["-B",join(selection.directory,"local/desktop/main.py"),"--config",configPath,...(show?["--show"]:[])]:[join(selection.directory,"local/node.ts"),configPath];
   const child=(controls.spawn??((exe,args,cwd,env)=>spawn(exe,args,{cwd,env,windowsHide:true,stdio:"ignore"})))(executable,args,selection.directory,runtimeEnvironment());
   let error=false;child.once("error",()=>{error=true;});
   try{
-   const deadline=Date.now()+(controls.timeoutMs??60000);
-   do{
-    const value=await health(config.port);if(matches(value))return child;
-    if(value)throw Error("LOCAL_APPLICATION_RESTART_REQUIRED");
-    if(error||child.exitCode!==null)throw Error("LOCAL_APPLICATION_START_FAILED");
-    await (controls.delay??(ms=>new Promise(r=>setTimeout(r,ms))))(200);
-   }while(Date.now()<deadline);
-   throw Error("LOCAL_APPLICATION_START_TIMEOUT");
+   await waitForReady(child,()=>error);return child;
   }catch(e){
    // Stop only this authenticated configuration. Never terminate processes by their executable names.
    await (controls.stop??stopNode)(configPath).catch(()=>{});

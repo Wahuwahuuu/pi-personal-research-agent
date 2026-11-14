@@ -93,7 +93,7 @@ test("startup checks the served identity while holding the same configuration lo
  const result=await launchApplication(f.config,false,false,{...f.controls,health:async()=>{
   calls++;if(calls===1)return undefined;
   await assert.rejects(withRuntimeConfiguration(f.config,f.controls,async()=>{}),/UPDATE_LOCKED/);locked=true;
-  return{instanceId:controlKey(f.config),application:{build:f.first.manifest.build,digest:f.first.manifest.digest}};
+  return{instanceId:controlKey(f.config),application:{build:f.first.manifest.build,digest:f.first.manifest.digest},apiReady:true,ready:false};
  },spawn:(exe,args,cwd,env)=>{assert.equal(exe,process.execPath);assert.equal(cwd,f.first.dir);assert.equal(args[1],f.config);assert.equal(env.PYTHONDONTWRITEBYTECODE,"1");spawned=true;return child;}});
  assert.equal(result,child);assert.ok(spawned&&locked);
  await withRuntimeConfiguration(f.config,f.controls,async()=>{});
@@ -116,4 +116,25 @@ test("a failed launcher cannot create a late orphan after cleanup; final stop ru
  let reads=0;
  await assert.rejects(launchApplication(f.config,true,false,{...f.controls,health:async()=>++reads===1?undefined:{instanceId:"wrong"},spawn:()=>child,stop:async()=>{sequence.push("stop-config");}}),/RESTART_REQUIRED/);
  assert.deepEqual(sequence,["stop-config","kill-parent","stop-config"]);
+});
+
+
+test("startup waits for the management API while retrieval models may still be loading",async t=>{
+ const f=await fixture(t);await selectApplication(f.config,f.first.dir,f.controls);
+ const child=new EventEmitter() as any;child.exitCode=null;child.kill=()=>{};let reads=0;
+ const result=await launchApplication(f.config,false,false,{...f.controls,delay:async()=>{},health:async()=>{
+  reads++;if(reads===1)return undefined;
+  return{instanceId:controlKey(f.config),application:{build:f.first.manifest.build,digest:f.first.manifest.digest},apiReady:reads>=3,ready:false};
+ },spawn:()=>child});
+ assert.equal(result,child);assert.equal(reads,3);
+});
+
+test("an existing initializing node is awaited without spawning or stopping it",async t=>{
+ const f=await fixture(t);await selectApplication(f.config,f.first.dir,f.controls);let reads=0,spawns=0,stops=0;
+ const health=async()=>({instanceId:controlKey(f.config),application:{build:f.first.manifest.build,digest:f.first.manifest.digest},apiReady:++reads>=3,ready:false});
+ const result=await launchApplication(f.config,false,false,{...f.controls,delay:async()=>{},health,spawn:()=>{spawns++;throw Error("DUPLICATE_NODE");},stop:async()=>{stops++;}});
+ assert.equal(result,undefined);assert.equal(reads,3);assert.equal(spawns,0);assert.equal(stops,0);
+ reads=0;
+ await assert.rejects(launchApplication(f.config,false,false,{...f.controls,timeoutMs:0,health:async()=>({...await health(),apiReady:false}),spawn:()=>{spawns++;throw Error("DUPLICATE_NODE");},stop:async()=>{stops++;}}),/START_TIMEOUT/);
+ assert.equal(spawns,0);assert.equal(stops,0);
 });
