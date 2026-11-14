@@ -1,3 +1,4 @@
+import {VALIDATION_LIMITS} from "./validation-limits.ts";
 import {modelOutputLimit} from "./model-limits.ts";
 import {activeTasks} from "./task-queries.ts";
 import {
@@ -199,9 +200,9 @@ export function orderedTasks(s: State,activeOnly=false) {
 /** A provider can exhaust a segment within one Pi run; this is a host checkpoint, not a provider outage. */
 export function handleModelBudget(s: State, t: Task) {
   const validationExhausted =
-    s.usage.requests >= 500 ||
-    s.usage.input + s.usage.reservedInput + 52000 > 6000000 ||
-    s.usage.output + s.usage.reservedOutput + modelOutputLimit(t) > 1000000;
+    s.usage.requests >= VALIDATION_LIMITS.requests ||
+    s.usage.input + s.usage.reservedInput + 52000 > VALIDATION_LIMITS.input ||
+    s.usage.output + s.usage.reservedOutput + modelOutputLimit(t) > VALIDATION_LIMITS.output;
   const a = taskAllowance(t);
   if (!validationExhausted && t.goal && (a.calls <= 0 || a.activeMs <= 0)) {
     if (nextSegment(t, "segment_budget")) { t.modelFailure = undefined; t.modelFailureDetail = undefined; return; }

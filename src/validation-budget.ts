@@ -2,7 +2,8 @@ import {Problem} from "./domain.ts";
 import type {StateStorage} from "./state-store.ts";
 import type {ModelUsage} from "./budget.ts";
 export interface ValidationUsage extends ModelUsage {requests:number;reservedInput?:number;reservedOutput?:number}
-export const VALIDATION_LIMITS={requests:500,input:6000000,output:1000000} as const;
+import {VALIDATION_LIMITS} from "./validation-limits.ts";
+export {VALIDATION_LIMITS} from "./validation-limits.ts";
 function count(value:number){if(!Number.isSafeInteger(value)||value<0)throw new Problem("INVALID_VALIDATION_USAGE");}
 interface Call {id:string;owner:string;task:string;input_bound:number;output_bound:number;input:number|null;output:number|null;status:string;created:number}
 export class ValidationBudget {
@@ -24,7 +25,7 @@ export class ValidationBudget {
   const calls=this.db.sql.exec<{requests:number;input:number;output:number;reservedInput:number;reservedOutput:number}>("SELECT COUNT(*) AS requests,COALESCE(SUM(input),0) AS input,COALESCE(SUM(output),0) AS output,COALESCE(SUM(CASE WHEN status='reserved' THEN input_bound ELSE 0 END),0) AS reservedInput,COALESCE(SUM(CASE WHEN status='reserved' THEN output_bound ELSE 0 END),0) AS reservedOutput FROM pra_validation_calls").toArray()[0];
   const used={requests:prior.requests+calls.requests,input:prior.input+calls.input,output:prior.output+calls.output,reservedInput:calls.reservedInput,reservedOutput:calls.reservedOutput};
   return {...used,limits:VALIDATION_LIMITS,scope:"application" as const,period:"lifetime" as const,legacyAccounting:"conservative-aggregate" as const,
-   blocked:used.requests>=500||used.input+used.reservedInput>=6000000||used.output+used.reservedOutput>=1000000};
+   blocked:used.requests>=VALIDATION_LIMITS.requests||used.input+used.reservedInput>=VALIDATION_LIMITS.input||used.output+used.reservedOutput>=VALIDATION_LIMITS.output};
  }
  reserve(owner:string,request:{id:string;taskId:string;input:number;output:number},now=Date.now()){
   count(request.input);count(request.output);
@@ -37,7 +38,7 @@ export class ValidationBudget {
     return;
    }
    const used=this.snapshot();
-   if(used.blocked||used.input+used.reservedInput+request.input>6000000||used.output+used.reservedOutput+request.output>1000000)throw new Problem("VALIDATION_BUDGET",429);
+   if(used.blocked||used.input+used.reservedInput+request.input>VALIDATION_LIMITS.input||used.output+used.reservedOutput+request.output>VALIDATION_LIMITS.output)throw new Problem("VALIDATION_BUDGET",429);
    this.db.sql.exec("INSERT INTO pra_validation_calls VALUES(?,?,?,?,?,NULL,NULL,'reserved',?)",request.id,owner,request.taskId,request.input,request.output,now);
   });
  }

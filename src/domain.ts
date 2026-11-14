@@ -1,3 +1,4 @@
+import {VALIDATION_LIMITS} from "./validation-limits.ts";
 import type {ToolCallFailureDetail} from "./live-model.ts";
 import {taskByRequest} from "./task-queries.ts";
 import type {ModelCallTiming, ToolTiming} from "./timing.ts";
@@ -304,9 +305,9 @@ export function reserve(s: State, t: Task, input: number, output: number) {
   if (
     taskAllowance(t).calls <= 0 ||
     taskAllowance(t).activeMs <= 0 ||
-    s.usage.requests >= 500 ||
-    s.usage.input + s.usage.reservedInput + input > 6000000 ||
-    s.usage.output + s.usage.reservedOutput + output > 1000000
+    s.usage.requests >= VALIDATION_LIMITS.requests ||
+    s.usage.input + s.usage.reservedInput + input > VALIDATION_LIMITS.input ||
+    s.usage.output + s.usage.reservedOutput + output > VALIDATION_LIMITS.output
   )
     throw new Problem("MODEL_BUDGET", 429);
   t.calls++;

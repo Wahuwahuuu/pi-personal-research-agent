@@ -1,3 +1,4 @@
+import {VALIDATION_LIMITS} from "../src/validation-limits.ts";
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
@@ -32,9 +33,9 @@ test("registry restart leaves live reservations intact; stale attempts remain co
  reopened.settle("a","live",{input:1,output:1});assert.equal(reopened.ledger.snapshot(now).estimatedSpent,before.estimatedSpent);db.close();
 });
 
-test("500 requests are shared across users, retries and a calendar boundary without new allowance",()=>{
+test("lifetime request limit is shared across users, retries and a calendar boundary without new allowance",()=>{
  const {db,port,shared:s}=setup();
- for(let i=0;i<500;i++){
+ for(let i=0;i<VALIDATION_LIMITS.requests;i++){
   const owner=i%2?"a":"b",r=s.reserve(owner,request("shared-"+i,1,1),now);
   assert.equal(r.ok,true);if(!r.ok)throw Error("DENIED");
   assert.equal(s.reserve(owner,request("shared-"+i,1,1),now).ok,true);
@@ -42,14 +43,14 @@ test("500 requests are shared across users, retries and a calendar boundary with
  }
  const reopened=new SharedBudget(port);
  for(let i=0;i<20;i++)assert.deepEqual(reopened.reserve(i%2?"a":"b",request("blocked-"+i,1,1),Date.parse("2026-12-01T00:00:00+08:00")),{ok:false,error:"VALIDATION_BUDGET"});
- assert.equal(reopened.validation.snapshot().requests,500);assert.equal(reopened.validation.snapshot().input,500);
- assert.equal(port.sql.exec("SELECT * FROM pra_model_calls").toArray().length,500);db.close();
+ assert.equal(reopened.validation.snapshot().requests,VALIDATION_LIMITS.requests);assert.equal(reopened.validation.snapshot().input,VALIDATION_LIMITS.requests);
+ assert.equal(port.sql.exec("SELECT * FROM pra_model_calls").toArray().length,VALIDATION_LIMITS.requests);db.close();
 });
 test("old aggregate usage is imported once, conservatively includes interrupted reservations and cannot reset",()=>{
  const {db,shared:s}=setup();
- s.validation.import("legacy",{requests:499,input:1000,output:500,reservedInput:20,reservedOutput:10});
+ s.validation.import("legacy",{requests:VALIDATION_LIMITS.requests-1,input:1000,output:500,reservedInput:20,reservedOutput:10});
  s.validation.import("legacy",{requests:0,input:0,output:0});
- const before=s.validation.snapshot();assert.equal(before.requests,499);assert.equal(before.input,1020);assert.equal(before.output,510);
+ const before=s.validation.snapshot();assert.equal(before.requests,VALIDATION_LIMITS.requests-1);assert.equal(before.input,1020);assert.equal(before.output,510);
  assert.equal(s.reserve("a",request("last",1,1),now).ok,true);
  const amount=s.ledger.snapshot(now).reserved;s.settle("a","last");s.settle("a","last",{input:0,output:0});
  assert.equal(s.validation.snapshot().input,1021);assert.equal(s.ledger.snapshot(now).estimatedSpent,amount);
@@ -72,4 +73,15 @@ test("unmigrated accounts cannot reserve and invalid migration leaves no importe
  assert.deepEqual(s.reserve("new",request("blocked",1,1),now),{ok:false,error:"VALIDATION_MIGRATION_REQUIRED"});
  assert.throws(()=>s.validation.import("new",{requests:-1,input:0,output:0}),/INVALID_VALIDATION_USAGE/);
  assert.equal(s.validation.imported("new"),false);assert.equal(s.ledger.snapshot(now).reserved,0);db.close();
+});
+
+
+test("approved request ceiling preserves an exhausted historical counter instead of granting a fresh quota",()=>{
+ const {db,port,shared:s}=setup();s.validation.import('legacy-ceiling',{requests:500,input:1200000,output:100000,reservedInput:52000,reservedOutput:2048});
+ s.ledger.importLegacy({input:1200000,output:100000},now);const before=s.snapshot(now),priorRows=port.sql.exec('SELECT * FROM pra_validation_imports ORDER BY owner').toArray();
+ const reopened=new SharedBudget(port);assert.deepEqual(reopened.snapshot(now).validation,before.validation);assert.equal(reopened.snapshot(now).estimatedSpent,before.estimatedSpent);
+ assert.equal(reopened.reserve('a',request('continuation',1,1),now).ok,true);reopened.settle('a','continuation',{input:1,output:1});
+ const after=reopened.snapshot(now);assert.equal(after.validation.requests,501);assert.equal(after.validation.input,1252001);assert.equal(after.validation.output,102049);
+ assert.deepEqual(after.validation.limits,{requests:900,input:6000000,output:1000000});assert.equal(after.limit,50);assert.equal(after.backgroundLimit,20);
+ assert.deepEqual(port.sql.exec('SELECT * FROM pra_validation_imports ORDER BY owner').toArray(),priorRows);assert.ok(after.estimatedSpent>=before.estimatedSpent);db.close();
 });

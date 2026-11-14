@@ -1,3 +1,4 @@
+import {VALIDATION_LIMITS} from "../src/validation-limits.ts";
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
@@ -41,11 +42,11 @@ test("own origin cannot be imported as fresh external use",()=>{
  assert.equal(s.snapshot(now).validation.requests,0);db.close();
 });
 
-test("imported 499-request use admits one request across accounts and survives another calendar month",()=>{
- const {db,port,shared:s}=setup();s.transfer.apply([receipt("legacy:old-deployment",499)]);
+test("imported use one below the limit admits one request across accounts and survives another calendar month",()=>{
+ const {db,port,shared:s}=setup();s.transfer.apply([receipt("legacy:old-deployment",VALIDATION_LIMITS.requests-1)]);
  assert.equal(s.reserve("a",request("last"),now).ok,true);s.settle("a","last",{input:2,output:1});
  const reopened=new SharedBudget(port);for(let i=0;i<20;i++)assert.deepEqual(reopened.reserve("b",request("over"+i),Date.parse("2026-12-01T00:00:00+08:00")),{ok:false,error:"VALIDATION_BUDGET"});
- assert.equal(reopened.validation.snapshot().requests,500);db.close();
+ assert.equal(reopened.validation.snapshot().requests,VALIDATION_LIMITS.requests);db.close();
 });
 
 test("carryover preserves original money months and daily background totals",()=>{

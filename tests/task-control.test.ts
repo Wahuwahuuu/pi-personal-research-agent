@@ -1,3 +1,4 @@
+import {VALIDATION_LIMITS} from "../src/validation-limits.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -240,10 +241,10 @@ test("budget exhaustion inside Pi checkpoints the same goal and never resets tot
  assert.equal(t.goal!.segments.length,2);assert.equal(t.modelFailure,undefined);assert.equal(t.modelFailureDetail,undefined);
  t.calls=24;t.status="running";handleModelBudget(s,t);
  assert.equal(t.status,"paused");assert.equal(t.error,"GOAL_BUDGET");
- const next=fixture();next.t.calls=6;next.s.usage.requests=500;
+ const next=fixture();next.t.calls=6;next.s.usage.requests=VALIDATION_LIMITS.requests;
  handleModelBudget(next.s,next.t);
  assert.equal(next.t.status,"waiting_user");assert.equal(next.t.error,"VALIDATION_BUDGET");
- assert.equal(next.t.goal!.segments.length,1);assert.equal(next.s.usage.requests,500);
+ assert.equal(next.t.goal!.segments.length,1);assert.equal(next.s.usage.requests,VALIDATION_LIMITS.requests);
 });
 
 
