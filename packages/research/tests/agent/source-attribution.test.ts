@@ -118,3 +118,29 @@ test('other research questions also receive bounded source-attribution correctio
   try{const r=await f.harness.runTurn('p1 的实验准确率是多少？',['p1'],'reading/metric');assert.equal(r.status,'completed',r.error??'');assert.equal(r.requests.length,3);assert.ok(r.generation_failures?.[0].error.includes('metric_source_mismatch:43.88%'));assert.ok(!r.final_answer.includes('43.88%'));assert.ok(r.final_answer.includes('没有报告准确率'));}
   finally{f.harness.dispose();}
 });
+
+
+test('bare numerical matches explain an unconfirmed percent unit without accepting or moving the citation',()=>{
+  const bare={...result,chunk_id:'bare',text:'The reported recall is 61.2 on evaluation set A.'};
+  const unrelated={...result,chunk_id:'unrelated',text:'The reported recall is 61.2% on evaluation set B.'};
+  const evidence=new Map([['bare',bare],['unrelated',unrelated]]);
+  const checked=inspectCitationAttribution('Reported recall reaches 61.2% [cite:bare].',evidence);
+  assert.deepEqual(checked.issues,['metric_source_mismatch:61.2%']);
+  assert.deepEqual(checked.checks[0].unit_unconfirmed_values,['61.2%']);
+  assert.deepEqual(checked.checks[0].candidate_sources['61.2%'],['unrelated']);
+  assert.ok(!checked.answer.includes('[cite:unrelated]'));
+  assert.equal(checked.checks[0].assessment,'value_not_in_cited_source');
+});
+
+test('unit diagnostics require the same whole number in the cited source and never prove its meaning',()=>{
+  for(const text of ['Result is 161.2.', 'Result is 61.21.', 'Result is -61.2.', 'Result is 61.2%.']){
+    const checked=inspectCitationAttribution('Reported accuracy is 61.2% [cite:result].',new Map([['result',{...result,text}]]));
+    assert.deepEqual(checked.checks[0].unit_unconfirmed_values,[]);
+  }
+  const evidence=new Map([['result',{...result,text:'The measured latency is 61.2 ms.'}]]);
+  const checked=inspectCitationAttribution('Reported accuracy is 61.2% [cite:result].',evidence);
+  assert.deepEqual(checked.issues,['metric_source_mismatch:61.2%']);
+  assert.deepEqual(checked.checks[0].unit_unconfirmed_values,['61.2%']);
+  const missing=inspectCitationAttribution('Reported accuracy is 61.2%.',evidence);
+  assert.deepEqual(missing.checks[0].unit_unconfirmed_values,[]);
+});

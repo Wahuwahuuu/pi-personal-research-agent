@@ -41,7 +41,12 @@ export class TurnExecutionTracker {
     const needsSource=result.needs_sources===true&&(facts.source_count===0||facts.cited_source_count===0);
     const invalidReferences=Boolean(facts.citation_issues?.some(issue=>issue!=='missing_visible_citation'));
     if(facts.running_tools||result.state==='complete'&&(needsSource||invalidReferences)||result.state==='partial'&&(invalidReferences||needsSource&&!facts.retrieval_attempts)){
-      result={...result,state:'working',remaining_needs:result.remaining_needs.length?result.remaining_needs:['读取当前问题所需的论文原文']};
+      const checks:string[]=[];
+      if(facts.citation_issues?.some(issue=>issue.startsWith('metric_source_mismatch:')))checks.push('核对回答中的数值、单位及其原文依据');
+      if(facts.citation_issues?.some(issue=>issue!=='missing_visible_citation'&&!issue.startsWith('metric_source_mismatch:')))checks.push('定位回答引用的真实原文');
+      if(!checks.length&&needsSource)checks.push('读取当前问题所需的论文原文');
+      if(facts.running_tools)checks.push('等待正在执行的工具完成');
+      result={...result,state:'working',remaining_needs:[...new Set([...result.remaining_needs,...checks])]};
     }
     if(result.state!=='working'){this.lastProgress=facts.progress_key;this.noProgress=0;return result;}
     this.noProgress=this.lastProgress===facts.progress_key?this.noProgress+1:1;

@@ -275,3 +275,21 @@ test("personal memory projection keeps user content without exposing storage ide
  assert.equal(raw.id,"private-storage-id");assert.equal(w.contextWindow?.memories,1);
  c.memoryStatus="unavailable";c.memories=[];assert.equal(JSON.parse(workflowPrompt(w,c)).memory_status,"unavailable");
 });
+
+
+test("unit repair survives checkpointing and reports the actual outstanding evidence check",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));c.calls=4;
+ const source={paper_id:"fixture-paper",paragraph_id:"p",chunk_id:"result",index_version:c.catalog.indexVersion,section:"Results",start:0,end:29,text:"Reported recall is 61.2 on A."};
+ c.evidence=[source];
+ const output=JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"Reported recall is 61.2% [cite:result]."});
+ assert.equal(advanceWorkflow(w,c,output).status,undefined);
+ const restored=JSON.parse(JSON.stringify(w));const payload=JSON.parse(workflowPrompt(restored,c));
+ assert.deepEqual(payload.citation_repair.claims[0].unit_unconfirmed_values,["61.2%"]);
+ assert.match(payload.instruction,/unit_unconfirmed_values/);
+ assert.deepEqual(payload.evidence.map((e:any)=>e.chunk_id),["result"]);
+ c.calls=6;const outcome=advanceWorkflow(restored,c,output);
+ assert.equal(outcome.status,"waiting_user");assert.equal(restored.execution.stop_reason,"remaining_allowance");
+ assert.ok(restored.execution.remaining_needs.includes("核对回答中的数值、单位及其原文依据"));
+ assert.ok(!restored.execution.remaining_needs.includes("读取当前问题所需的论文原文"));
+ assert.match(outcome.answer!,/该数值依据待核对/);
+});

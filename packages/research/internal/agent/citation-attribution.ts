@@ -5,9 +5,13 @@ export interface ClaimAttribution {
   claim:string;citations:string[];values:string[];unmatched_values:string[];
   assessment:'value_present'|'missing_citation'|'value_not_in_cited_source';
   candidate_sources:Record<string,string[]>;
+  unit_unconfirmed_values:string[];
 }
 const percentagePattern=/\d+(?:,\d{3})*(?:\.\d+)?\s*\\?[%％]/gu;
 const percentages=(text:string)=>[...text.matchAll(percentagePattern)].map(match=>match[0]);
+// A numeric match without a percent unit is diagnostic only, never attribution support.
+const numbersWithoutPercent=(text:string)=>[...text.matchAll(/(?<![\p{L}\p{N}_.+-])[-+]?\d+(?:,\d{3})*(?:\.\d+)?(?![\p{L}\p{N}_]|\.\d)/gu)]
+  .filter(match=>!/^\s*\\?[%％]/u.test(text.slice(match.index+match[0].length))).map(match=>match[0]);
 const numberValue=(text:string)=>Number.parseFloat(text.replace(/[\s,\\]/gu,''));
 const valueKey=(text:string)=>String(numberValue(text));
 const reportedMetric=/准确率|精确率|召回率|错误率|误差率|分类|F1|F-score|实验|结果|提升|提高|降低|达到|achiev|accurac|precision|recall|error rate|improv|result|report/iu;
@@ -57,7 +61,9 @@ export function inspectCitationAttribution(answer:string,evidence:ReadonlyMap<st
         return decimals<=12&&Number(numberValue(found).toFixed(decimals))===numberValue(value);
       })));
       const candidates=Object.fromEntries(unmatched.map(value=>[value,[...evidence].filter(([,source])=>percentages(source.text).some(found=>valueKey(found)===valueKey(value))).map(([id])=>id)]));
-      checks.push({claim:claim.trim(),citations:ids,values,unmatched_values:unmatched,assessment:unmatched.length?ids.length?'value_not_in_cited_source':'missing_citation':'value_present',candidate_sources:candidates});
+      const unconfirmed=new Set(ids.flatMap(id=>numbersWithoutPercent(evidence.get(id)!.text)).map(valueKey));
+      const unit_unconfirmed_values=unmatched.filter(value=>unconfirmed.has(valueKey(value)));
+      checks.push({claim:claim.trim(),citations:ids,values,unmatched_values:unmatched,unit_unconfirmed_values,assessment:unmatched.length?ids.length?'value_not_in_cited_source':'missing_citation':'value_present',candidate_sources:candidates});
       if(!unmatched.length)return claim;
       for(const value of unmatched)issues.push(`metric_source_mismatch:${value}`);
       let visible=claim;
