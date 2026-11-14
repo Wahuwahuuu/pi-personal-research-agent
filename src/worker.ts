@@ -1618,7 +1618,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if (t.workflow) await (await (await this.harness.pi()).conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:!this.proactive.control(t)&&workflowTools(t.workflow,segmentUsage(t).calls).length ? null : [],instructions:this.proactive.control(t)?this.proactive.instruction(t):workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
       const context=t.workflow?this.workflowContext(t):undefined;
       if(context){
-        const recalled=(await this.memoryService(context.conversation.projectId).recall(t.input,context.conversation.scope)).items;context.memories=recalled;
+        const memoryRecall=await this.memoryService(context.conversation.projectId).recall(t.input,context.conversation.scope),recalled=memoryRecall.items;context.memories=recalled;context.memoryStatus=memoryRecall.status;
         const domain=context.conversation.domain;
         recordMemoryInputs(this.state.cloudMemory!,t.id,recalled.map(m=>m.id),[
           ...context.conversation.history.slice(-8).map(h=>h.turn_id),

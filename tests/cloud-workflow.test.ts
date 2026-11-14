@@ -264,3 +264,14 @@ test("grouped citation repair prioritizes exact archived originals without incre
  assert.ok(!prompt.evidence.some((e:any)=>["chunk-17","unknown"].includes(e.chunk_id)));
  assert.ok(Buffer.byteLength(JSON.stringify(prompt.evidence))<=22000);assert.ok(Buffer.byteLength(JSON.stringify(prompt))<=45000);
 });
+
+test("personal memory projection keeps user content without exposing storage identifiers as citation candidates",()=>{
+ const c=setup("Recall our project constraints"),w={...newWorkflow(),automatic:true,cloudOnly:true};
+ const raw={content:"Keep the agreed scope.",kind:"note",edited:true,updated_at:"2026-01-01T00:00:00Z",id:"private-storage-id",slot:"private-storage-slot",source_session:"private-storage-session",source_turn:"private-storage-turn"};
+ c.memories=[raw];c.memoryStatus="ready";
+ const prompt=workflowPrompt(w,c),payload=JSON.parse(prompt);
+ assert.equal(payload.memory[0].content,raw.content);assert.equal(payload.memory[0].user_confirmed,true);assert.equal(payload.memory_status,"ready");
+ for(const value of [raw.id,raw.slot,raw.source_session,raw.source_turn])assert.ok(!prompt.includes(value));
+ assert.equal(raw.id,"private-storage-id");assert.equal(w.contextWindow?.memories,1);
+ c.memoryStatus="unavailable";c.memories=[];assert.equal(JSON.parse(workflowPrompt(w,c)).memory_status,"unavailable");
+});

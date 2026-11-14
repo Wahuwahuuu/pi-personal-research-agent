@@ -63,3 +63,18 @@ test("an interrupted FTS rowid migration rolls back the old search data and sche
  const failing:StateStorage={...p,sql:{exec<T>(query:string,...args:any[]){if(query.startsWith("INSERT INTO pra_memory_fts(rowid,id,tokens) VALUES"))throw Error("INTERRUPTED_FTS_MIGRATION");return p.sql.exec<T>(query,...args);}}};
  assert.throws(()=>new MemoryIndex(failing),/INTERRUPTED_FTS_MIGRATION/);assert.deepEqual(db.prepare("SELECT rowid,id,tokens FROM pra_memory_fts").all(),before);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_memory_index_schema").get()!.n,0);assert.equal(new MemoryIndex(p).page({query:"Legacy"}).items[0].id,a.id);db.close();
 });
+
+test("explicit active project constraints survive lexical mismatch while corrections and scope remain enforced",()=>{
+ const {db,p,index}=setup();
+ const current={...entry("Include records published after 2019.","p","constraint"),kind:"note" as const,edited:true,paper_ids:[]};
+ const other={...current,id:crypto.randomUUID(),projectId:"other",content:"Different project policy."};
+ const inactive={...current,id:crypto.randomUUID(),active:false,content:"Inactive policy."};
+ const inferred={...current,id:crypto.randomUUID(),edited:false,content:"Unconfirmed suggestion."};
+ const scoped={...current,id:crypto.randomUUID(),paper_ids:["excluded"],content:"Different paper policy."};
+ index.sync([current,other,inactive,inferred,scoped]);
+ assert.deepEqual(index.recall("What scope did we agree on?",["a"],"p").map(e=>e.id),[current.id]);
+ assert.deepEqual(index.recall("Hello",["a"],"p",true),[]);
+ const corrected={...current,content:"Use the revised inclusion boundary."};index.sync([corrected,other,inactive,inferred,scoped]);
+ const reopened=new MemoryIndex(p);assert.equal(reopened.recall("What applies?",["a"],"p")[0].content,corrected.content);
+ reopened.sync([other,inactive,inferred,scoped]);assert.deepEqual(reopened.recall("What applies?",["a"],"p"),[]);db.close();
+});

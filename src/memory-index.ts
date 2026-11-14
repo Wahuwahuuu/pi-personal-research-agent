@@ -49,12 +49,13 @@ export class MemoryIndex{
    }
   });this.known=current;
  }
- page(options:{query?:string;projectId?:string;category?:string;after?:number;limit?:number;includeInactive?:boolean;paperIds?:readonly string[]}={}){
+ page(options:{query?:string;projectId?:string;category?:string;after?:number;limit?:number;includeInactive?:boolean;editedOnly?:boolean;paperIds?:readonly string[]}={}){
   const after=options.after??0,limit=options.limit??30;if(!Number.isInteger(after)||after<0||!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
   const terms=memoryTokens(options.query??"").slice(0,40),where:string[]=[],args:unknown[]=[];
   let from="pra_memory_index m",rank="m.edited DESC,m.updated DESC,m.id";
   if(terms.length){from+=" JOIN pra_memory_fts ON pra_memory_fts.id=m.id";where.push("pra_memory_fts MATCH ?");args.push(terms.map(t=>'"'+t.replaceAll('"','""')+'"').join(" OR "));rank="m.edited DESC,bm25(pra_memory_fts),m.updated DESC,m.id";}
   if(!options.includeInactive)where.push("m.active=1");
+  if(options.editedOnly)where.push("m.edited=1");
   if(options.projectId!==undefined){where.push("(m.project='' OR m.project=?)");args.push(options.projectId);}
   if(options.category){where.push("m.category=?");args.push(options.category);}
   if(options.paperIds?.length){where.push("(json_array_length(m.papers)=0 OR EXISTS(SELECT 1 FROM json_each(m.papers) p WHERE p.value IN ("+options.paperIds.map(()=>"?").join(",")+")))");args.push(...options.paperIds);}
@@ -63,9 +64,10 @@ export class MemoryIndex{
  }
  recall(query:string,paperIds:readonly string[],projectId:string,preferencesOnly=false,recent=false){
   const relevant=this.page({query,projectId,paperIds,limit:20}).items;
+  const constraints=preferencesOnly?[]:this.page({projectId,paperIds,category:"constraint",editedOnly:true,limit:8}).items;
   const preferences=this.page({projectId,category:"preference",limit:8}).items;
   const recentItems=recent?this.page({projectId,paperIds,limit:10}).items:[];
-  return [...preferences,...(preferencesOnly?[]:[...relevant,...recentItems])].filter((e,i,a)=>a.findIndex(v=>v.id===e.id)===i).slice(0,20);
+  return [...constraints,...preferences,...(preferencesOnly?[]:[...relevant,...recentItems])].filter((e,i,a)=>a.findIndex(v=>v.id===e.id)===i).slice(0,20);
  }
  revisions(id:string){if(!this.known.has(id))throw new Problem("NOT_FOUND",404);return this.db.sql.exec<{revision:number;changed:number;value:string}>("SELECT * FROM pra_memory_revisions WHERE id=? ORDER BY revision DESC LIMIT 100",id).toArray().map(r=>({revision:r.revision,changed:r.changed,entry:JSON.parse(r.value)}));}
 }

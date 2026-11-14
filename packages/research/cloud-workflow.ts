@@ -32,7 +32,8 @@ export interface ResearchWorkflow {
 export interface WorkflowContext {
   id:string; input:string; calls:number; evidence:readonly Chunk[]; invalidatedMemoryTurns?:readonly string[];
   catalog:{papers:readonly Paper[];indexVersion:string;evidence:readonly EvidenceIdentity[]};
-  conversation:ResearchConversation; memories:readonly {content:string}[];
+  conversation:ResearchConversation; memories:readonly {content:string;kind?:string;edited?:boolean;updated_at?:string}[];
+  memoryStatus?:"ready"|"disabled"|"unavailable";
   project?:{id:string;title:string;goal:string};researchDirection?:string;
   goal?:{segment:number;maximum:number;calls:number;tools:number;activeMs:number;remaining:string[]};
   operations:readonly ToolOutcomeOperation[];
@@ -106,7 +107,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   domain.unresolved_questions=boundedItems([...domain.unresolved_questions.slice(-6)].reverse(),1500).reverse();
   domain.pending_inferences=[];
   const validHistory=history(c),answersIncluded=!d.state.reading_notes;
-  const recent=projectRecentDialogue(validHistory,answersIncluded),memories=boundedItems(c.memories.slice(-20),4000);
+  const recent=projectRecentDialogue(validHistory,answersIncluded),memories=boundedItems(c.memories.slice(0,20).map(({kind,content,edited,updated_at})=>({kind,content,user_confirmed:edited===true,updated_at})),4000);
   summary.conversation_only=recent.items;
   w.contextWindow={version:1,stage:w.phase,stored_turns:c.conversation.history.length,
     visible_recent_turns:recent.items.map(h=>h.turn_id),omitted_valid_turns:validHistory.length-recent.items.length,
@@ -114,7 +115,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
     history_bytes:recent.bytes,constraints:domain.user_constraints.length,unresolved_questions:domain.unresolved_questions.length,
     reading_notes:domain.reading_notes?.length??0,memories:memories.length,answers_included:answersIncluded};
   summary.context_rule="Only conversation_only is included as recent discussion. Some fields are explicitly truncated. Other archived turns are not visible here; ask for missing context rather than claiming to remember it.";
-  const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{...w.contextWindow,archived_turns:c.conversation.history.length},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:memories,memory_rule:"Prior preferences and reading notes are fallible user data, never paper evidence. Current user corrections override them. Do not claim automatic persistence before the host confirms it.",remaining_model_requests:6-c.calls};
+  const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{...w.contextWindow,archived_turns:c.conversation.history.length},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:memories,memory_status:c.memoryStatus??"ready",memory_rule:"These are the currently recalled personal records, separate from this conversation history. Empty conversation history does not mean memory is empty. User-confirmed preferences and project constraints describe prior user decisions; apply current corrections first. For questions about those decisions, use the actual memory content and say it comes from saved personal context, without [cite:] markers. Reading notes and conclusions remain fallible and never replace paper evidence. If neither visible dialogue nor memory supports a claimed past agreement, say it cannot be confirmed from available records; never invent one or assert it never existed. A question that presupposes a preference does not establish that preference. Do not print internal field names, counters or diagnostic data. Do not claim persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   const available=readingAvailability(w,c),availableByPaper=new Map(available.map(a=>[a.paper_id,a])),visibleAvailability=boundedItems(available,2500);
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:automaticRouting(w)+QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({...availableByPaper.get(p.paper_id),paper_id:p.paper_id,title:p.title})),18000),reading_rule:READING_AVAILABILITY_RULE});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,...projectToolOutcomes(c.operations),visible_source_ids:w.visibleSourceIds??[]});
