@@ -46,11 +46,12 @@ export function answerPreview(text:string):string{
   const start=i++;let escape=false;
   for(;i<value.length;i++){if(escape)escape=false;else if(value[i]==="\\")escape=true;else if(value[i]===String.fromCharCode(34))break;}
   if(i>=value.length)return "";
-  const field=JSON.parse(value.slice(start,i+1));let cursor=i+1;while(/\s/.test(value[cursor]??"!") )cursor++;
+  let field:string;try{field=JSON.parse(value.slice(start,i+1));}catch{return "";}
+  let cursor=i+1;while(/\s/.test(value[cursor]??"!") )cursor++;
   if(depth!==1||field!=="answer"||value[cursor]!==":")continue;
   cursor++;while(/\s/.test(value[cursor]??"!"))cursor++;if(value[cursor]!==String.fromCharCode(34))return "";
   const from=cursor++;escape=false;
-  for(;cursor<value.length;cursor++){if(escape)escape=false;else if(value[cursor]==="\\")escape=true;else if(value[cursor]===String.fromCharCode(34))return JSON.parse(value.slice(from,cursor+1));}
+  for(;cursor<value.length;cursor++){if(escape)escape=false;else if(value[cursor]==="\\")escape=true;else if(value[cursor]===String.fromCharCode(34)){try{return JSON.parse(value.slice(from,cursor+1));}catch{return "";}}}
   let tail=value.slice(from+1);tail=tail.replace(/\\(?:u[0-9a-fA-F]{0,3})?$/,"");
   try{return JSON.parse(String.fromCharCode(34)+tail+String.fromCharCode(34));}catch{return "";}
  }
