@@ -327,3 +327,38 @@ test("configured system contract is not duplicated in the managed agent prompt a
  const managed=JSON.parse(workflowPrompt(w,c,undefined,{systemInstructionProvided:true}));assert.equal(managed.instruction,undefined);assert.equal(managed.request,c.input);assert.equal(managed.answer_contract,independent.answer_contract);
  c.input='🧪'.repeat(12000);assert.throws(()=>workflowPrompt(w,c,undefined,{systemInstructionProvided:true}),/CONTEXT_LIMIT/);assert.equal(c.calls,2);
 });
+
+test("newlines in a complete answer envelope retain execution state at the last request", () => {
+  const c = setup(), w = newWorkflow();
+  advanceWorkflow(w, c, prepared());
+  c.calls = 6;
+  c.evidence = [{
+    paper_id: "fixture-paper", chunk_id: "source-a", paragraph_id: "p",
+    section: "Methods", text: "The method uses paired observations.", start: 0, end: 36,
+    index_version: catalog.indexVersion, citation: "[cite:source-a]", truncated: false,
+  }];
+  const response = [
+    '{"execution":{"state":"complete","remaining_needs":[]},"answer":"A method description.',
+    'It uses paired observations [cite:source-a]."}',
+  ].join("\n");
+  const outcome = advanceWorkflow(w, c, response);
+  assert.equal(outcome.status, "completed");
+  assert.equal(w.execution?.origin, "model");
+  assert.match(outcome.answer!, /description\.\nIt uses/);
+  assert.equal(c.calls, 6);
+});
+
+test("recovering an execution envelope still validates its shape and citations", async () => {
+  const {executionFromOutput} = await import("../packages/research/internal/agent/turn-execution.ts");
+  const metadata = '{"state":"complete","remaining_needs":[]}';
+  const multiline = '{"execution":' + metadata + ',"answer":"Line one\nLine two"}';
+  assert.equal(executionFromOutput("```json\n" + multiline + "\n```")?.state, "complete");
+  assert.equal(executionFromOutput(multiline.slice(0, -1)), undefined);
+  assert.equal(executionFromOutput("Quoted example: " + multiline), undefined);
+  assert.equal(executionFromOutput('{"execution":{"state":"working","state":"complete"},"answer":"example"}'), undefined);
+  assert.equal(executionFromOutput('{"execution":"invalid","answer":"text\ncontinued"}'), undefined);
+  const c = setup(), w = newWorkflow();
+  advanceWorkflow(w, c, prepared());
+  c.calls = 6;
+  assert.equal(advanceWorkflow(w, c, multiline).status, "waiting_user");
+});

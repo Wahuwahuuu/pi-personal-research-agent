@@ -2,13 +2,12 @@ import type {Chunk,Paper} from './contracts.ts';
 import type {AnswerKind,BusinessStatus,FinalAnswer} from './final-answer.ts';
 import type {PaperCoverage} from './selected-scope.ts';
 import {citationIds} from './p2-r2.ts';
-import {decodeCandidateJSON} from './main-reliability-v2.ts';
+import {decodeCandidateJSON,MAX_ANSWER_CHARACTERS} from './candidate-json.ts';
 import {inspectCitationAttribution,type ClaimAttribution} from './citation-attribution.ts';
 import {executionFromOutput,type TurnExecution} from './turn-execution.ts';
 import {splitAnswerControl,displayPaperTitles} from '../web/answer-format.js';
 
 export const WORKBENCH_ANSWER_POLICY='workbench-v1' as const;
-const OUTPUT_LIMIT=256_000;
 export const WORKBENCH_ANSWER_INSTRUCTION=`Answer the complete original user question naturally, using readable Markdown. Ordinary prose is valid; an optional JSON envelope may use status, answer_kind, answer, exact_quotes and paper_coverage. Missing auxiliary fields or formatting must not prevent a useful answer.
 For research findings, use only the actual visible paper excerpts and copy their exact [cite:chunk_id] markers. Never invent a source, equate retrieval with correctness, or attach an unrelated excerpt to a claim. Distinguish supported findings, interpretation, and evidence gaps. If only part can be answered, answer that part and state what remains unknown. No need to turn every gap into a refusal.
 Place citations next to the factual statement or within its paragraph, especially experimental numbers. A citation to a methods paragraph cannot support an accuracy found only in a catalog preview. For original abstracts, read retrieve_chunks section=abstract before explaining results. Explicitly distinguish paper-reported numbers from your own calculations and examples. Preserve the source units and comparison conditions (datasets, splits, evidence availability and question sets); do not add a percent sign to a bare number unless the source establishes that unit. Different evaluation conditions must not be presented as a controlled comparison. In citation repair, unit_unconfirmed_values means the same number occurs in a cited excerpt without a verified percent unit; it does not verify the metric or its meaning. Re-read the cited text, preserve its original notation and qualifiers, or state the actual gap. A matching number in another source does not justify transferring the citation.
@@ -58,7 +57,7 @@ function bodyFrom(output:string,adaptations:string[]):{raw:Record<string,unknown
   const parts=splitAnswerControl(output);
   if(parts.body!==output&&parts.control){adaptations.push('answer_control_separated');return {raw:parts.control,body:parts.body};}
   try{
-    let value:unknown=JSON.parse(decodeCandidateJSON(output,kind=>adaptations.push(kind),OUTPUT_LIMIT));
+    let value:unknown=JSON.parse(decodeCandidateJSON(output,kind=>adaptations.push(kind),MAX_ANSWER_CHARACTERS));
     if(record(value)){
       if(record(value.final_answer)){value=value.final_answer;adaptations.push('answer_wrapper_removed');}
       if(record(value)&&typeof value.answer==='string')return {raw:value,body:value.answer};
@@ -102,7 +101,7 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
   const adaptations:string[]=[],notices:string[]=[],citationIssues:string[]=[];
   const parsed=bodyFrom(output,adaptations);if(!parsed||!parsed.body.trim())return null;
   const raw=parsed.raw;let body=displayPaperTitles(parsed.body,context.papers),limited=false;
-  if(Array.from(body).length>OUTPUT_LIMIT){body=Array.from(body).slice(0,OUTPUT_LIMIT).join('');limited=true;notices.push('内容较长，当前保留已生成的前半部分');adaptations.push('visible_answer_size_bounded');}
+  if(Array.from(body).length>MAX_ANSWER_CHARACTERS){body=Array.from(body).slice(0,MAX_ANSWER_CHARACTERS).join('');limited=true;notices.push('内容较长，当前保留已生成的前半部分');adaptations.push('visible_answer_size_bounded');}
   if(context.truncated){limited=true;notices.push('回答达到本次输出长度上限，已保留生成内容，可继续追问');adaptations.push('truncated_answer_preserved');}
   const declared=raw.answer_kind;
   const kind:AnswerKind=context.expectedKind??(['paper_fact','catalog','session_control'].includes(String(declared))?declared as AnswerKind:'paper_fact');
