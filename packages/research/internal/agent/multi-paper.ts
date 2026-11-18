@@ -36,6 +36,7 @@ export class MultiPaperComparison {
   stopReason:string|null=null;
   private cells:ComparisonCell[]=[];
   private evidence=new Map<string,Chunk>();
+  private retrievalBatches:string[][]=[];
   private fingerprints=new Map<string,string>();
   private aliases=new Map<string,string>();
   private attempted=new Set<string>();
@@ -54,13 +55,17 @@ export class MultiPaperComparison {
   observe(papers:readonly string[],chunks:readonly Chunk[],failed=false){
     for(const paper of papers)if(this.papers.includes(paper))this.attempted.add(paper);
     let added=0;
+    const batch:string[]=[];
     for(const chunk of chunks){
       if(!this.papers.includes(chunk.paper_id))continue;
       const fingerprint=JSON.stringify([chunk.paper_id,createHash('sha256').update(chunk.text.trim().replace(/\s+/gu,' ')).digest('hex')]);
       const existing=this.fingerprints.get(fingerprint);
-      if(this.evidence.has(chunk.chunk_id)||existing){this.duplicateChunks++;this.aliases.set(chunk.chunk_id,existing??chunk.chunk_id);continue;}
+      const canonicalId=existing??chunk.chunk_id;
+      batch.push(canonicalId);
+      if(this.evidence.has(chunk.chunk_id)||existing){this.duplicateChunks++;this.aliases.set(chunk.chunk_id,canonicalId);continue;}
       this.evidence.set(chunk.chunk_id,structuredClone(chunk));this.fingerprints.set(fingerprint,chunk.chunk_id);this.aliases.set(chunk.chunk_id,chunk.chunk_id);added++;
     }
+    if(batch.length)this.retrievalBatches.push(batch);
     if(added)this.revision++;
     if(failed)for(const cell of this.cells)if(papers.includes(cell.paper_id)&&cell.status==='pending'){cell.status='missing';cell.summary='本次检索未成功，仍缺少相关原文';}
   }
@@ -96,10 +101,14 @@ export class MultiPaperComparison {
     });
   }
   /** Interleave new passages and confirmed citations while keeping whole sources and fair paper coverage. */
-  window(maxCharacters:number):Chunk[]{
+  window(maxCharacters:number,order:"recent"|"retrieval_rank"="recent"):Chunk[]{
     const priority=new Set(this.cells.flatMap(cell=>cell.citations));
+    // A follow-up search comes first, while each result keeps the retriever's own ranking.
+    const sources=order==="retrieval_rank"
+      ? [...new Set([...this.retrievalBatches].reverse().flat())].map(id=>this.evidence.get(id)!)
+      : [...this.evidence.values()].reverse();
     const groups=this.papers.map(paper=>{
-      const recent=[...this.evidence.values()].filter(chunk=>chunk.paper_id===paper).reverse(),confirmed=recent.filter(chunk=>priority.has(chunk.chunk_id)),ordered=new Map<string,Chunk>();
+      const recent=sources.filter(chunk=>chunk.paper_id===paper),confirmed=recent.filter(chunk=>priority.has(chunk.chunk_id)),ordered=new Map<string,Chunk>();
       for(let i=0;i<recent.length;i++)for(const chunk of [recent[i],confirmed[i]])if(chunk)ordered.set(chunk.chunk_id,chunk);
       return [...ordered.values()];
     });

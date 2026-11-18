@@ -510,3 +510,36 @@ test("automatic routing keeps ungrounded discovery rewrites out of cloud-only co
  advanceWorkflow(research,explicit,prepared("find_papers"));
  assert.equal(research.prepared?.frame.intent,"paper_discovery");
 });
+
+test("comparison projects each retrieval in rank order and identifies its paper after a restart", () => {
+ const c=setup("Compare Paper A and Paper B"), w=newWorkflow();
+ c.catalog={...catalog,papers:[{paper_id:"a",title:"Paper A",abstract:""},{paper_id:"b",title:"Paper B",abstract:""}]};
+ advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["Method"]}));
+ const chunk=(paper:string,id:string)=>{
+   const text=id+" evidence. ".repeat(135);
+   return {paper_id:paper,chunk_id:id,paragraph_id:id,section:"Results",text,start:0,end:text.length,
+     index_version:"fixture-v1",citation:"[cite:"+id+"]",truncated:false};
+ };
+ const a=Array.from({length:9},(_,i)=>chunk("a","a"+i)), b=Array.from({length:9},(_,i)=>chunk("b","b"+i));
+ const supplemental=chunk("b","new"), legacy=chunk("a","archived");
+ c.evidence=[legacy,...a,...b,supplemental];
+ const operation=(paper:string,query:string,chunks:typeof a)=>({tool:"retrieve_chunks",state:"done",params:{paper_ids:[paper],query},result:{chunks}});
+ c.operations=[{tool:"retrieve_chunks",state:"done",params:{paper_ids:["a"],query:"archive"}},
+   operation("a","initial A",a),operation("b","initial B",b),operation("b","supplement",[supplemental,b[0],b[1]]),operation("a","empty",[])];
+ const restored=structuredClone(w);restored.phase="comparison";
+ const prompt=JSON.parse(workflowPrompt(restored,c)), visible=prompt.evidence.map((s:{chunk_id:string})=>s.chunk_id);
+ assert.deepEqual(prompt.comparison_papers,[{paper_id:"a",title:"Paper A"},{paper_id:"b",title:"Paper B"}]);
+ assert.deepEqual(visible.slice(0,6),["a0","new","a1","b0","a2","b1"]);
+ assert.equal(visible.length,new Set(visible).size);
+ assert.equal(prompt.workspace.duplicate_chunks,2);
+ assert.equal(prompt.workspace.unique_chunks,c.evidence.length);
+ assert.ok(visible.length<c.evidence.length);
+ advanceWorkflow(restored,c,JSON.stringify({cells:[{paper_id:"a",dimension:"Method",status:"supported",summary:"A method",citations:["a2"]},{paper_id:"b",dimension:"Method",status:"supported",summary:"Wrong paper",citations:["a0"]}]}));
+ assert.equal(restored.comparison?.cells[1].status,"missing");
+ const final=JSON.parse(workflowPrompt(restored,c));const answers=final.evidence.map((s:{chunk_id:string})=>s.chunk_id);
+ assert.deepEqual(answers.slice(0,4),["a0","new","a2","b0"]);
+ assert.ok(answers.includes("a2"));
+ c.operations=[{tool:"retrieve_chunks",state:"done",params:{paper_ids:["a","b"],query:"older record"}}];
+ restored.phase="comparison";
+ assert.equal(JSON.parse(workflowPrompt(restored,c)).workspace.unique_chunks,c.evidence.length);
+});

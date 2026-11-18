@@ -65,10 +65,28 @@ const nonFactual=(w:ResearchWorkflow)=>w.cloudOnly||["session_control","paper_di
 function comparison(w:ResearchWorkflow,c:WorkflowContext){
   if(targets(w).length<2)return;
   const m=new MultiPaperComparison(c.input,targets(w),{requests:6,retrievals:10,searches:2,checks:1},w.prepared?.frame.comparison_dimensions.length?w.prepared.frame.comparison_dimensions:["用户要求的比较内容"]);
-  for(const op of c.operations.filter(o=>o.tool==="retrieve_chunks")){
+  const byId=new Map(c.evidence.map(source=>[source.chunk_id,source]));
+  const unassigned=new Map(byId);
+  const retrievals=c.operations.filter(op=>op.tool==="retrieve_chunks").map(op=>{
     const ids=Array.isArray(op.params.paper_ids)?op.params.paper_ids as string[]:[];
+    const rows=(op.result as {chunks?:unknown}|undefined)?.chunks;
+    const chunks:Chunk[]=[];
+    if(op.state==="done"&&Array.isArray(rows)){
+      for(const row of rows){
+        const source=byId.get(row?.chunk_id);
+        if(!source||source.paper_id!==row.paper_id||!ids.includes(source.paper_id))continue;
+        chunks.push(source);
+        unassigned.delete(source.chunk_id);
+      }
+    }
+    return {op,ids,chunks};
+  });
+  // Old task records can contain validated passages without the original per-call results.
+  // Keep their previous recency order behind known retrievals without attributing them to each call.
+  if(unassigned.size)m.observe([], [...unassigned.values()].reverse());
+  for(const {op,ids,chunks} of retrievals){
     m.claimQuery(String(op.params.query??""),ids,op.params);
-    if(op.state==="done")m.observe(ids,c.evidence.filter(e=>ids.includes(e.paper_id)));
+    if(op.state==="done")m.observe(ids,chunks);
   }
   if(w.comparison){m.applyCheck(w.comparison,new Map(c.evidence.map(e=>[e.chunk_id,e])));}
   return m;
@@ -145,8 +163,13 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,...projectToolOutcomes(c.operations),visible_source_ids:w.visibleSourceIds??[]});
   const m=comparison(w,c);
   if(w.phase==="comparison"){
-    const evidence=boundedItems(m?.window(18000)??[],18000);w.visibleSourceIds=evidence.map(e=>e.chunk_id);
-    return JSON.stringify({stage:"comparison",instruction:COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension EXACTLY from response_template. Do not rename or split dimensions. Assess only the full user request, without adding unrelated experimental details or limitations.",...shared,workspace:m?.report(),response_template:{cells:m!.report().cells.map(cell=>({paper_id:cell.paper_id,dimension:cell.dimension,status:"supported|partial|missing",summary:"finding or actual gap",citations:[]}))},evidence});
+    const evidence=boundedItems(m?.window(18000,"retrieval_rank")??[],18000);w.visibleSourceIds=evidence.map(e=>e.chunk_id);
+    const comparison_papers=m!.papers.map(paper_id=>{
+      const title=c.catalog.papers.find(p=>p.paper_id===paper_id)?.title??paper_id;
+      const characters=Array.from(title);
+      return {paper_id,title:characters.length>200?characters.slice(0,199).join("")+"…":title};
+    });
+    return JSON.stringify({stage:"comparison",comparison_papers,instruction:COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension EXACTLY from response_template. Do not rename or split dimensions. Assess only the full user request, without adding unrelated experimental details or limitations.",...shared,workspace:m?.report(),response_template:{cells:m!.report().cells.map(cell=>({paper_id:cell.paper_id,dimension:cell.dimension,status:"supported|partial|missing",summary:"finding or actual gap",citations:[]}))},evidence});
   }
   progress(w,c);
   // Results remain complete in durable storage. The model sees each whole source at most once.
@@ -156,7 +179,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
     ...(c.calls>=5?{final_instruction:w.answerRepairPending?"No allowance remains for tools or a separate completion check. Give the supported answer and actual gaps as plain Markdown; do not add JSON metadata.":"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
-  const ordered=m?m.window(30000):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
+  const ordered=m?m.window(30000,"retrieval_rank"):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
   // Present the originals as possible sources. Only the model can select a citation for its claim.
   const firstCandidates = new Set<string>();
   const candidates = new Map<string, {values:Set<string>; lists:string[][]}>();
