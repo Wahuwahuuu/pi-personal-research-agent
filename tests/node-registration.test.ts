@@ -52,29 +52,43 @@ test("a real node stays offline on a catalog conflict, then accepts a manual reg
     });
   });
   await writeFile(config, JSON.stringify({endpoint: "http://127.0.0.1:" + (server.address() as AddressInfo).port, fixture: true, proxy: "", port, dataDir: dir}));
+  const launchTime = Date.now();
   const child = spawn(process.execPath, [resolve("local/node.ts"), config], {windowsHide: true, stdio: "ignore", env: {...process.env, PRA_LOCAL_TOKEN: token, PRA_DEVICE_TOKEN: randomUUID() + randomUUID()}});
   const base = "http://127.0.0.1:" + port + "/local/", headers = {Authorization: "Bearer " + token};
-  type LocalStatus = {ready: boolean; connected: boolean; error: string; phase: string};
+  type LocalStatus = {
+    ready: boolean; connected: boolean; error: string; phase: string;
+    startup: {startedAtMs: number; firstCloudHelloMs: number | null; firstCatalogAckMs: number | null; firstReadySentMs: number | null};
+  };
   async function waitFor(predicate: (state: LocalStatus) => boolean) {
     const end = Date.now() + 5000;
     while (Date.now() < end) {
       const state = await fetch(base + "status", {headers}).then(r => r.json() as Promise<LocalStatus>).catch(() => undefined);
-      if (state && predicate(state)) return;
+      if (state && predicate(state)) return state;
       await new Promise(done => setTimeout(done, 25));
     }
     assert.fail("expected local node state was never observed");
   }
   try {
-    await waitFor(s => s.phase === "registration_blocked" && s.error === "CATALOG_VERSION_CONFLICT" && !s.ready && !s.connected);
+    const blocked = await waitFor(s => s.phase === "registration_blocked" && s.error === "CATALOG_VERSION_CONFLICT" && !s.ready && !s.connected);
+    assert.ok(blocked.startup.startedAtMs >= launchTime - 5 && blocked.startup.startedAtMs <= Date.now());
+    assert.ok(Number.isSafeInteger(blocked.startup.firstCloudHelloMs));
+    assert.equal(blocked.startup.firstCatalogAckMs, null);
+    assert.equal(blocked.startup.firstReadySentMs, null);
     await new Promise(done => setTimeout(done, 1150));
     assert.equal(connections, 1);
     release = true;
     assert.equal((await fetch(base + "control", {method: "POST", headers, body: JSON.stringify({action: "reconnect"})})).status, 200);
-    await waitFor(s => s.connected && s.ready && s.error === "");
+    const first = await waitFor(s => s.connected && s.ready && s.error === "");
+    assert.equal(first.startup.startedAtMs, blocked.startup.startedAtMs);
+    assert.equal(first.startup.firstCloudHelloMs, blocked.startup.firstCloudHelloMs);
+    assert.ok(first.startup.firstCatalogAckMs! >= first.startup.firstCloudHelloMs!);
+    assert.ok(first.startup.firstReadySentMs! >= first.startup.firstCatalogAckMs!);
+    assert.ok(first.startup.startedAtMs + first.startup.firstReadySentMs! <= Date.now() + 5);
     assert.equal(connections, 2);
     current!.close(1012);
     await waitFor(s => !s.ready && !s.connected && s.phase === "reconnecting");
-    await waitFor(s => s.ready && s.connected);
+    const again = await waitFor(s => s.ready && s.connected);
+    assert.deepEqual(again.startup, first.startup);
     assert.deepEqual({connections, confirms, uploads}, {connections:3, confirms:2, uploads:2});
   } finally {
     if (child.exitCode === null) {

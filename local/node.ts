@@ -35,6 +35,12 @@ interface Config {
   libraryPython?:string;
   localSecretFile?:string;
 }
+const startup = {
+  startedAtMs: Math.round(performance.timeOrigin),
+  firstCloudHelloMs: null as number | null,
+  firstCatalogAckMs: null as number | null,
+  firstReadySentMs: null as number | null,
+};
 const application=await applicationIdentity();
 const configPath = resolve(process.argv[2] ?? ".local/node.json");
 const config = JSON.parse(await readFile(configPath, "utf8")) as Config;
@@ -367,6 +373,7 @@ function connect() {
         try { bindNodeAccount(db, m.accountScope); }
         catch { registrationFailed("ACCOUNT_DATA_DIRECTORY_MISMATCH", true); return; }
         acceptedHello = true;
+        startup.firstCloudHelloMs ??= Math.round(performance.now());
         if (m.catalogMatch === offeredTransfer.digest) {
           expectAck(30_000);
           send({type: "catalog_confirm", indexVersion: offeredVersion, digest: offeredTransfer.digest});
@@ -380,6 +387,7 @@ function connect() {
         }
         if (catalogAcknowledged) return;
         catalogAcknowledged = true;
+        startup.firstCatalogAckMs ??= Math.round(performance.now());
         registeredAt = Date.now();
         registrationError = "";
         clearTimeout(deadline);
@@ -480,6 +488,7 @@ async function announceReady(){
   if(socket===ws&&ws.readyState===WebSocket.OPEN&&catalogAcknowledged&&!paused&&!building&&!active){
    if(lastLocalError==="MODEL_LOADING_FAILED")lastLocalError="";
    announcedReady=true;send({type:"ready",phase:catalog.papers.length?"ready":"empty"});
+   startup.firstReadySentMs ??= Math.round(performance.now());
   }
  }catch{if(socket===ws){lastLocalError="MODEL_LOADING_FAILED";ws.terminate();}}
  finally{
@@ -534,7 +543,7 @@ localHandler=async(req,res)=>{
    const ready=connected&&catalogAcknowledged&&announcedReady;
    const phase=registrationBlocked?"registration_blocked":paused?"paused":building?"indexing":active?"reading":
     !connected?"reconnecting":!catalogAcknowledged?"registering":ready?(catalog.papers.length?"ready":"empty"):"loading";
-   reply({instanceId:controlKey(configPath),application,connected,ready,paused,phase,error:registrationError||lastLocalError,indexVersion,imports:currentImports,libraryEnabled:!!library});return true;
+   reply({instanceId:controlKey(configPath),application,startup,connected,ready,paused,phase,error:registrationError||lastLocalError,indexVersion,imports:currentImports,libraryEnabled:!!library});return true;
   }
   if(req.method==="GET"&&path==="/local/library"){
    const params=new URL(req.url!,"http://127.0.0.1").searchParams;

@@ -48,10 +48,17 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(LocalError):controller.import_arxiv("../../private")
             with self.assertRaises(LocalError):controller.import_arxiv("2401.00001")
             state={"ok":True,"connected":True,"ready":True,"phase":"ready","indexVersion":"test-index","secret":"hidden","path":"private","imports":[{"status":"failed","title":"private title","payload":"private"}]}
+            state["startup"]={"startedAtMs":123456789, "firstCloudHelloMs":280, "firstCatalogAckMs":440, "firstReadySentMs":None, "extra":"private path"}
             with patch.object(controller,"status",return_value=state):
+                self.assertEqual(controller.diagnostics()["startupDurationsMs"], {"firstCloudHelloMs":280,"firstCatalogAckMs":440,"firstReadySentMs":None})
                 exported=json.dumps(controller.diagnostics())
+                self.assertNotIn("123456789",exported)
                 self.assertNotIn("hidden",exported);self.assertNotIn("private",exported)
                 self.assertEqual(controller.diagnostics()["importStates"]["failed"],1)
+                state["startup"]={"firstCloudHelloMs":True,"firstCatalogAckMs":"private","firstReadySentMs":-1}
+                self.assertTrue(all(ms is None for ms in controller.diagnostics()["startupDurationsMs"].values()))
+                del state["startup"]
+                self.assertTrue(all(ms is None for ms in controller.diagnostics()["startupDurationsMs"].values()))
     def test_private_reader_fetch_uses_only_registered_identity_not_a_filesystem_path(self):
         with tempfile.TemporaryDirectory() as temp:
             path=Path(temp)/"node.json";path.write_text(json.dumps({"endpoint":"https://cloud.example","dataDir":temp}),encoding="utf8")

@@ -195,12 +195,18 @@ class Controller:
         return self.request("reader/result",{"id":identifier,"opened":bool(opened)})
     def diagnostics(self):
         state=self.status()
+        startup=state.get("startup")
+        if not isinstance(startup,dict):startup={}
+        durations={}
+        for key in ("firstCloudHelloMs","firstCatalogAckMs","firstReadySentMs"):
+            value=startup.get(key)
+            durations[key]=value if type(value) is int and 0 <= value <= (2**53-1) else None
         application=state.get("application")
         build=application.get("build") if isinstance(application,dict) else None
         if not isinstance(build,str) or not re.fullmatch(r"[a-f0-9]{40}|development",build):build=None
         return {"protocol":1,"connected":bool(state.get("connected")),"ready":bool(state.get("ready")),
                 "paused":bool(state.get("paused")),"phase":state.get("phase"),"error":state.get("error"),
-                "applicationBuild":build,
+                "applicationBuild":build,"startupDurationsMs":durations,
                 "indexVersion":state.get("indexVersion"),"libraryEnabled":bool(state.get("libraryEnabled")),
                 "importStates":{status:sum(j.get("status")==status for j in state.get("imports",[])) for status in
                                 ("queued","acquiring","parsing","indexing","validating","published","failed","cancelled")}}
