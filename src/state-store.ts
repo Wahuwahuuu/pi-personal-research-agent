@@ -1,3 +1,4 @@
+import {Buffer} from "node:buffer";
 import {bindDialogueStorage, recentResearchDialogue, RESEARCH_HISTORY_TURNS, type ResearchDialogue} from "../packages/research/context-window.ts";
 import {memoryView} from "./memory-view.ts";
 import {bindTaskQueries,closedTask,matchesTaskPage,taskPageOrder,type TaskPageQuery} from "./task-queries.ts";
@@ -279,7 +280,9 @@ export class StateRepository {
     for (const row of this.storage.sql.exec<{ id: string; value: string }>("SELECT id,value FROM pra_meta").toArray()) state[row.id] = parse(row.value);
     const all = (name: Collection) => {
       if(lazy&&isLazyCollection(name)){
-        const rows=this.storage.sql.exec<{id:string;parent:string;position:number;header?:string}>("SELECT id,parent,position"+(name==="memory_entries"?",header":"")+" FROM "+table(name)+" ORDER BY position,id").toArray();
+        const rows=this.storage.sql.exec<{id:string;parent:string;position:number;header?:string}>("SELECT id,parent,position"+(name==="memory_entries"?",header":"")+" FROM "+table(name)).toArray();
+        // These rows are already needed in memory. Preserve SQLite's BINARY tie order without a temporary table.
+        rows.sort((a,b)=>a.position-b.position || Buffer.compare(Buffer.from(a.id),Buffer.from(b.id)));
         this.positions.set(name,new Map(rows.map(row=>[row.id,row.position])));
         return rows.map(row=>this.attachEntity(name,row));
       }

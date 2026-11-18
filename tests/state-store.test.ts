@@ -267,6 +267,33 @@ test("old contiguous entity positions do not migrate eagerly and rebalance only 
  assert.equal(cold.save(loaded).writes,1);f.db.close();
 });
 
+test("cold entity recovery preserves SQLite position and binary ID order without a temporary sort", () => {
+ const f=fixture(), store=new StateRepository(f.storage), state=store.load();
+ const ids=["🧪","中","Z","é","e\u0301","\u{10000}","\ue000"];
+ const template=submit(state,"sample","seed","chat");
+ state.tasks=ids.map(id=>({...template,id,requestId:"request-"+id}));
+ state.operations=ids.map(id=>({id,taskId:id,tool:"search_papers",indexVersion:"v",state:"done",deadline:0,params:{query:"sample"}}));
+ state.cloudMemory={enabled:true,deletedSlots:[],entries:ids.map(id=>({id,kind:"note",content:"sample",paper_ids:[],source_session:"c",source_turn:id,created_at:"2025-01-01",updated_at:"2025-01-01",slot:id,edited:false}))};
+ store.save(state);
+ const names=["tasks","operations","memory_entries"] as const;
+ const ordered=new Map<string,string[]>();
+ for(const name of names){
+  const table="pra_data_"+name;
+  f.db.prepare("UPDATE "+table+" SET position=CASE id WHEN '中' THEN -1 ELSE 7 END").run();
+  ordered.set(name,f.db.prepare("SELECT id FROM "+table+" ORDER BY position,id").all().map(r=>String(r.id)));
+ }
+ f.queries.length=0;
+ const cold=new StateRepository(f.storage).load();
+ for(const [name,rows] of [["tasks",cold.tasks],["operations",cold.operations],["memory_entries",cold.cloudMemory!.entries]] as const){
+  assert.deepEqual(rows.map(row=>row.id),ordered.get(name));
+  const projection=f.queries.find(q=>q.sql.startsWith("SELECT id,parent,position")&&q.sql.includes(" FROM pra_data_"+name)&&!q.sql.includes(" WHERE "));
+  assert.ok(projection);
+  const plan=f.db.prepare("EXPLAIN QUERY PLAN "+projection.sql).all();
+  assert.ok(plan.every(row=>!String(row.detail).includes("TEMP B-TREE")),name+" should be read in a single scan");
+ }
+ f.db.close();
+});
+
 const payloadReads=(f:ReturnType<typeof fixture>,name:"tasks"|"operations")=>f.queries.filter(q=>new RegExp("^SELECT (?:id,parent,position,value|\\*) FROM pra_data_"+name).test(q.sql)).reduce((sum,q)=>sum+q.rows,0);
 test("1000 archived tasks and operations stay unhydrated until a page or individual result is read",()=>{
  const f=fixture(),store=new StateRepository(f.storage),s=store.load();
