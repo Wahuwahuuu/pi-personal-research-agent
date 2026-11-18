@@ -58,7 +58,13 @@ export class Workspace {
   const p=this.getProject(id);
   if(input.title!==undefined)p.title=text(input.title,100);
   if(input.goal!==undefined){if(typeof input.goal!=="string"||input.goal.length>4000)throw new Problem("INVALID_GOAL");p.goal=input.goal.trim();}
-  if(input.paperIds!==undefined)p.paperIds=projectPaperIds(input.paperIds);
+  if(input.paperIds!==undefined){
+   if(input.expectedPaperIds!==undefined){
+    const expected=projectPaperIds(input.expectedPaperIds);
+    if(expected.length!==p.paperIds.length||expected.some((id,i)=>id!==p.paperIds[i]))throw new Problem("PROJECT_SCOPE_CHANGED",409);
+   }
+   p.paperIds=projectPaperIds(input.paperIds);
+  }
   for(const key of ["pinned","archived"] as const)if(input[key]!==undefined){if(typeof input[key]!=="boolean")throw new Problem("INVALID_SETTING");p[key]=input[key];}
   p.updated=Date.now();this.db.sql.exec("UPDATE pra_projects SET title=?,goal=?,papers=?,pinned=?,archived=?,updated=? WHERE id=?",p.title,p.goal,JSON.stringify(p.paperIds),Number(p.pinned),Number(p.archived),p.updated,id);return p;
  }

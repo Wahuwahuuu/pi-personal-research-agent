@@ -54,3 +54,18 @@ test("project creation preserves the supplied paper scope before any conversatio
  }
  db.close();
 });
+
+test("paper scope changes compare the original scope while allowing unrelated edits and identical request replays",()=>{
+ const {db,workspace:w}=setup();
+ try{
+  const p=w.createProject({title:"Research",paperIds:["a","b"]});
+  w.updateProject(p.id,{title:"Revised research"});
+  const patch={paperIds:["a","c"],expectedPaperIds:["a","b"]},save=()=>w.once("paper-edit","project:"+p.id,patch,()=>w.updateProject(p.id,patch));
+  assert.deepEqual(save().paperIds,["a","c"]);
+  assert.throws(()=>w.updateProject(p.id,{title:"Stale title",paperIds:[],expectedPaperIds:["a","b"]}),/PROJECT_SCOPE_CHANGED/);
+  assert.deepEqual(w.getProject(p.id).paperIds,["a","c"]);assert.equal(w.getProject(p.id).title,"Revised research");
+  assert.throws(()=>w.updateProject(p.id,{paperIds:[],expectedPaperIds:42}),/INVALID_PAPERS/);
+  w.updateProject(p.id,{paperIds:["c"]});assert.deepEqual(save().paperIds,["a","c"]);assert.deepEqual(w.getProject(p.id).paperIds,["c"]);
+  assert.deepEqual(w.updateProject(p.id,{paperIds:[],expectedPaperIds:["c"]}).paperIds,[]);
+ }finally{db.close();}
+});

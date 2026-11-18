@@ -1,3 +1,4 @@
+import {verifyProjectScope} from "./project-scope-browser.ts";
 import {verifyProjectRecords} from "./project-records-browser.ts";
 import {verifyProjectDiscussions} from "./project-discussions-browser.ts";
 import {verifyRetentionBrowser} from "./retention-browser.ts";
@@ -219,6 +220,7 @@ try {
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...await verifyProjectDiscussions(base,page,api,screenshot));
+    checks.push(...await verifyProjectScope(base,page,api));
   }else if(process.env.PRA_BROWSER_SCOPE==="changes"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});

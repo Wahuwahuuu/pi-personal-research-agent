@@ -4,7 +4,7 @@ import {deviceView} from "./device-state.ts";
 import {LibraryImports} from "./LibraryImports.tsx";
 import { TaskControls } from "./TaskControls.tsx";
 import { useEffect, useState, useRef } from "react";
-import { api, mutate, errorText } from "./api.ts";
+import { api, ApiError, mutate, errorText } from "./api.ts";
 import {
   Icon,
   Empty,
@@ -392,10 +392,37 @@ export function Library({
     );
   const [pendingImports,setPendingImports]=useState<number>(),
     [query, setQuery] = useState(""),
-    [selected, setSelected] = useState<string[]>([]);
-  useEffect(() => {
-    setSelected(project.value?.paperIds ?? []);
-  }, [project.value?.id, project.value?.updated]);
+    [scopeDraft, setScopeDraft] = useState<{ projectId: string; base: string[]; ids: string[]; conflict?: boolean }>();
+  useEffect(() => setScopeDraft(undefined), [projectId]);
+  const current = project.value?.id === projectId ? project.value : undefined;
+  const draft = scopeDraft?.projectId === projectId ? scopeDraft : undefined;
+  const selected = draft?.ids ?? current?.paperIds ?? [];
+  const ready = !!current && !project.error && !project.loading;
+  const conflict = draft && current && (draft.conflict || draft.base.length !== current.paperIds.length ||
+    draft.base.some((id, i) => id !== current.paperIds[i]));
+  const saveScope = async () => {
+    if (!current || !ready || conflict) return;
+    const base = draft?.base ?? current.paperIds;
+    try {
+      await mutate("projects/" + current.id, "PATCH", { paperIds: selected, expectedPaperIds: base });
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.message !== "PROJECT_SCOPE_CHANGED") throw error;
+      setScopeDraft({ projectId: current.id, base, ids: selected, conflict: true });
+      project.reload();
+      return;
+    }
+    refresh();
+    navigate("projects", current.id);
+  };
+  const selectPaper = (paperId: string, checked: boolean) => {
+    if (!current || !ready || conflict) return;
+    setScopeDraft(previous => {
+      const prior = previous?.projectId === current.id ? previous : undefined;
+      const ids = prior?.ids ?? current.paperIds;
+      return { projectId: current.id, base: prior?.base ?? current.paperIds,
+        ids: checked ? [...new Set([...ids, paperId])] : ids.filter(id => id !== paperId) };
+    });
+  };
   const list = (papers.value ?? []).filter((p) =>
     (p.title + " " + p.abstract + " " + p.paper_id)
       .toLocaleLowerCase()
@@ -407,9 +434,8 @@ export function Library({
         <div>
           <h1>{projectId ? "选择项目论文" : "论文库"}</h1>
           <p>
-            {project.value
-              ? "为「" + project.value.title + "」选择研究范围。"
-              : "本机索引的论文目录；原文片段可随讨论进入云端。"}
+            {current ? "为「" + current.title + "」选择研究范围。" :
+              projectId ? "选择此项目研究时使用的论文。" : "本机索引的论文目录。原文片段可随讨论进入云端。"}
           </p>
         </div>
         {!deviceView(data).connected && (
@@ -421,23 +447,18 @@ export function Library({
       </div>
       <LibraryImports projectId={projectId} data={data} revision={revision} run={run} refresh={refresh} onPendingChange={setPendingImports}/>
       {projectId && (
-        <div className="selection-bar">
-          <span>已选 {selected.length} 篇</span>
-          <button
-            className="primary"
-            onClick={() =>
-              void run(async () => {
-                await mutate("projects/" + projectId, "PATCH", {
-                  paperIds: selected,
-                });
-                refresh();
-                navigate("projects", projectId);
-              })
-            }
-          >
-            保存论文范围
-          </button>
-        </div>
+        <>
+          {project.error && <ResourceError text={"读取项目论文范围失败。" + project.error} retry={project.reload} />}
+          {conflict && <div className="warning" role="alert">
+            项目论文范围已在其他窗口更新。请载入最新范围后重新选择。
+            <button disabled={!ready} onClick={() => setScopeDraft(undefined)}>载入最新范围</button>
+          </div>}
+          <div className="selection-bar">
+            <span aria-live="polite">{current || draft ? (selected.length ? "已选 " + selected.length + " 篇" : "研究范围为整个论文库") :
+              project.error ? "论文范围待重新读取" : "正在读取论文范围…"}</span>
+            <button className="primary" disabled={!ready || !!conflict} onClick={() => void run(saveScope)}>保存论文范围</button>
+          </div>
+        </>
       )}
       <div className="filters">
         <label className="search-field">
@@ -479,13 +500,8 @@ export function Library({
                   type="checkbox"
                   aria-label={"选择 " + p.title}
                   checked={selected.includes(p.paper_id)}
-                  onChange={(e) =>
-                    setSelected((v) =>
-                      e.target.checked
-                        ? [...v, p.paper_id]
-                        : v.filter((id) => id !== p.paper_id),
-                    )
-                  }
+                  disabled={!ready || !!conflict}
+                  onChange={(e) => selectPaper(p.paper_id, e.target.checked)}
                 />
               )}
               <div className="grow">
