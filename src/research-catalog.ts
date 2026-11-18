@@ -10,6 +10,31 @@ export interface ResearchCatalog {
   evidence: EvidenceIdentity[];
   sources?: Chunk[];
 }
+const highSurrogate = (n: number) => n >= 0xd800 && n <= 0xdbff;
+const lowSurrogate = (n: number) => n >= 0xdc00 && n <= 0xdfff;
+
+/** SQLite accepts UTF-8 text. Keep a supplementary character in one stored page. */
+export function catalogTextPages(text: string): string[] {
+  const pages: string[] = [];
+  for (let start = 0; start < text.length;) {
+    let end = Math.min(start + 200_000, text.length);
+    if (highSurrogate(text.charCodeAt(end - 1)) && lowSurrogate(text.charCodeAt(end))) end--;
+    pages.push(text.slice(start, end));
+    start = end;
+  }
+  return pages;
+}
+
+/** Legacy senders split on UTF-16 offsets. Delay the trailing half until its next frame. */
+export function catalogUploadText(value: string, trailingHigh: number | undefined, more: boolean) {
+  if (trailingHigh !== undefined && value && !lowSurrogate(value.charCodeAt(0))) throw new Problem("INVALID_CATALOG");
+  const text = trailingHigh === undefined ? value : String.fromCharCode(trailingHigh) + value;
+  const last = text.charCodeAt(text.length - 1);
+  if (!highSurrogate(last)) return {text, trailingHigh: undefined};
+  if (!more) throw new Problem("INVALID_CATALOG");
+  return {text: text.slice(0, -1), trailingHigh: last};
+}
+
 /** Accept metadata only; never retain arbitrary device-provided fields. */
 export function validateCatalog(value: unknown): ResearchCatalog {
   const v = value as ResearchCatalog;

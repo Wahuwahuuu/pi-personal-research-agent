@@ -9,7 +9,7 @@ import { bindNodeAccount } from "./account-binding.ts";
 import {catalogRegistrationIssues, persistentRegistrationIssue, reconnectDelay} from "./registration-policy.ts";
 import { createLocalReading } from "../packages/research/local-reading.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
-import { nodeCatalog, catalogPages } from "./catalog.ts";
+import { nodeCatalog, catalogTransfer } from "./catalog.ts";
 import { checkedResult, researchContext } from "../src/research-coordinator.ts";
 import { validatePaperParams } from "../packages/research/core.ts";
 import WebSocket from "ws";
@@ -130,7 +130,7 @@ const snapshots=config.python&&!config.fixture?new SnapshotManager(config.python
 if(!snapshots&&!config.fixture)throw Error("PYTHON_CONFIG_REQUIRED");
 await snapshots?.refresh();
 let catalog=snapshots?(await snapshots.runtime(snapshots.activeVersion)).catalog:await nodeCatalog(undefined,true);
-let pages=catalogPages(catalog),indexVersion=catalog.indexVersion;
+let transfer=catalogTransfer(catalog),indexVersion=catalog.indexVersion;
 reading=snapshots?(await snapshots.runtime(indexVersion)).reading:await createLocalReading({
  root:resolve(config.dataDir),indexVersion,papers:catalog.papers,evidence:catalog.evidence,
  worker:{request:async(tool)=>tool==="search_papers"?{
@@ -300,7 +300,8 @@ function connect() {
   socket = ws;
   catalogAcknowledged = false;
   announcedReady = false;
-  let acceptedHello = false, registeredAt = 0;
+  const offeredTransfer = transfer, offeredVersion = indexVersion;
+  let acceptedHello = false, uploading = false, registeredAt = 0;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   function registrationFailed(code: string, blocked = false) {
     if (socket !== ws || ws.readyState >= WebSocket.CLOSING) return;
@@ -311,6 +312,18 @@ function connect() {
   function expectAck(ms: number) {
     clearTimeout(deadline);
     deadline = setTimeout(() => registrationFailed("NODE_REGISTRATION_TIMEOUT"), ms);
+  }
+  function uploadCatalog() {
+    if (uploading || catalogAcknowledged) return;
+    uploading = true;
+    expectAck(120_000); // The upload deadline includes draining the bounded WebSocket send buffer.
+    send({type: "catalog_begin", pages: offeredTransfer.pages.length});
+    offeredTransfer.pages.forEach((value, page) => send({type: "catalog_page", page, value}));
+    ws.send(JSON.stringify({type: "catalog_end"}), error => {
+      if (socket !== ws || ws.readyState !== WebSocket.OPEN || catalogAcknowledged) return;
+      if (error) registrationFailed("NODE_REGISTRATION_FAILED");
+      else expectAck(60_000);
+    });
   }
   let pong = true;
   const heartbeat = setInterval(() => {
@@ -328,7 +341,7 @@ function connect() {
       type: "hello",
       version: 1,
       deviceId: "windows-primary",
-      indexVersion,
+      indexVersion: offeredVersion, catalogDigest: offeredTransfer.digest,
       retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
       capabilities: ["scoped-search-v1", "reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
@@ -354,18 +367,14 @@ function connect() {
         try { bindNodeAccount(db, m.accountScope); }
         catch { registrationFailed("ACCOUNT_DATA_DIRECTORY_MISMATCH", true); return; }
         acceptedHello = true;
-        expectAck(120_000); // Allow the bounded catalog upload to drain before waiting for its receipt.
-        send({ type: "catalog_begin", pages: pages.length });
-        pages.forEach((value, page) =>
-          send({ type: "catalog_page", page, value }),
-        );
-        ws.send(JSON.stringify({ type: "catalog_end" }), error => {
-          if (socket !== ws || ws.readyState !== WebSocket.OPEN || catalogAcknowledged) return;
-          if (error) registrationFailed("NODE_REGISTRATION_FAILED");
-          else expectAck(60_000);
-        });
+        if (m.catalogMatch === offeredTransfer.digest) {
+          expectAck(30_000);
+          send({type: "catalog_confirm", indexVersion: offeredVersion, digest: offeredTransfer.digest});
+        } else uploadCatalog();
+      } else if (m.type === "catalog_upload_required") {
+        if (acceptedHello && m.indexVersion === offeredVersion) uploadCatalog();
       } else if (m.type === "catalog_ack") {
-        if (!acceptedHello || (m.indexVersion !== undefined && m.indexVersion !== indexVersion)) {
+        if (!acceptedHello || (m.indexVersion !== undefined && m.indexVersion !== offeredVersion)) {
           registrationFailed("NODE_REGISTRATION_ACK_MISMATCH");
           return;
         }
@@ -484,8 +493,9 @@ function unavailable(phase:"indexing"|"paused"|"loading"){
 async function refreshLibrary(){
  if(!snapshots||active||building)return;
  if(await snapshots.refresh()){
-  indexVersion=snapshots.activeVersion;
-  const runtime=await snapshots.runtime(indexVersion);catalog=runtime.catalog;reading=runtime.reading;pages=catalogPages(catalog);
+  const nextVersion=snapshots.activeVersion, runtime=await snapshots.runtime(nextVersion);
+  const nextTransfer=catalogTransfer(runtime.catalog);
+  indexVersion=nextVersion;catalog=runtime.catalog;reading=runtime.reading;transfer=nextTransfer;
   announcedReady=false;
   if(!registrationBlocked || catalogRegistrationIssues.has(registrationError)) reconnectNow();
  }

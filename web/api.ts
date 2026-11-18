@@ -49,6 +49,7 @@ export async function mutate<T = any>(
   }
 }
 const messages: Record<string, string> = {
+  CATALOG_STORAGE_MISMATCH: "云端论文目录未通过完整性校验。请连接保存该索引的电脑重新同步。",
   SERVICE_UNAVAILABLE: "云端服务暂时无法响应，操作结果尚未确认。请稍后重试。",
   INVALID_SERVER_RESPONSE: "未收到完整的服务响应，操作结果尚未确认。请稍后重试。",
   INTERNAL_ERROR: "服务暂时无法完成这次请求。请稍后重试。",

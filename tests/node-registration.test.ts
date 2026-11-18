@@ -33,15 +33,22 @@ test("a real node stays offline on a catalog conflict, then accepts a manual reg
   const port = (probe.address() as AddressInfo).port;
   await new Promise<void>(done => probe.close(() => done()));
   const token = randomUUID() + randomUUID(), config = join(dir, "node.json");
-  let connections = 0, release = false, current: WebSocket | undefined;
+  let connections = 0, confirms = 0, uploads = 0, release = false, current: WebSocket | undefined;
   cloud.on("connection", socket => {
-    connections++;
+    const attempt = ++connections;
     current = socket;
     socket.on("message", raw => {
       if (raw.toString() === "ping") return socket.send("pong");
       const frame = JSON.parse(raw.toString());
-      if (frame.type === "hello") socket.send(JSON.stringify({type: "hello_ack", accountScope: "a".repeat(64)}));
-      if (frame.type === "catalog_end") socket.send(JSON.stringify(release ? {type: "catalog_ack", indexVersion: "fixture-v1"} : {type: "error", code: "CATALOG_VERSION_CONFLICT"}));
+      if (frame.type === "hello") socket.send(JSON.stringify({type: "hello_ack", accountScope: "a".repeat(64), catalogMatch: release ? frame.catalogDigest : undefined}));
+      if (frame.type === "catalog_confirm") {
+        confirms++;
+        socket.send(JSON.stringify({type: attempt === 2 ? "catalog_upload_required" : "catalog_ack", indexVersion:"fixture-v1"}));
+      }
+      if (frame.type === "catalog_end") {
+        uploads++;
+        socket.send(JSON.stringify(release ? {type: "catalog_ack", indexVersion: "fixture-v1"} : {type: "error", code: "CATALOG_VERSION_CONFLICT"}));
+      }
     });
   });
   await writeFile(config, JSON.stringify({endpoint: "http://127.0.0.1:" + (server.address() as AddressInfo).port, fixture: true, proxy: "", port, dataDir: dir}));
@@ -67,6 +74,8 @@ test("a real node stays offline on a catalog conflict, then accepts a manual reg
     assert.equal(connections, 2);
     current!.close(1012);
     await waitFor(s => !s.ready && !s.connected && s.phase === "reconnecting");
+    await waitFor(s => s.ready && s.connected);
+    assert.deepEqual({connections, confirms, uploads}, {connections:3, confirms:2, uploads:2});
   } finally {
     if (child.exitCode === null) {
       const closed = new Promise(done => child.once("exit", done));

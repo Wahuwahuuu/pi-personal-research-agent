@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nodeCatalog, catalogPages } from "../local/catalog.ts";
+import {createHash} from "node:crypto";
+import {catalogUploadText} from "../src/research-catalog.ts";
+import { nodeCatalog, catalogPages, catalogTransfer } from "../local/catalog.ts";
 import { validateCatalog } from "../src/research-catalog.ts";
 import { initialState, submit, cancel, reserve } from "../src/domain.ts";
 import {
@@ -217,6 +219,24 @@ test("cancelled tools and late results cannot restart task or consume new model 
   assert.equal(state.operations.length, 1);
   assert.equal(t.calls, 0);
 });
+test("catalog hashes and persisted pages preserve supplementary characters across legacy frame boundaries", () => {
+ const papers=Array.from({length:10},(_,i)=>({paper_id:"paper-"+i,title:"Unicode",abstract:"x".repeat(19000)}));
+ papers.push({paper_id:"tail",title:"tail",abstract:"MARK"});
+ const data=validateCatalog({indexVersion:"unicode",papers,evidence:[]});
+ const offset=JSON.stringify(data).indexOf("MARK");
+ data.papers.at(-1)!.abstract="x".repeat(199999-offset)+"🧪 证据";
+ const raw=JSON.stringify(data), transfer=catalogTransfer(data);
+ assert.equal(raw.indexOf("🧪"),199999);
+ assert.equal(transfer.digest,createHash("sha256").update(raw).digest("hex"));
+ assert.equal(transfer.pages.map(page=>Buffer.from(page,"utf8").toString("utf8")).join(""),raw);
+ const first=catalogUploadText(raw.slice(0,200000),undefined,true);
+ const empty=catalogUploadText("",first.trailingHigh,true);
+ const second=catalogUploadText(raw.slice(200000),empty.trailingHigh,false);
+ assert.equal(first.text+empty.text+second.text,raw);
+ assert.equal(second.trailingHigh,undefined);
+ assert.throws(()=>catalogUploadText("wrong",first.trailingHigh,false),/INVALID_CATALOG/);
+});
+
 test("catalog validation strips extra fields and enforces immutable source identities", () => {
   const v = validateCatalog({
     ...catalog,

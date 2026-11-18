@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { loadCorpusIndex } from "../packages/research/catalog.ts";
 import {
+  catalogTextPages,
   validateCatalog,
   type ResearchCatalog,
 } from "../src/research-catalog.ts";
@@ -44,11 +45,11 @@ export async function nodeCatalog(
     evidence: [...c.evidenceIndex.values()],
   });
 }
-export function catalogPages(c: ResearchCatalog): string[] {
+export function catalogTransfer(c: ResearchCatalog) {
   const raw = JSON.stringify(c);
   if (Buffer.byteLength(raw) > 16000000) throw Error("CATALOG_SIZE");
-  const pages: string[] = [];
-  for (let i = 0; i < raw.length; i += 200000)
-    pages.push(raw.slice(i, i + 200000));
-  return pages;
+  return {pages: catalogTextPages(raw), digest: createHash("sha256").update(raw, "utf8").digest("hex")};
+}
+export function catalogPages(c: ResearchCatalog): string[] {
+  return catalogTransfer(c).pages;
 }

@@ -1,3 +1,5 @@
+import {createHash} from "node:crypto";
+import {catalogTextPages, catalogUploadText} from "./research-catalog.ts";
 import {modelOutputLimit} from "./model-limits.ts";
 import {memoryView} from "./memory-view.ts";
 import {activeTasks,conversationMessagePage,recentOverviewTasks,taskByRequest} from "./task-queries.ts";
@@ -190,6 +192,7 @@ export class PersonalAgent extends DurableObject<Env> {
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_catalog (version TEXT PRIMARY KEY, value TEXT NOT NULL, digest TEXT NOT NULL)",
     );
+    this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_catalog_verified (version TEXT PRIMARY KEY, digest TEXT NOT NULL)");
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_catalog_parts (version TEXT, page INTEGER, value TEXT NOT NULL, PRIMARY KEY(version,page))",
     );
@@ -1120,6 +1123,33 @@ export class PersonalAgent extends DurableObject<Env> {
       this.send(pair[1],view===2?{type:"change",readerChanged:false,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
+  private catalogManifest(version: string) {
+    return this.ctx.storage.sql.exec<{digest:string;verified:string|null}>(
+      "SELECT c.digest,v.digest AS verified FROM pra_catalog c LEFT JOIN pra_catalog_verified v USING(version) WHERE c.version=?", version,
+    ).toArray()[0];
+  }
+  private acceptsCatalogDigest(version: string, digest: string): boolean {
+    const manifest = this.catalogManifest(version);
+    return manifest?.digest === digest && manifest.verified === digest;
+  }
+  private finishCatalogRegistration(ws: WebSocket, catalog?: ResearchCatalog) {
+    const a = ws.deserializeAttachment();
+    let resumed = false;
+    for (const task of activeTasks(this.state)) {
+      if (!task.paperWait || task.status !== "waiting_user" || this.state.cloudMemory?.invalidatedTurns?.includes(task.id)) continue;
+      const conversation = this.state.conversations?.find(c => c.id === task.conversationId);
+      if (!conversation) continue;
+      catalog ??= this.catalog(a.indexVersion);
+      if (revisitPaperWait(task, catalog, conversation.scope)) resumed = true;
+    }
+    if (resumed) this.save();
+    a.catalogReady = true;
+    delete a.upload;
+    ws.serializeAttachment(a);
+    this.sendPurges(ws);
+    this.send(ws, {type: "catalog_ack", indexVersion: a.indexVersion});
+    this.dispatchImports();
+  }
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
     if(this.recoveryBlocked){ws.close(1012,"recovery");return;}
     const a = ws.deserializeAttachment();
@@ -1157,7 +1187,11 @@ export class PersonalAgent extends DurableObject<Env> {
           m.readerPort <= 65535
             ? m.readerPort
             : undefined;
+        if (a.upload) this.ctx.storage.sql.exec("DELETE FROM pra_catalog_upload WHERE upload=?", a.upload);
+        delete a.upload;
         a.indexVersion = text(m.indexVersion, 256);
+        const offered = m.catalogDigest;
+        a.catalogMatch = typeof offered === "string" && /^[a-f0-9]{64}$/.test(offered) && this.acceptsCatalogDigest(a.indexVersion, offered) ? offered : undefined;
         this.deviceIndexes.declare(a.hash,a.indexVersion,m.retainedIndexes);
         a.ready = false;
         a.catalogReady = false;
@@ -1166,17 +1200,33 @@ export class PersonalAgent extends DurableObject<Env> {
         a.readerReady = false;
         if(a.capabilities.includes("library-v1"))this.libraryJobs.reconnect(a.hash);
         ws.serializeAttachment(a);
-        this.send(ws, { type: "hello_ack", accountScope:await digest(this.ownerId) });
+        this.send(ws, {type: "hello_ack", accountScope: await digest(this.ownerId), catalogMatch: a.catalogMatch});
+      } else if (m.type === "catalog_confirm") {
+        if (!a.catalogMatch || m.digest !== a.catalogMatch || m.indexVersion !== a.indexVersion)
+          throw new Problem("CATALOG_CONFIRMATION_MISMATCH");
+        if (a.catalogReady) {
+          this.send(ws, {type: "catalog_ack", indexVersion: a.indexVersion});
+          return;
+        }
+        if (!this.acceptsCatalogDigest(a.indexVersion, a.catalogMatch)) {
+          delete a.catalogMatch;
+          ws.serializeAttachment(a);
+          this.send(ws, {type: "catalog_upload_required", indexVersion: a.indexVersion});
+          return;
+        }
+        this.finishCatalogRegistration(ws);
       } else if (m.type === "catalog_begin") {
         if (!a.indexVersion) throw new Problem("HELLO_REQUIRED");
         if (!Number.isSafeInteger(m.pages) || m.pages < 1 || m.pages > 128)
           throw new Problem("CATALOG_SIZE");
         // Only one paired device is active; abandoned uploads are disposable.
         this.ctx.storage.sql.exec("DELETE FROM pra_catalog_upload");
+        delete a.catalogMatch;
         a.upload = crypto.randomUUID();
         a.pages = m.pages;
         a.nextPage = 0;
         a.bytes = 0;
+        delete a.trailingHigh;
         ws.serializeAttachment(a);
       } else if (m.type === "catalog_page") {
         if (
@@ -1187,13 +1237,15 @@ export class PersonalAgent extends DurableObject<Env> {
           a.nextPage >= a.pages
         )
           throw new Problem("CATALOG_PAGE");
-        a.bytes += new TextEncoder().encode(m.value).length;
+        const part = catalogUploadText(m.value, a.trailingHigh, a.nextPage + 1 < a.pages);
+        a.trailingHigh = part.trailingHigh;
+        a.bytes += new TextEncoder().encode(part.text).length;
         if (a.bytes > 16000000) throw new Problem("CATALOG_SIZE");
         this.ctx.storage.sql.exec(
           "INSERT INTO pra_catalog_upload VALUES(?,?,?)",
           a.upload,
           m.page,
-          m.value,
+          part.text,
         );
         a.nextPage++;
         ws.serializeAttachment(a);
@@ -1213,48 +1265,26 @@ export class PersonalAgent extends DurableObject<Env> {
           throw new Problem("INDEX_CHANGED");
         const value = JSON.stringify(c),
           hash = await digest(value);
-        const prior = this.ctx.storage.sql
-          .exec<{ digest: string }>(
-            "SELECT digest FROM pra_catalog WHERE version=?",
-            c.indexVersion,
-          )
-          .toArray()[0];
-        if (prior && prior.digest !== hash)
-          throw new Problem("CATALOG_VERSION_CONFLICT");
-        if (!prior)
+        const prior = this.catalogManifest(c.indexVersion);
+        if (prior && prior.digest !== hash) throw new Problem("CATALOG_VERSION_CONFLICT");
+        if (prior?.verified !== hash) {
           this.ctx.storage.transactionSync(() => {
-            this.ctx.storage.sql.exec(
-              "INSERT INTO pra_catalog VALUES(?,?,?)",
-              c.indexVersion,
-              "",
-              hash,
-            );
-            for (let at = 0, page = 0; at < value.length; at += 200000, page++)
-              this.ctx.storage.sql.exec(
-                "INSERT INTO pra_catalog_parts VALUES(?,?,?)",
-                c.indexVersion,
-                page,
-                value.slice(at, at + 200000),
-              );
+            if (prior) {
+              // An old manifest with the same digest can be republished losslessly under its original identity.
+              this.ctx.storage.sql.exec("UPDATE pra_catalog SET value='' WHERE version=?", c.indexVersion);
+              this.ctx.storage.sql.exec("DELETE FROM pra_catalog_parts WHERE version=?", c.indexVersion);
+            } else this.ctx.storage.sql.exec("INSERT INTO pra_catalog VALUES(?,?,?)", c.indexVersion, "", hash);
+            catalogTextPages(value).forEach((part, page) =>
+              this.ctx.storage.sql.exec("INSERT INTO pra_catalog_parts VALUES(?,?,?)", c.indexVersion, page, part));
+            this.ctx.storage.sql.exec("INSERT OR REPLACE INTO pra_catalog_verified VALUES(?,?)", c.indexVersion, hash);
           });
+        }
         this.ctx.storage.sql.exec(
           "DELETE FROM pra_catalog_upload WHERE upload=?",
           a.upload,
         );
         this.catalogCache.delete(c.indexVersion);
-        a.catalogReady = true;
-        let resumed = false;
-        for (const task of activeTasks(this.state)) {
-          if (!task.paperWait || task.status !== "waiting_user" || this.state.cloudMemory?.invalidatedTurns?.includes(task.id)) continue;
-          const conversation = this.state.conversations?.find(c => c.id === task.conversationId);
-          if (conversation && revisitPaperWait(task, c, conversation.scope)) resumed = true;
-        }
-        if (resumed) this.save();
-        delete a.upload;
-        ws.serializeAttachment(a);
-        this.sendPurges(ws);
-        this.send(ws, { type: "catalog_ack", indexVersion: c.indexVersion });
-        this.dispatchImports();
+        this.finishCatalogRegistration(ws, c);
       } else if(m.type==="reader_status") {
         if(!a.catalogReady||!a.capabilities?.includes("reader-v1")||typeof m.ready!=="boolean")throw new Problem("READER_CAPABILITY_REQUIRED");
         readerChanged = Boolean(a.readerReady) !== m.ready;
@@ -1414,6 +1444,9 @@ export class PersonalAgent extends DurableObject<Env> {
   }
   async webSocketClose(ws: WebSocket) {
     if(this.recoveryBlocked)return;
+    const attachment = ws.deserializeAttachment();
+    if (attachment?.kind === "device" && attachment.upload)
+      this.ctx.storage.sql.exec("DELETE FROM pra_catalog_upload WHERE upload=?", attachment.upload);
     await this.maintenance.arm(Date.now() + 60000);
     this.publish(ws.deserializeAttachment()?.kind === "device");
   }
@@ -1430,9 +1463,8 @@ export class PersonalAgent extends DurableObject<Env> {
     let c = this.catalogCache.get(version);
     if (!c) {
       const row = this.ctx.storage.sql
-        .exec<{ value: string }>(
-          "SELECT value FROM pra_catalog WHERE version=?",
-          version,
+        .exec<{value:string;digest:string;verified:string|null}>(
+          "SELECT c.value,c.digest,v.digest AS verified FROM pra_catalog c LEFT JOIN pra_catalog_verified v USING(version) WHERE c.version=?", version,
         )
         .toArray()[0];
       if (!row) throw new Problem("CATALOG_REQUIRED");
@@ -1446,6 +1478,8 @@ export class PersonalAgent extends DurableObject<Env> {
           .toArray()
           .map((r) => r.value)
           .join("");
+      if (row.verified !== row.digest && createHash("sha256").update(raw).digest("hex") !== row.digest)
+        throw new Problem("CATALOG_STORAGE_MISMATCH", 409);
       c = JSON.parse(raw) as ResearchCatalog;
       const stored = this.ctx.storage.sql
         .exec<{ value: string }>(
