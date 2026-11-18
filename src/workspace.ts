@@ -1,4 +1,5 @@
 import {createHash} from "node:crypto";
+import {appendChanges, initializeChangeFeed, type EntityChange} from "./change-feed.ts";
 import type {StateStorage} from "./state-store.ts";
 import {Problem,text,type State,type Task} from "./domain.ts";
 export interface Project {id:string;title:string;goal:string;paperIds:string[];pinned:boolean;archived:boolean;created:number;updated:number}
@@ -13,10 +14,18 @@ export class Workspace {
  readonly db:StateStorage;
  constructor(db:StateStorage){
   this.db=db;
+  initializeChangeFeed(db);
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_projects(id TEXT PRIMARY KEY,title TEXT NOT NULL,goal TEXT NOT NULL,papers TEXT NOT NULL,pinned INTEGER NOT NULL,archived INTEGER NOT NULL,created INTEGER NOT NULL,updated INTEGER NOT NULL)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_project_tombstones(id TEXT PRIMARY KEY)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_settings(id INTEGER PRIMARY KEY CHECK(id=1),value TEXT NOT NULL)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_mutations(id TEXT PRIMARY KEY,operation TEXT NOT NULL,input TEXT NOT NULL,result TEXT NOT NULL,created INTEGER NOT NULL)");
+ }
+ private writeWithChange<T>(change: EntityChange, write: () => T): T {
+  return this.db.transactionSync(() => {
+   const result = write();
+   appendChanges(this.db, [change]);
+   return result;
+  });
  }
  replay<T>(id:unknown,operation:string,input:unknown):{value:T}|undefined{
   const key=text(id,128),encoded=createHash("sha256").update(JSON.stringify(input)).digest("hex"),old=this.db.sql.exec<{operation:string;input:string;result:string}>("SELECT operation,input,result FROM pra_mutations WHERE id=?",key).toArray()[0];
@@ -36,7 +45,10 @@ export class Workspace {
   if(patch.researchDirection!==undefined){if(typeof patch.researchDirection!=="string"||patch.researchDirection.length>2000)throw new Problem("INVALID_DIRECTION");s.researchDirection=patch.researchDirection.trim();}
   if(patch.theme!==undefined){if(!["system","light","dark"].includes(patch.theme))throw new Problem("INVALID_THEME");s.theme=patch.theme;}
   for(const k of ["notifications","onboarded"] as const)if(patch[k]!==undefined){if(typeof patch[k]!=="boolean")throw new Problem("INVALID_SETTING");s[k]=patch[k];}
-  this.db.sql.exec("INSERT INTO pra_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value",JSON.stringify(s));return s;
+  return this.writeWithChange({entity:"settings",id:"1"}, () => {
+   this.db.sql.exec("INSERT INTO pra_settings VALUES(1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value", JSON.stringify(s));
+   return s;
+  });
  }
  private project(row:any):Project{return{id:row.id,title:row.title,goal:row.goal,paperIds:JSON.parse(row.papers),pinned:!!row.pinned,archived:!!row.archived,created:row.created,updated:row.updated};}
  getProject(id:string){const row=this.db.sql.exec<any>("SELECT * FROM pra_projects WHERE id=?",id).toArray()[0];if(!row)throw new Problem("NOT_FOUND",404);return this.project(row);}
@@ -52,7 +64,10 @@ export class Workspace {
  }
  createProject(input:any){
   const now=Date.now(),id=crypto.randomUUID(),title=text(input.title,100),goal=input.goal===undefined?"":text(input.goal,4000),paperIds=projectPaperIds(input.paperIds===undefined?[]:input.paperIds);
-  this.db.sql.exec("INSERT INTO pra_projects VALUES(?,?,?,?,0,0,?,?)",id,title,goal,JSON.stringify(paperIds),now,now);return this.getProject(id);
+  return this.writeWithChange({entity:"projects",id}, () => {
+   this.db.sql.exec("INSERT INTO pra_projects VALUES(?,?,?,?,0,0,?,?)", id, title, goal, JSON.stringify(paperIds), now, now);
+   return this.getProject(id);
+  });
  }
  updateProject(id:string,input:any){
   const p=this.getProject(id);
@@ -66,7 +81,12 @@ export class Workspace {
    p.paperIds=projectPaperIds(input.paperIds);
   }
   for(const key of ["pinned","archived"] as const)if(input[key]!==undefined){if(typeof input[key]!=="boolean")throw new Problem("INVALID_SETTING");p[key]=input[key];}
-  p.updated=Date.now();this.db.sql.exec("UPDATE pra_projects SET title=?,goal=?,papers=?,pinned=?,archived=?,updated=? WHERE id=?",p.title,p.goal,JSON.stringify(p.paperIds),Number(p.pinned),Number(p.archived),p.updated,id);return p;
+  return this.writeWithChange({entity:"projects",id}, () => {
+   p.updated = Date.now();
+   this.db.sql.exec("UPDATE pra_projects SET title=?,goal=?,papers=?,pinned=?,archived=?,updated=? WHERE id=?",
+    p.title, p.goal, JSON.stringify(p.paperIds), Number(p.pinned), Number(p.archived), p.updated, id);
+   return p;
+  });
  }
  forgetEntities(ids:readonly string[]){
   if(ids.length)this.db.sql.exec("UPDATE pra_mutations SET result=? WHERE json_extract(result,'$.id') IN (SELECT value FROM json_each(?))",JSON.stringify({_deleted:true}),JSON.stringify(ids));
@@ -77,7 +97,15 @@ export class Workspace {
   const rows=this.db.sql.exec<{id:string}>("SELECT id FROM pra_project_tombstones WHERE id IN (SELECT value FROM json_each(?))",JSON.stringify([...new Set(candidates)])).toArray();
   return new Set(rows.map(row=>row.id));
  }
- deleteProject(id:string){if(id==="default")throw new Problem("DEFAULT_PROJECT_REQUIRED",409);this.getProject(id);this.db.sql.exec("INSERT OR IGNORE INTO pra_project_tombstones VALUES(?)",id);this.db.sql.exec("DELETE FROM pra_projects WHERE id=?",id);this.db.sql.exec("UPDATE pra_mutations SET result=? WHERE json_extract(result,\'$.id\')=?",JSON.stringify({_deleted:true}),id);}
+ deleteProject(id:string){
+  if(id==="default")throw new Problem("DEFAULT_PROJECT_REQUIRED",409);
+  this.getProject(id);
+  this.writeWithChange({entity:"projects",id,deleted:true}, () => {
+   this.db.sql.exec("INSERT OR IGNORE INTO pra_project_tombstones VALUES(?)",id);
+   this.db.sql.exec("DELETE FROM pra_projects WHERE id=?",id);
+   this.forgetEntity(id);
+  });
+ }
 }
 export function taskSummary(t:Task){
  const {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin}=t;

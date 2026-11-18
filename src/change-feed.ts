@@ -14,6 +14,11 @@ export interface ChangePage {
   reason?: "retention" | "cursor_ahead";
 }
 
+export function initializeChangeFeed(db: StateStorage): void {
+  // Recovery checkpoints include the SQL spelling used by the original StateRepository.
+  db.sql.exec("CREATE TABLE IF NOT EXISTS pra_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, value TEXT NOT NULL)");
+}
+
 export function changeCursor(db: StateStorage): number {
   return db.sql.exec<{ seq: number }>("SELECT COALESCE(MAX(seq),0) AS seq FROM pra_changes").toArray()[0].seq;
 }

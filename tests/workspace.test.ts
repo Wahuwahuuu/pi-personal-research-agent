@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {Workspace,conversationPage,taskPage} from "../src/workspace.ts";
 import {initialState,submit} from "../src/domain.ts";
-import type {StateStorage} from "../src/state-store.ts";
+import {StateRepository,type StateStorage} from "../src/state-store.ts";
 function setup(){const db=new DatabaseSync(":memory:");let depth=0;const p:StateStorage={sql:{exec<T>(q:string,...b:any[]){const s=db.prepare(q),v=(s.columns().length?s.all(...b):(s.run(...b),[])) as T[];return{toArray:()=>v};}},transactionSync<T>(f:()=>T){if(depth)return f();db.exec("BEGIN");depth++;try{const v=f();db.exec("COMMIT");return v;}catch(e){db.exec("ROLLBACK");throw e;}finally{depth--;}}};return{db,workspace:new Workspace(p)};}
 test("project mutations are idempotent, searchable, editable and cannot resurrect after deletion",()=>{
  const {db,workspace:w}=setup(),s=initialState();w.migrate(s);
@@ -67,5 +67,50 @@ test("paper scope changes compare the original scope while allowing unrelated ed
   assert.throws(()=>w.updateProject(p.id,{paperIds:[],expectedPaperIds:42}),/INVALID_PAPERS/);
   w.updateProject(p.id,{paperIds:["c"]});assert.deepEqual(save().paperIds,["a","c"]);assert.deepEqual(w.getProject(p.id).paperIds,["c"]);
   assert.deepEqual(w.updateProject(p.id,{paperIds:[],expectedPaperIds:["c"]}).paperIds,[]);
+ }finally{db.close();}
+});
+
+test("workspace changes replay in order after an offline interval and omit project and settings content",()=>{
+ const {db,workspace:w}=setup();
+ try{
+  const repo=new StateRepository(w.db),base=repo.cursor(),s=initialState();
+  w.migrate(s);assert.equal(repo.cursor(),base);
+  const create={title:"Private test project",goal:"Private goal"};
+  const project=w.once("create","project:create",create,()=>w.createProject(create));
+  w.once("create","project:create",create,()=>{throw Error("unexpected duplicate");});
+  const edit={title:"Revised title",goal:"Unpublished research",archived:true,paperIds:["paper-a"]};
+  w.once("edit","project:"+project.id,edit,()=>w.updateProject(project.id,edit));
+  const settings={agentName:"Personal name",theme:"dark",researchDirection:"New direction"};
+  const apply=()=>w.once("preferences","settings",settings,()=>w.updateSettings(settings));
+  apply();apply();
+  assert.throws(()=>w.updateProject(project.id,{paperIds:[],expectedPaperIds:[]}),/PROJECT_SCOPE_CHANGED/);
+  assert.throws(()=>w.updateSettings({theme:"invalid"}),/INVALID_THEME/);
+  assert.throws(()=>w.deleteProject("default"),/DEFAULT_PROJECT_REQUIRED/);
+  w.deleteProject(project.id);
+  const reopened=new StateRepository(w.db),workspace=new Workspace(w.db);workspace.migrate(s);
+  const first=reopened.changes(base,2),second=reopened.changes(first.cursor,2);
+  assert.deepEqual(first.events.map(e=>e.changes),[[{entity:"projects",id:project.id}],[{entity:"projects",id:project.id}]]);
+  assert.deepEqual(second.events.map(e=>e.changes),[[{entity:"settings",id:"1"}],[{entity:"projects",id:project.id,deleted:true}]]);
+  assert.equal(second.cursor,base+4);assert.equal(reopened.changes(second.cursor).events.length,0);
+  assert.equal(workspace.settings().theme,"dark");assert.throws(()=>workspace.getProject(project.id),/NOT_FOUND/);
+ }finally{db.close();}
+});
+
+test("a failed workspace event rolls back data, deletion protection and idempotency receipts",()=>{
+ const {db,workspace:w}=setup();
+ try{
+  const repo=new StateRepository(w.db),p=w.createProject({title:"Original"});
+  const cursor=repo.cursor(),input={title:"Recovered edit"};
+  const apply=()=>w.once("retry","project:"+p.id,input,()=>w.updateProject(p.id,input));
+  db.exec("CREATE TRIGGER fail_event BEFORE INSERT ON pra_changes BEGIN SELECT RAISE(ABORT,'event failed'); END");
+  assert.throws(apply,/event failed/);
+  assert.throws(()=>w.deleteProject(p.id),/event failed/);
+  assert.throws(()=>w.updateSettings({theme:"dark"}),/event failed/);
+  assert.throws(()=>w.createProject({title:"Uncommitted"}),/event failed/);
+  assert.equal(w.getProject(p.id).title,"Original");assert.equal(w.projects({}).items.length,1);
+  assert.equal(w.settings().theme,"system");assert.equal(w.deletedProjectIds([p.id]).size,0);
+  assert.equal(w.replay("retry","project:"+p.id,input),undefined);assert.equal(repo.cursor(),cursor);
+  db.exec("DROP TRIGGER fail_event");assert.equal(apply().title,input.title);assert.deepEqual(apply(),w.getProject(p.id));
+  assert.equal(repo.cursor(),cursor+1);
  }finally{db.close();}
 });

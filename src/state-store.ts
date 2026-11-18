@@ -2,7 +2,7 @@ import {memoryView} from "./memory-view.ts";
 import {bindTaskQueries,closedTask,matchesTaskPage,taskPageOrder,type TaskPageQuery} from "./task-queries.ts";
 import {entityHeader,isLazyCollection,lazyEntity,type LazyEntity,type LazyCollection} from "./lazy-entity.ts";
 import { stableEntityPositions } from "./row-order.ts";
-import { appendChanges, changeCursor, readChanges } from "./change-feed.ts";
+import { appendChanges, changeCursor, initializeChangeFeed, readChanges } from "./change-feed.ts";
 import { initialState, Problem, type State, type Task } from "./domain.ts";
 
 export interface SqlRows<T = Record<string, unknown>> { toArray(): T[] }
@@ -52,7 +52,7 @@ export class StateRepository {
       }
       storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_history_counts (conversation_id TEXT PRIMARY KEY, turns INTEGER NOT NULL CHECK(turns>=0))");
       storage.sql.exec("CREATE INDEX IF NOT EXISTS pra_messages_position ON pra_data_messages(parent,position,id)");
-      storage.sql.exec("CREATE TABLE IF NOT EXISTS pra_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, value TEXT NOT NULL)");
+      initializeChangeFeed(storage);
       if (version === 0) {
         const legacy = storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master WHERE type='table' AND name='pra_state'").toArray().length > 0;
         if (legacy) {

@@ -1,4 +1,4 @@
-import {appendChanges} from "./change-feed.ts";
+import {appendChanges, initializeChangeFeed} from "./change-feed.ts";
 import { Problem, text } from "./domain.ts";
 import type { StateStorage } from "./state-store.ts";
 import { arxivVersion } from "../packages/research/source-links.ts";
@@ -43,9 +43,7 @@ export class LibraryJobs {
     db.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_library_tombstones(id TEXT PRIMARY KEY,generation INTEGER NOT NULL,device_hash TEXT NOT NULL,cancel_pending INTEGER NOT NULL)",
     );
-    db.sql.exec(
-      "CREATE TABLE IF NOT EXISTS pra_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT,created INTEGER NOT NULL,value TEXT NOT NULL)",
-    );
+    initializeChangeFeed(db);
     db.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_library_jobs(id TEXT PRIMARY KEY,project_id TEXT NOT NULL,source TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL,phase TEXT NOT NULL,created INTEGER NOT NULL,updated INTEGER NOT NULL,generation INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0,device_hash TEXT NOT NULL DEFAULT '',assigned_at INTEGER NOT NULL DEFAULT 0,paper_id TEXT NOT NULL DEFAULT '',index_version TEXT NOT NULL DEFAULT '',content_hash TEXT NOT NULL DEFAULT '',error TEXT NOT NULL DEFAULT '',cancel_pending INTEGER NOT NULL DEFAULT 0,origin TEXT NOT NULL,batch_id TEXT NOT NULL,UNIQUE(project_id,source))",
     );

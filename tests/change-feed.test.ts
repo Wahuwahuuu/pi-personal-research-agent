@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
-import {appendChanges,CHANGE_WINDOW,CHANGE_CLEANUP_BATCH,readChanges} from "../src/change-feed.ts";
+import {appendChanges,initializeChangeFeed,CHANGE_WINDOW,CHANGE_CLEANUP_BATCH,readChanges} from "../src/change-feed.ts";
 import {StateRepository,type StateStorage} from "../src/state-store.ts";
 import {submit} from "../src/domain.ts";
 import {Artifacts} from "../src/artifacts.ts";
@@ -117,4 +117,16 @@ test("artifact-only workloads use the same retention window without losing revis
   assert.equal(artifacts.get(saved.id,1).content,"Retain the artifact");assert.equal(artifacts.get(saved.id).content,"Corrected evidence");
   assert.equal(f.count(),CHANGE_WINDOW);
  }finally{f.db.close();}
+});
+
+test("fresh workspaces preserve the deployed change table definition used by recovery fingerprints",()=>{
+ const f=fixture(),legacy=new DatabaseSync(":memory:");
+ try{
+  legacy.exec("CREATE TABLE IF NOT EXISTS pra_changes (seq INTEGER PRIMARY KEY AUTOINCREMENT, created INTEGER NOT NULL, value TEXT NOT NULL)");
+  const definition="SELECT sql FROM sqlite_master WHERE type='table' AND name='pra_changes'";
+  assert.deepEqual(f.db.prepare(definition).get(),legacy.prepare(definition).get());
+  f.db.exec("DROP TABLE pra_changes");
+  initializeChangeFeed(f.storage);
+  assert.deepEqual(f.db.prepare(definition).get(),legacy.prepare(definition).get());
+ }finally{f.db.close();legacy.close();}
 });

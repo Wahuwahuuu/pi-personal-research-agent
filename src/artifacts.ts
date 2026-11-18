@@ -1,4 +1,4 @@
-import {appendChanges} from "./change-feed.ts";
+import {appendChanges, initializeChangeFeed} from "./change-feed.ts";
 import {createHash} from "node:crypto";
 import {arxivVersion} from "../packages/research/source-links.ts";
 import type {StateStorage} from "./state-store.ts";
@@ -42,7 +42,7 @@ export class Artifacts {
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_artifact_versions(id TEXT NOT NULL,version INTEGER NOT NULL,content TEXT NOT NULL,sources TEXT NOT NULL,editor TEXT NOT NULL,created INTEGER NOT NULL,PRIMARY KEY(id,version))");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_artifact_tombstones(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,kind TEXT NOT NULL,deleted INTEGER NOT NULL)");
   db.sql.exec("CREATE INDEX IF NOT EXISTS pra_artifact_tombstones_origin ON pra_artifact_tombstones(task_id,kind)");
-  db.sql.exec("CREATE TABLE IF NOT EXISTS pra_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT,created INTEGER NOT NULL,value TEXT NOT NULL)");
+  initializeChangeFeed(db);
   initializeVersionTitles(db);
   this.purgeDeleted();
 

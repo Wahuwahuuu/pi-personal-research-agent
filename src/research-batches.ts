@@ -1,4 +1,4 @@
-import {appendChanges} from "./change-feed.ts";
+import {appendChanges, initializeChangeFeed} from "./change-feed.ts";
 import {
   Problem,
   text,
@@ -92,9 +92,7 @@ export class ResearchBatches {
     db.sql.exec(
       "CREATE TABLE IF NOT EXISTS pra_research_batch_tombstones(id TEXT PRIMARY KEY)",
     );
-    db.sql.exec(
-      "CREATE TABLE IF NOT EXISTS pra_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT,created INTEGER NOT NULL,value TEXT NOT NULL)",
-    );
+    initializeChangeFeed(db);
   }
   private changed(id: string, deleted = false) {
     appendChanges(this.db, [{entity:"research_batches",id,...(deleted?{deleted:true as const}:{})}]);
