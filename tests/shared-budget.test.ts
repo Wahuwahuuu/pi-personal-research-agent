@@ -3,10 +3,12 @@ import {test} from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {SharedBudget} from "../src/shared-budget.ts";
+import {ValidationBudget} from "../src/validation-budget.ts";
 import {QWEN_PRICE,BudgetLedger} from "../src/budget.ts";
 import type {StateStorage} from "../src/state-store.ts";
 const now=Date.parse("2026-11-11T12:00:00+08:00");
-function setup(){const db=new DatabaseSync(":memory:");let depth=0;const port:StateStorage={sql:{exec<T>(q:string,...b:any[]){const s=db.prepare(q),v=(s.columns().length?s.all(...b):(s.run(...b),[])) as T[];return{toArray:()=>v};}},transactionSync<T>(fn:()=>T){if(depth)return fn();db.exec("BEGIN");depth++;try{const v=fn();db.exec("COMMIT");return v;}catch(e){db.exec("ROLLBACK");throw e;}finally{depth--;}}};const shared=new SharedBudget(port);for(const owner of ["a","b"])shared.validation.import(owner,{requests:0,input:0,output:0});return{db,port,shared};}
+function storage(){const db=new DatabaseSync(":memory:");let depth=0;const port:StateStorage={sql:{exec<T>(q:string,...b:any[]){const s=db.prepare(q),v=(s.columns().length?s.all(...b):(s.run(...b),[])) as T[];return{toArray:()=>v};}},transactionSync<T>(fn:()=>T){if(depth)return fn();db.exec("BEGIN");depth++;try{const v=fn();db.exec("COMMIT");return v;}catch(e){db.exec("ROLLBACK");throw e;}finally{depth--;}}};return {db,port};}
+function setup(){const {db,port}=storage();const shared=new SharedBudget(port);for(const owner of ["a","b"])shared.validation.import(owner,{requests:0,input:0,output:0});return{db,port,shared};}
 const request=(id:string,input=1000000,output=1000000)=>({id,taskId:"task-"+id,input,output,model:QWEN_PRICE.model,baseUrl:QWEN_PRICE.baseUrl});
 test("two accounts share one application ceiling instead of receiving separate 50 CNY allowances",()=>{
  const {db,shared:s}=setup();let admitted=0;
@@ -84,4 +86,36 @@ test("approved request ceiling preserves an exhausted historical counter instead
  const after=reopened.snapshot(now);assert.equal(after.validation.requests,501);assert.equal(after.validation.input,1252001);assert.equal(after.validation.output,102049);
  assert.deepEqual(after.validation.limits,{requests:900,input:6000000,output:1000000});assert.equal(after.limit,50);assert.equal(after.backgroundLimit,20);
  assert.deepEqual(port.sql.exec('SELECT * FROM pra_validation_imports ORDER BY owner').toArray(),priorRows);assert.ok(after.estimatedSpent>=before.estimatedSpent);db.close();
+});
+
+test("lifetime totals migrate once, roll back on failure and follow older writers",()=>{
+ const {db,port}=storage();
+ db.exec(`
+  CREATE TABLE pra_validation_imports(owner TEXT PRIMARY KEY,requests INTEGER NOT NULL,input INTEGER NOT NULL,output INTEGER NOT NULL);
+  CREATE TABLE pra_validation_calls(id TEXT PRIMARY KEY,owner TEXT NOT NULL,task TEXT NOT NULL,input_bound INTEGER NOT NULL,output_bound INTEGER NOT NULL,input INTEGER,output INTEGER,status TEXT NOT NULL,created INTEGER NOT NULL);
+  INSERT INTO pra_validation_imports VALUES('legacy',7,100,10);
+  INSERT INTO pra_validation_calls VALUES('finished','legacy','t',50,10,20,4,'settled',1),
+   ('unknown','legacy','t',70,5,70,5,'unknown',2),('pending','legacy','t',80,8,NULL,NULL,'reserved',3);
+ `);
+ const failing:StateStorage={...port,sql:{exec(query,...bindings){
+  if(query.includes("CREATE TRIGGER pra_validation_total_settle"))throw Error("migration interrupted");
+  return port.sql.exec(query,...bindings);
+ }}};
+ assert.throws(()=>new ValidationBudget(failing),/migration interrupted/);
+ assert.equal(db.prepare("SELECT name FROM sqlite_master WHERE name='pra_validation_totals'").get(),undefined);
+ const ledger=new ValidationBudget(port);
+ const counts=(v:ValidationBudget)=>{const {requests,input,output,reservedInput,reservedOutput}=v.snapshot();return {requests,input,output,reservedInput,reservedOutput};};
+ assert.deepEqual(counts(ledger),{requests:10,input:190,output:19,reservedInput:80,reservedOutput:8});
+ const insert=db.prepare("INSERT INTO pra_validation_calls VALUES(?, 'legacy','t',9,3,NULL,NULL,'reserved',4)");
+ const before=counts(ledger);
+ assert.throws(()=>port.transactionSync(()=>{insert.run("rollback");ledger.settle("legacy","pending");throw Error("abort");}),/abort/);
+ assert.deepEqual(counts(ledger),before);
+ insert.run("older-version");
+ db.prepare("UPDATE pra_validation_calls SET input=?,output=?,status='settled' WHERE id=?").run(5,2,"older-version");
+ db.prepare("INSERT INTO pra_validation_imports VALUES(?,?,?,?)").run("later-account",2,3,4);
+ ledger.settle("legacy","pending");ledger.settle("legacy","pending",{input:1,output:0});
+ const expected={requests:13,input:278,output:33,reservedInput:0,reservedOutput:0};
+ assert.deepEqual(counts(ledger),expected);
+ const reopened=new ValidationBudget(port);reopened.import("legacy",{requests:0,input:0,output:0});
+ assert.deepEqual(counts(reopened),expected);db.close();
 });
