@@ -4,6 +4,45 @@ import { expect, type Page, type Route } from "@playwright/test";
 
 type Api = (path: string, method?: string, body?: unknown) => Promise<any>;
 
+async function verifyVersionSelection(base: string, page: Page, api: Api, id: string) {
+  const path = "artifacts/" + id, url = base + "/api/" + path + "?version=2";
+  const first = await api(path + "?version=1"), second = await api(path + "?version=2");
+  const select = page.getByLabel("成果版本", {exact:true}), view = page.locator(".artifact-page");
+  await page.goto(base + "/#artifacts/" + id);
+  let release!: () => void;
+  const gate = new Promise<void>(done => { release = done; });
+  const started = page.waitForRequest(r => r.url() === url && r.method() === "GET");
+  const delay = async (route: Route) => {
+    const response = await route.fetch();
+    await gate;
+    await route.fulfill({response});
+  };
+  await page.route(url, delay);
+  try {
+    const delivered = page.waitForResponse(r => r.url() === url);
+    await select.selectOption("2");
+    await started;
+    await expect(select).toHaveValue("2");
+    await expect(view.getByRole("link", {name:"Markdown", exact:true})).toHaveAttribute("href", /&version=2$/);
+    await select.selectOption("1");
+    await expect(view.getByRole("heading", {name:first.title, exact:true})).toBeVisible();
+    release();
+    await delivered;
+    await expect(select).toHaveValue("1");
+    await expect(view.locator("h1")).toHaveText(first.title);
+  } finally {
+    release();
+    await page.unroute(url, delay);
+  }
+  await page.route(url, route => route.fulfill({status:503,json:{error:"SERVICE_UNAVAILABLE"}}), {times:1});
+  await select.selectOption("2");
+  await expect(view.getByRole("alert")).toBeVisible();
+  await expect(view.locator(".markdown")).toHaveCount(0);
+  await view.getByRole("button", {name:"重试", exact:true}).click();
+  await expect(view.locator("h1")).toHaveText(second.title);
+  await expect(select).toHaveValue("2");
+}
+
 export async function verifyArtifactEdits(base: string, page: Page, api: Api) {
   const request = () => ({ requestId: crypto.randomUUID() });
   const task = await api("tasks", "POST", { ...request(), kind: "chat", input: "你好" });
@@ -68,12 +107,13 @@ export async function verifyArtifactEdits(base: string, page: Page, api: Api) {
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     }
     await verifyArtifactEditCapacity(base, page, api, a.id);
+    await verifyVersionSelection(base, page, api, a.id);
     await verifyAnswerArtifactKinds(base, page, api, task.id);
   } finally {
     await api("conversations/" + task.conversationId, "DELETE", request());
     await page.setViewportSize({ width: 1440, height: 900 });
   }
-  return "Concurrent artifact edits require an explicit merge. Long Markdown survives a desktop edit, mobile rename, replay, history and export. A completed answer can be saved as four independent artifact types.";
+  return "Concurrent edits require an explicit merge. Long Markdown survives editing and export. Historical selections, downloads and retries retain the selected version after a delayed response. An answer can be saved as four independent artifact types.";
 }
 
 /** The same saved Markdown must survive a long edit, a title-only edit, history, and export. */

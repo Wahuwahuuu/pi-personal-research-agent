@@ -765,17 +765,22 @@ export function ArtifactView({
     versions = useResource<
       { version: number; editor: string; created: number }[]
     >(id ? "artifacts/" + id + "/versions" : undefined, revision);
-  const [historical, setHistorical] = useState<SavedArtifact>(),
+  const [selection, setSelection] = useState<{ id: string; version: number }>(),
     [draft, setDraft] = useState<{ version: number; title: string; content: string }>(),
     [saving, setSaving] = useState(false),
     [deleting, setDeleting] = useState(false);
   useEffect(() => {
-    setHistorical(undefined);
+    setSelection(undefined);
     setDraft(undefined);
   }, [id]);
   const latest = detail.value;
   const changedWhileEditing = !!draft && !!latest && draft.version !== latest.version;
-  const a = historical ?? latest;
+  const selectedVersion = selection?.id === id ? selection?.version : undefined;
+  const history = useResource<SavedArtifact>(
+    id && selectedVersion !== undefined ? "artifacts/" + id + "?version=" + selectedVersion : undefined,
+  );
+  const version = selectedVersion ?? latest?.version;
+  const a = selectedVersion === undefined ? latest : history.value;
   if (id)
     return (
       <section className="page artifact-page">
@@ -787,25 +792,25 @@ export function ArtifactView({
         </button>
         {detail.error ? (
           <ResourceError text={detail.error} retry={detail.reload} />
-        ) : !a ? (
+        ) : !latest || version === undefined ? (
           <Loading />
         ) : (
           <>
             <div className="page-heading">
               <div>
-                <h1>{a.title}</h1>
-                <p>
+                <h1>{a?.title ?? "第 " + version + " 版"}</h1>
+                {a && <p>
                   {artifactLabels[a.kind]} · 第 {a.version} 版 ·{" "}
                   {a.editor === "user"
                     ? "人工编辑，修改内容未自动复核"
                     : "来自研究回答"}
                   {a.partial ? " · 部分完成" : ""}
-                </p>
+                </p>}
               </div>
-              {!draft && (
+              {!draft && a && (
                 <button
                   onClick={() => setDraft({ version: a.version, title: a.title, content: a.content })}
-                  disabled={!!historical}
+                  disabled={selectedVersion !== undefined}
                 >
                   编辑
                 </button>
@@ -817,17 +822,11 @@ export function ArtifactView({
                 <select
                   aria-label="成果版本"
                   disabled={!!draft}
-                  value={a.version}
-                  onChange={(e) =>
-                    void run(async () => {
-                      const v = Number(e.target.value);
-                      setHistorical(
-                        v === detail.value!.version
-                          ? undefined
-                          : await api("artifacts/" + id + "?version=" + v),
-                      );
-                    })
-                  }
+                  value={version}
+                  onChange={e => {
+                    const next = Number(e.currentTarget.value);
+                    setSelection(next === latest.version ? undefined : {id, version: next});
+                  }}
                 >
                   {versions.value?.map((v) => (
                     <option key={v.version} value={v.version}>
@@ -843,11 +842,11 @@ export function ArtifactView({
                   key={format}
                   href={
                     "/api/artifacts/" +
-                    a.id +
+                    id +
                     "/export?format=" +
                     format +
                     "&version=" +
-                    a.version
+                    version
                   }
                 >
                   {format === "md"
@@ -858,6 +857,9 @@ export function ArtifactView({
                 </a>
               ))}
             </div>
+            {history.error && <ResourceError text={history.error} retry={history.reload} />}
+            {!history.error && !a && <Loading />}
+            {a && !history.error && <>
             {draft ? (
               <form
                 onSubmit={(e) => {
@@ -959,6 +961,7 @@ export function ArtifactView({
                 删除成果
               </button>
             </Dialog>
+            </>}
           </>
         )}
       </section>
