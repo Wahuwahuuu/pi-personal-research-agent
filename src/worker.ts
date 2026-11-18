@@ -827,8 +827,12 @@ export class PersonalAgent extends DurableObject<Env> {
       const t = getTask(this.state, match[1]);
       if(t.control&&match[2]!=="cancel")throw new Problem("CONTROL_REQUIRES_MESSAGE",409);
       if (match[2] === "cancel") {
-        this.proactiveStep(()=>{cancel(this.state, t.id);this.proactive.cancel(t);});
-        this.notifyTaskCancellation(t);
+        if (!terminal(t)) {
+          this.proactiveStep(()=>{cancel(this.state, t.id);this.proactive.cancel(t);});
+          this.notifyTaskCancellation(t);
+        }
+        // Replaying an acknowledged cancellation also repairs a missed alarm.
+        if (t.status === "cancelled") await this.maintenance.arm();
       } else if (
         ["failed", "waiting_device", "waiting_user"].includes(t.status)
       ) {
@@ -1737,7 +1741,8 @@ export class PersonalAgent extends DurableObject<Env> {
     for(const ws of this.ctx.getWebSockets("device"))
       for(const op of this.state.operations.filter(o=>o.taskId===t.id&&o.state==="cancelled"))
         this.send(ws,{type:"cancel",operationId:op.id});
-    if(t.sessionId)this.ctx.waitUntil(this.harness.abort({session:t.sessionId}).catch(()=>{}));
+    if(t.sessionId && t.modelOperation)
+      this.ctx.waitUntil(this.harness.abort({session:t.sessionId,operationId:t.modelOperation}).catch(()=>{}));
   }
   proactiveStep(fn:()=>void){
     try{this.database.transactionSync(()=>{fn();this.save();});}

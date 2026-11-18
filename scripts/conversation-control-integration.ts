@@ -43,6 +43,20 @@ export async function verifyConversationControls(api:API) {
   assert.equal(history.length,receipts.length);assert.equal(new Set(history.map((h:any)=>h.turn_id)).size,history.length);
   checks.push("natural-language pause/resume/cancel/status use the original task, retain budgets and persist host replies with zero model calls");
   checks.push("multi-task ordinal selection uses persisted IDs; control receipt cannot enter model execution through any task-control endpoint");
+  const first=await api("tasks","POST",{requestId:prefix+"-card-first",input:"read local material",kind:"research"});
+  await until(first.id,"waiting_device");
+  const next=await api("tasks","POST",{requestId:prefix+"-card-next",input:"continue reading",kind:"research",conversationId:first.conversationId});
+  await until(next.id,"queued");
+  // Let the arrival alarm drain. A GET observes state and cannot wake queued work.
+  await new Promise(resolve=>setTimeout(resolve,2000));
+  assert.equal((await api("tasks/"+first.id+"/cancel","POST")).status,"cancelled");
+  await until(next.id,"waiting_device");
+  assert.equal((await api("tasks/"+first.id+"/cancel","POST")).status,"cancelled");
+  const successor=await api("tasks/"+next.id);
+  assert.deepEqual([successor.status,successor.calls,successor.tools],["waiting_device",0,0]);
+  await api("tasks/"+next.id+"/cancel","POST");
+  await api("conversations/"+first.conversationId,"DELETE");
+  checks.push("cancelling an idle task through its task card wakes the same conversation successor; a repeated cancel leaves it waiting with zero calls");
   await api("conversations/"+conversationId,"DELETE");
   return checks;
 }
