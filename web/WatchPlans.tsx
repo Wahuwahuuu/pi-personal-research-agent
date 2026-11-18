@@ -122,7 +122,7 @@ function BatchDetail({ id, revision }: { id: string; revision: number }) {
       )}
       <div className="button-row">
         {b.conversationId && (
-          <button onClick={() => navigate("chat", b.conversationId)}>
+          <button onClick={() => navigate("chat", b.conversationId, b.taskId)}>
             打开研究会话
           </button>
         )}

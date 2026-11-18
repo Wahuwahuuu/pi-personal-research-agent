@@ -53,6 +53,7 @@ export async function verifyProjectRecords(
     await expect(panel.getByText(other.artifact.title,{exact:true})).toHaveCount(0);
     await panel.getByRole("button",{name:new RegExp(first.artifact.title)}).click();
     await expect(page).toHaveURL(base+"/#artifacts/"+first.artifact.id);
+    await expect(page.getByRole("heading",{name:first.artifact.title,exact:true})).toBeVisible();
     assert.ok(observations.some(u=>u.pathname==="/api/tasks")&&observations.some(u=>u.pathname==="/api/artifacts"));
     assert.ok(observations.filter(u=>u.pathname==="/api/memories").every(u=>u.searchParams.get("scope")==="project"));
   }
@@ -60,9 +61,75 @@ export async function verifyProjectRecords(
   const panel=page.locator(".project-records");await panel.locator(":scope > summary").click();
   await expect(panel.getByText(first.done.input,{exact:true})).toHaveCount(0);
   await panel.getByRole("button",{name:new RegExp(other.done.input)}).click();
-  await expect(page).toHaveURL(base+"/#chat/"+other.c.id);
+  await expect(page).toHaveURL(base+"/#chat/"+other.c.id+"/"+other.done.id);
+  await expect(page.getByRole("article",{name:"来源消息",exact:true})).toContainText(other.done.input);
   assert.equal((await api("state")).usage.requests,calls);
-  return ["two projects expose only their own tasks and artifacts on desktop and mobile",
+  // Move the source beyond the latest page using ordinary, deterministic control receipts.
+  for(let i=0;i<32;i++){
+    const receipt=await create("tasks",{conversationId:first.c.id,kind:"auto",input:"查看当前任务进度"});
+    assert.equal(receipt.control.action,"status");assert.equal(receipt.calls,0);
+  }
+  const recent=await api("conversations/"+first.c.id+"/messages?limit=30");
+  assert.equal(recent.items.length,30);assert.ok(recent.items.every((t:{id:string})=>t.id!==first.done.id));
+  for(const width of [1440,390]){
+    await page.setViewportSize({width,height:width===390?844:900});
+    await page.goto(base+"/#artifacts/"+first.artifact.id);
+    await page.getByRole("button",{name:"回到来源讨论",exact:true}).click();
+    const source=page.locator("article.turn").filter({has:page.getByText(first.done.input,{exact:true})});
+    await expect(source).toBeVisible();await expect(source).toBeFocused();
+    await expect(source.locator(".markdown").first()).not.toBeEmpty();
+    await expect(page).toHaveURL(base+"/#chat/"+first.c.id+"/"+first.done.id);
+    const draft="从原消息继续核对";
+    await page.getByLabel("消息",{exact:true}).fill(draft);
+    await page.getByRole("button",{name:"回到最新消息",exact:true}).click();
+    await expect(page.getByLabel("消息",{exact:true})).toHaveValue(draft);
+    await expect(page.locator("article.turn")).toHaveCount(30);
+    await expect(source).toHaveCount(0);
+
+    await page.goto(base+"/#projects/"+a.id);
+    const records=page.locator(".project-records");
+    await records.locator(":scope > summary").click();
+    await records.getByLabel("查看项目记录",{exact:true}).selectOption("conclusion");
+    await records.getByRole("button",{name:"查看来源讨论",exact:true}).first().click();
+    await expect(source).toBeFocused();
+    await expect(page).toHaveURL(base+"/#chat/"+first.c.id+"/"+first.done.id);
+
+    await page.goto(base+"/#memory/"+a.id);
+    await page.getByRole("button",{name:"查看来源讨论",exact:true}).first().click();
+    await expect(source).toBeFocused();
+  }
+  const noticeIndex=(await api("overview")).notices.findIndex((n:{id:string})=>n.id==="task:"+first.done.id);
+  assert.ok(noticeIndex>=0);
+  const notice=page.locator(".notice-row").nth(noticeIndex).getByRole("button",{name:"查看结果",exact:true});
+  await page.goto(base+"/#inbox");await notice.click();
+  await expect(page.getByRole("article",{name:"来源消息",exact:true})).toContainText(first.done.input);
+  await page.goto(base+"/#inbox");
+  let held=false,release!:()=>void;
+  const pending=new Promise<void>(done=>release=done);
+  const taskPath="**/api/tasks/"+first.done.id;
+  await page.route(taskPath,async r=>{const result=await r.fetch();held=true;await pending;await r.fulfill({response:result});},{times:1});
+  await notice.click();await expect.poll(()=>held,{timeout:10000}).toBe(true);
+  await page.goto(base+"/#projects");await expect(page.getByRole("heading",{name:"研究项目",exact:true})).toBeVisible();
+  const delivered=page.waitForResponse(r=>new URL(r.url()).pathname==="/api/tasks/"+first.done.id);
+  release();await delivered;
+  await expect(page).toHaveURL(base+"/#projects");
+  const invalid=await page.request.get(base+"/api/conversations/"+first.c.id+"/messages?focus="+other.done.id);
+  assert.equal(invalid.status(),404);assert.equal((await invalid.json()).error,"SOURCE_MESSAGE_UNAVAILABLE");
+  await page.goto(base+"/#chat/"+first.c.id+"/"+other.done.id);
+  await expect(page.getByRole("alert")).toContainText("在这段讨论中找不到这条来源消息");
+  await expect(page.getByText(other.done.input,{exact:true})).toHaveCount(0);
+  await page.getByRole("button",{name:"回到最新消息",exact:true}).click();
+  await expect(page.locator("article.turn")).toHaveCount(30);
+  await page.goto(base+"/#chat/"+first.c.id+"/"+first.done.id);
+  await expect(page.getByRole("article",{name:"来源消息",exact:true})).toBeFocused();
+  await page.getByLabel("消息",{exact:true}).fill("现在做到哪了");
+  await page.getByRole("button",{name:"发送消息",exact:true}).click();
+  await expect(page).toHaveURL(base+"/#chat/"+first.c.id);
+  await expect(page.locator(".user-message").last()).toHaveText("现在做到哪了");
+  assert.equal((await api("state")).usage.requests,calls);
+  return ["artifacts and project or personal memory open the exact older turn at both widths, preserve the draft and resume latest",
+    "a missing source in this discussion returns an explicit error without displaying another discussion and source navigation adds no model requests",
+    "two projects expose only their own tasks and artifacts on desktop and mobile",
     "project-only questions paginate without personal records; research conclusions expose the original quote and range",
     "opening a discussion or artifact resolves to the stored object and browsing starts no model requests"];
 }

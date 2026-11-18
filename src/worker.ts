@@ -1,6 +1,6 @@
 import {modelOutputLimit} from "./model-limits.ts";
 import {memoryView} from "./memory-view.ts";
-import {activeTasks,taskByRequest} from "./task-queries.ts";
+import {activeTasks,conversationMessagePage,taskByRequest} from "./task-queries.ts";
 import {SOURCE_BUILD} from "./source-build.ts";
 import {beginModelTiming, finishModelTiming, markToolDispatch, taskTimings, apiTiming, type ModelMeasurement} from "./timing.ts";
 import {retentionCandidates,retentionPreview,confirmRetention} from "./data-retention.ts";
@@ -1068,7 +1068,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const messages=path.match(/^\/api\/conversations\/([^/]+)\/messages$/);
     if(messages&&r.method==="GET"){
       const c=this.state.conversations?.find(c=>c.id===messages[1]);if(!c)throw new Problem("NOT_FOUND",404);
-      const page=taskPage(this.state,{conversationId:c.id,before:p.get("before")??undefined,limit:Number(p.get("limit")??30)});
+      const page=conversationMessagePage(this.state,c.id,{focus:p.get("focus")??undefined,before:p.get("before")??undefined,limit:Number(p.get("limit")??30)});
       return json({conversation:{id:c.id,title:c.title,scope:c.scope,projectId:c.projectId},items:page.items.reverse().map(({modelPrompt,...t})=>t),nextCursor:page.nextCursor});
     }
     if(path==="/api/tasks"&&r.method==="GET"){

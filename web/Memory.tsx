@@ -200,7 +200,7 @@ export function MemoryView({
                 {m.source_session && (
                   <button
                     className="text-button"
-                    onClick={() => navigate("chat", m.source_session)}
+                    onClick={() => navigate("chat", m.source_session, m.source_turn)}
                   >
                     查看来源讨论
                   </button>

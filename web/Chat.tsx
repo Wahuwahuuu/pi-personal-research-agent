@@ -73,6 +73,7 @@ function SaveAnswer({task, run, refresh}: {task: Task; run: Run; refresh: () => 
 
 export function Chat({
   id,
+  turnId,
   data,
   revision,
   run,
@@ -80,6 +81,7 @@ export function Chat({
   onSource,
 }: {
   id?: string;
+  turnId?: string;
   data: Overview;
   revision: number;
   run: Run;
@@ -87,7 +89,7 @@ export function Chat({
   onSource: (source: Chunk, task?: Task, catalog?: Paper[]) => void;
 }) {
   const messages = useResource<Messages>(
-    id ? "conversations/" + id + "/messages?limit=30" : undefined,
+    id ? "conversations/" + encodeURIComponent(id) + "/messages?limit=30" + (turnId ? "&focus="+encodeURIComponent(turnId) : "") : undefined,
     revision,
   );
   const [draft, setDraft] = useState(""),
@@ -99,18 +101,28 @@ export function Chat({
     [title, setTitle] = useState(""),
     [deleting, setDeleting] = useState(false),
     [localError, setLocalError] = useState("");
-  const draftRevision = useRef(0);
+  const draftRevision = useRef(0), historyGeneration = useRef(0);
+  const sourceTurn = useRef<HTMLElement>(null), lastFocused = useRef<string | undefined>(undefined);
   const input = useRef<HTMLTextAreaElement>(null),
     bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setOlder([]);
     setOlderCursor(undefined);
     setLocalError("");
-  }, [id]);
+    return () => { historyGeneration.current++; };
+  }, [id, turnId]);
   useEffect(() => {
-    if (!draft)
-      bottom.current?.scrollIntoView({ block: "end", behavior: "instant" });
-  }, [id, messages.value?.items.length]);
+    if (turnId) {
+      if (sourceTurn.current && lastFocused.current !== turnId) {
+        sourceTurn.current.focus({preventScroll:true});
+        sourceTurn.current.scrollIntoView({block:"start", behavior:"instant"});
+        lastFocused.current = turnId;
+      }
+    } else {
+      lastFocused.current = undefined;
+      if (!draft) bottom.current?.scrollIntoView({block:"end",behavior:"instant"});
+    }
+  }, [id, turnId, messages.value?.items.length]);
   const rows = [...older, ...(messages.value?.items ?? [])],
     conversation = messages.value?.conversation,
     active = rows.filter(
@@ -141,6 +153,7 @@ export function Chat({
         return;
       }
       if (draftRevision.current === submittedRevision) setDraft("");
+      if (turnId) navigate("chat",id);
       if (composer.form?.contains(document.activeElement)) composer.focus();
     } catch (e) {
       setLocalError(errorText(e));
@@ -152,12 +165,14 @@ export function Chat({
     const cursor =
       olderCursor === undefined ? messages.value?.nextCursor : olderCursor;
     if (!cursor || !id) return;
+    const generation = historyGeneration.current;
     const page = await api<Messages>(
       "conversations/" +
         id +
         "/messages?limit=30&before=" +
         encodeURIComponent(String(cursor)),
     );
+    if (generation !== historyGeneration.current) return;
     setOlder((v) =>
       [...page.items, ...v].filter(
         (t, i, all) => all.findIndex((a) => a.id === t.id) === i,
@@ -224,6 +239,10 @@ export function Chat({
           </details>
         )}
       </div>
+      {turnId && <div className="source-message-nav">
+        <span>来源消息</span>
+        <button className="text-button" onClick={()=>navigate("chat",id)}>回到最新消息</button>
+      </div>}
       <div className="message-scroll">
         {messages.error ? (
           <div className="error" role="alert">
@@ -277,7 +296,9 @@ export function Chat({
               </button>
             )}
             {rows.map((t) => (
-              <article className="turn" key={t.id}>
+              <article className={"turn"+(t.id===turnId ? " source-turn" : "")} key={t.id}
+                ref={t.id===turnId ? sourceTurn : undefined} tabIndex={t.id===turnId ? -1 : undefined}
+                aria-label={t.id===turnId ? "来源消息" : undefined}>
                 <div className="user-message">{t.input}</div>
                 <div className="assistant-message">
                   <div className="message-byline">

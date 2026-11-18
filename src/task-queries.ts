@@ -11,6 +11,7 @@ export function matchesTaskPage(task:Task,query:TaskPageQuery){return (!query.pr
 export function activeTasks(state:State,includeOpen=false):Task[]{
  return readers.get(state)?.active(includeOpen)??state.tasks.filter(t=>!closedTask(t)||(includeOpen&&t.runOpen));
 }
+const taskCursor = (task: Pick<Task,"created"|"id">) => task.created + ":" + task.id;
 export function queryTaskPage(state:State,options:TaskPageOptions={}){
  const limit=options.limit??30;if(!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
  let timestamp=Number.MAX_SAFE_INTEGER,id="~";
@@ -22,5 +23,19 @@ export function queryTaskPage(state:State,options:TaskPageOptions={}){
   return {items:[] as Task[],nextCursor:null};
  const query:TaskPageQuery={projectConversations,conversationId:options.conversationId,status:options.status,timestamp,id,limit};
  const rows=readers.get(state)?.page(query)??state.tasks.filter(t=>matchesTaskPage(t,query)).sort(taskPageOrder).slice(0,limit+1);
- return {items:rows.slice(0,limit),nextCursor:rows.length>limit?rows[limit-1].created+":"+rows[limit-1].id:null};
+ return {items:rows.slice(0,limit),nextCursor:rows.length>limit?taskCursor(rows[limit-1]):null};
+}
+
+/** Return a page ending at the requested source, including turns with tied timestamps in cursor order. */
+export function conversationMessagePage(
+  state: State, conversationId: string, options: {focus?: string; before?: string; limit: number},
+) {
+  const {focus, before, limit} = options;
+  if (!focus) return queryTaskPage(state, {conversationId, before, limit});
+  if (before) throw new Problem("INVALID_PAGE");
+  const source = state.tasks.find(task => task.id === focus && task.conversationId === conversationId);
+  if (!source) throw new Problem("SOURCE_MESSAGE_UNAVAILABLE", 404);
+  const earlier = queryTaskPage(state, {conversationId, before:taskCursor(source), limit});
+  const items = [source, ...earlier.items.slice(0, limit - 1)];
+  return {items, nextCursor:earlier.items.length === limit ? taskCursor(items[items.length - 1]) : null};
 }

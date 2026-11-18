@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
 import {Workspace,conversationPage,taskPage} from "../src/workspace.ts";
 import {initialState,submit} from "../src/domain.ts";
+import {conversationMessagePage} from "../src/task-queries.ts";
 import {StateRepository,type StateStorage} from "../src/state-store.ts";
 function setup(){const db=new DatabaseSync(":memory:");let depth=0;const p:StateStorage={sql:{exec<T>(q:string,...b:any[]){const s=db.prepare(q),v=(s.columns().length?s.all(...b):(s.run(...b),[])) as T[];return{toArray:()=>v};}},transactionSync<T>(f:()=>T){if(depth)return f();db.exec("BEGIN");depth++;try{const v=f();db.exec("COMMIT");return v;}catch(e){db.exec("ROLLBACK");throw e;}finally{depth--;}}};return{db,workspace:new Workspace(p)};}
 test("project mutations are idempotent, searchable, editable and cannot resurrect after deletion",()=>{
@@ -38,6 +39,26 @@ test("messages created in the same millisecond paginate without omission or dupl
  let before:string|undefined,ids:string[]=[];
  do{const p=taskPage(s,{before,limit:13});ids.push(...p.items.map(t=>t.id));before=p.nextCursor??undefined;}while(before);
  assert.equal(ids.length,100);assert.equal(new Set(ids).size,100);
+});
+
+test("a source page stays in its discussion and follows the same cursor order for tied turns",()=>{
+  const state=initialState();
+  for (const [id,conversationId] of [["a","one"],["b","one"],["c","one"],["d","one"],["e","two"]]) {
+    const task=submit(state,"message "+id,"request-"+id,"chat",100);
+    Object.assign(task,{id,conversationId});
+  }
+  const page=(focus:string,limit:number)=>conversationMessagePage(state,"one",{focus,limit});
+  assert.deepEqual(page("c",2).items.map(t=>t.id),["c","b"]);
+  const older=conversationMessagePage(state,"one",{before:page("c",2).nextCursor!,limit:2});
+  assert.deepEqual(older.items.map(t=>t.id),["a"]);
+  assert.equal(older.nextCursor,null);
+  assert.equal(page("c",1).nextCursor,"100:c");
+  assert.equal(page("a",1).nextCursor,null);
+  assert.equal(page("c",3).nextCursor,null);
+  assert.throws(()=>page("e",2),/SOURCE_MESSAGE_UNAVAILABLE/);
+  assert.throws(()=>page("deleted",2),/SOURCE_MESSAGE_UNAVAILABLE/);
+  assert.throws(()=>page("c",0),/INVALID_PAGE/);
+  assert.throws(()=>conversationMessagePage(state,"one",{focus:"c",before:"100:b",limit:5}),/INVALID_PAGE/);
 });
 
 test("project creation preserves the supplied paper scope before any conversation inherits it",()=>{

@@ -610,7 +610,7 @@ export function Activity({ data, revision, run, refresh }: Props) {
                 </div>
                 <button
                   className="row-title"
-                  onClick={() => navigate("chat", t.conversationId)}
+                  onClick={() => navigate("chat", t.conversationId, t.id)}
                 >
                   {t.input}
                 </button>
@@ -621,7 +621,7 @@ export function Activity({ data, revision, run, refresh }: Props) {
                 <div className="button-row">
                   <button
                     className="text-button"
-                    onClick={() => navigate("chat", t.conversationId)}
+                    onClick={() => navigate("chat", t.conversationId, t.id)}
                   >
                     查看讨论
                   </button>
@@ -715,12 +715,13 @@ export function Inbox({ data, revision, run, refresh }: Props) {
                 {n.id.startsWith("task:") && (
                   <button
                     className="text-button"
-                    onClick={() =>
+                    onClick={event => {
+                      const link=event.currentTarget, from=location.hash;
                       void run(async () => {
                         const t = await api<Task>("tasks/" + n.id.slice(5));
-                        navigate("chat", t.conversationId);
-                      })
-                    }
+                        if (link.isConnected && location.hash === from) navigate("chat", t.conversationId, t.id);
+                      });
+                    }}
                   >
                     查看结果
                   </button>
@@ -934,7 +935,7 @@ export function ArtifactView({
               onSource={(source,title)=>onSource(source,a.id,title)} /> : a.kind==="comparison" &&
               <p className="help">保存这份成果时没有逐篇证据记录。你可以回到来源讨论继续比较。</p>}
             <div className="section-actions">
-              <button onClick={() => navigate("chat", a.conversationId)}>
+              <button onClick={() => navigate("chat", a.conversationId, a.taskId)}>
                 回到来源讨论
               </button>
               <button className="danger-text" onClick={() => setDeleting(true)}>

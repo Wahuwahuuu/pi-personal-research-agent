@@ -62,6 +62,7 @@ export function useRoute() {
       return {
         page: parts[0] || "chat",
         id: parts[1] ? decodeURIComponent(parts[1]) : undefined,
+        turnId: parts[0] === "chat" && parts[1] && parts[2] ? decodeURIComponent(parts[2]) : undefined,
       };
     } catch {
       return { page: "chat", id: undefined };
@@ -75,7 +76,12 @@ export function useRoute() {
   }, []);
   return route;
 }
-export function navigate(page: string, id?: string) {
-  location.hash = page + (id ? "/" + encodeURIComponent(id) : "");
+export function navigate(page: string, id?: string, turnId?: string) {
+  const parts = [page];
+  if (id) {
+    parts.push(encodeURIComponent(id));
+    if (page === "chat" && turnId) parts.push(encodeURIComponent(turnId));
+  }
+  location.hash = parts.join("/");
 }
 export type Run = (action: () => Promise<unknown>) => Promise<void>;

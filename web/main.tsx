@@ -265,7 +265,7 @@ function Workspace({
   useEffect(() => {
     setMenu(false);
     setEvidence(undefined);
-  }, [route.page, route.id]);
+  }, [route.page, route.id, route.turnId]);
   useEffect(() => {
     const theme = data?.settings.theme ?? "system";
     document.documentElement.dataset.theme = theme;
@@ -456,6 +456,7 @@ function Workspace({
     <Chat
       key={route.id ?? "new"}
       id={route.id}
+      turnId={route.turnId}
       {...props!}
       onSource={(source, task, catalog) => setEvidence({ source, task, catalog })}
     />

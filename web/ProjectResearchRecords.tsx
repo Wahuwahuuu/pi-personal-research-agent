@@ -31,7 +31,7 @@ function ProjectRecordList({projectId, revision}: {projectId:string; revision:nu
       ) : (
         <div className="list">
           {kind === "tasks" && tasks.value?.items.map(t => (
-            <button key={t.id} className="list-row" onClick={() => navigate("chat", t.conversationId)}>
+            <button key={t.id} className="list-row" onClick={() => navigate("chat", t.conversationId, t.id)}>
               <span className="grow"><strong>{t.input}</strong><small>{date(t.created)}</small></span>
               <Status status={t.status}/><Icon name="chevron" />
             </button>
@@ -48,7 +48,7 @@ function ProjectRecordList({projectId, revision}: {projectId:string; revision:nu
               <p>{m.content}</p>
               <small>{[date(m.updated_at), m.edited ? "已人工修订" : "", memorySourceLabel(m)].filter(Boolean).join(" · ")}</small>
               <MemoryEvidence memory={m} />
-              {m.source_session && <button className="text-button" onClick={() => navigate("chat", m.source_session)}>查看来源讨论</button>}
+              {m.source_session && <button className="text-button" onClick={() => navigate("chat", m.source_session, m.source_turn)}>查看来源讨论</button>}
             </article>
           ))}
         </div>

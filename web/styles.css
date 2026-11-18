@@ -728,6 +728,20 @@
     margin: 22px auto 36px;
     max-width: 76ch;
   }
+  .source-message-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .5rem;
+    padding: .35rem clamp(1rem, 4vw, 3rem);
+    background: var(--accent-soft);
+  }
+  .source-turn {
+    scroll-margin-block-start: 1rem;
+    outline: 2px solid var(--accent);
+    outline-offset: 4px;
+    border-radius: 4px;
+  }
   .user-message {
     white-space: pre-wrap;
     background: var(--accent-soft);
