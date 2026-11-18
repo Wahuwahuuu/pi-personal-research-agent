@@ -57,12 +57,15 @@ export function Projects({
     [goal, setGoal] = useState(""),
     [deleting, setDeleting] = useState(false);
   const list = usePaged<Project>(
-    "projects?q=" + encodeURIComponent(search) + "&archived=" + archived,
+    id ? undefined : "projects?q=" + encodeURIComponent(search) + "&archived=" + archived,
     revision,
   );
-  const detail = useResource<
-    Project & { conversations: Page<Conversation>; tasks: Task[] }
-  >(id ? "projects/" + id : undefined, revision);
+  const detail = useResource<Project>(
+    id ? "projects/" + encodeURIComponent(id) + "?view=summary" : undefined, revision,
+  );
+  const discussions = usePaged<Conversation>(
+    id ? "conversations?limit=30&project=" + encodeURIComponent(id) : undefined, revision,
+  );
   useEffect(() => {
     if (detail.value) {
       setTitle(detail.value.title);
@@ -138,8 +141,12 @@ export function Projects({
             </form>
             <h2 className="section-heading">相关讨论</h2>
             <div className="list">
-              {p.conversations.items.length ? (
-                p.conversations.items.map((c) => (
+              {discussions.error ? (
+                <ResourceError text={discussions.error} retry={discussions.reload} />
+              ) : !discussions.value ? (
+                <Loading />
+              ) : discussions.value.items.length ? (
+                discussions.value.items.map((c) => (
                   <button
                     className="list-row"
                     key={c.id}
@@ -177,6 +184,7 @@ export function Projects({
                 </Empty>
               )}
             </div>
+            <Pager page={discussions} />
             <h2 className="section-heading">项目中的论文</h2>
             <p>
               {p.paperIds.length
@@ -377,7 +385,7 @@ export function Library({
 }: Props & { projectId?: string; onPaper: (p: Paper) => void }) {
   const papers = useResource<Paper[]>("papers", revision),
     project = useResource<Project>(
-      projectId ? "projects/" + projectId : undefined,
+      projectId ? "projects/" + encodeURIComponent(projectId) + "?view=summary" : undefined,
       revision,
     );
   const [pendingImports,setPendingImports]=useState<number>(),

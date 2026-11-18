@@ -1011,7 +1011,15 @@ export class PersonalAgent extends DurableObject<Env> {
     const project=path.match(/^\/api\/projects\/([^/]+)$/);
     if(project){
       const id=project[1];
-      if(r.method==="GET"){const value=this.workspace.getProject(id);return json({...value,conversations:conversationPage(this.state,{projectId:id},this.repository),tasks:this.state.tasks.filter(t=>this.state.conversations?.some(c=>c.id===t.conversationId&&c.projectId===id)).map(taskSummary)});}
+      if(r.method==="GET"){
+        const value=this.workspace.getProject(id);
+        if(p.get("view")==="summary")return json(value);
+        return json({
+          ...value,
+          conversations:conversationPage(this.state,{projectId:id},this.repository),
+          tasks:this.state.tasks.filter(t=>this.state.conversations?.some(c=>c.id===t.conversationId&&c.projectId===id)).map(taskSummary),
+        });
+      }
       if(r.method==="PATCH"){const b=await this.body(r);const result=this.workspace.once(b.requestId,"project:"+id,b,()=>this.workspace.updateProject(id,b));this.publish();return json(result);}
       if(r.method==="DELETE"){
         const b=await this.body(r);
