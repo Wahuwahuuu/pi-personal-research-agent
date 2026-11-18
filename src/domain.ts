@@ -38,7 +38,7 @@ export interface Task {
   conversationId?: string;
   workflow?: ResearchWorkflow;
   budgetTaskId?: string;
-  goal?:LongGoal;priority?:0|1|2;pauseRequested?:boolean;pausedFrom?:Status;amendments?:{text:string;at:number}[];
+  goal?:LongGoal;priority?:0|1|2;pauseRequested?:boolean;pausedFrom?:Status;amendmentPending?:boolean;amendments?:{text:string;at:number}[];
   translationKey?: string;
   researchIndex?: string;
   researchEvidence?: Chunk[];
@@ -300,6 +300,13 @@ export function expire(s: State, now = Date.now()) {
 export function taskAllowance(t:Task){
  const segment=t.goal?.segments.at(-1),count=t.goal?4:1;
  return {calls:Math.max(0,Math.min(6-(t.calls-(segment?.calls??0)),6*count-t.calls)),tools:Math.max(0,Math.min(10-(t.tools-(segment?.tools??0)),10*count-t.tools)),activeMs:Math.max(0,Math.min(180000-(t.activeMs-(segment?.activeMs??0)),180000*count-t.activeMs))};
+}
+export function hasNextGoalSegment(t:Task){
+ return !!t.goal && t.goal.segments.length<4 && t.calls<24 && t.tools<40 && t.activeMs<720000;
+}
+export function hasContinuationBudget(t:Task){
+ const remaining=taskAllowance(t);
+ return t.error!=="GOAL_BUDGET" && ((remaining.calls>0 && remaining.activeMs>0) || hasNextGoalSegment(t));
 }
 export function reserve(s: State, t: Task, input: number, output: number) {
   if (

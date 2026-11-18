@@ -4,7 +4,7 @@ import {activeTasks,closedTask} from "./task-queries.ts";
 import {
   Problem,
   text,
-  taskAllowance,
+  taskAllowance, hasNextGoalSegment, hasContinuationBudget,
   type State,
   type Task,
   type Status,
@@ -77,18 +77,13 @@ export function checkpoint(t: Task, reason: string) {
 export function nextSegment(t: Task, reason: string): boolean {
   if (!t.goal) return false;
   checkpoint(t, reason);
-  if (
-    t.goal.segments.length >= 4 ||
-    t.calls >= 24 ||
-    t.tools >= 40 ||
-    t.activeMs >= 720000
-  ) {
+  if (!hasNextGoalSegment(t)) {
     t.status = "paused";
     t.pauseRequested = true;
     t.error = "GOAL_BUDGET";
     return false;
   }
-  if (t.workflow?.execution?.stop_reason === "no_execution_progress")
+  if (!t.amendmentPending && t.workflow?.execution?.stop_reason === "no_execution_progress")
     return false;
   t.goal.segments.push({
     index: t.goal.segments.length + 1,
@@ -139,12 +134,16 @@ export function resumeTask(s: State, t: Task) {
     s.cloudMemory?.invalidatedTurns?.includes(t.id)
   )
     throw new Problem("NEW_TASK_REQUIRED", 409);
+  if (t.error === "GOAL_BUDGET") throw new Problem("GOAL_BUDGET", 429);
   const a = taskAllowance(t);
   if (a.calls <= 0 || a.activeMs <= 0) {
     if (!nextSegment(t, "user_continue"))
       throw new Problem(t.goal ? "GOAL_BUDGET" : "MODEL_BUDGET", 429);
   }
-  if (t.workflow?.phase === "finished") {
+  if (t.amendmentPending) {
+    t.workflow = {...newWorkflow(), automatic: t.kind === "auto", cloudOnly: t.kind !== "research"};
+    delete t.amendmentPending;
+  } else if (t.workflow?.phase === "finished") {
     t.workflow.phase = "agent";
     t.workflow.memory = undefined;
   }
@@ -160,8 +159,11 @@ export function resumeTask(s: State, t: Task) {
   t.updated = Date.now();
 }
 export function amendTask(s: State, t: Task, value: unknown) {
-  if (t.status !== "paused" || !settledForControl(s, t))
-    throw new Problem("PAUSE_REQUIRED", 409);
+  const waiting = t.status === "waiting_user";
+  if ((!waiting && t.status !== "paused") || !settledForControl(s, t)) throw new Problem("PAUSE_REQUIRED", 409);
+  if (t.budgetTaskId) throw new Problem("AMEND_SOURCE_TASK", 409);
+  if (t.error === "CONTEXT_CHANGED" || s.cloudMemory?.invalidatedTurns?.includes(t.id)) throw new Problem("NEW_TASK_REQUIRED", 409);
+  if (waiting && !hasContinuationBudget(t)) throw new Problem(t.goal ? "GOAL_BUDGET" : "MODEL_BUDGET", 429);
   const amendment = text(value, 2000);
   if (
     (t.amendments ?? []).reduce((n, a) => n + a.text.length, 0) +
@@ -169,6 +171,8 @@ export function amendTask(s: State, t: Task, value: unknown) {
     6000
   )
     throw new Problem("AMENDMENT_LIMIT", 429);
+  if (waiting) pauseTask(t);
+  if (t.proactive) t.proactive.planPaused = false;
   for (const op of s.operations.filter(
     (o) => o.taskId === t.id && o.state === "pending",
   ))
@@ -177,11 +181,8 @@ export function amendTask(s: State, t: Task, value: unknown) {
   t.amendments ??= [];
   t.amendments.push({ text: amendment, at: Date.now() });
   checkpoint(t, "direction_changed");
-  t.workflow = {
-    ...newWorkflow(),
-    automatic: t.kind === "auto",
-    cloudOnly: t.kind !== "research",
-  };
+  // Keep the previous answer and its coverage available while the user is deciding when to resume.
+  t.amendmentPending = true;
   t.updated = Date.now();
 }
 export function taskOrder(a: Task, b: Task) {

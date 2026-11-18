@@ -1,3 +1,9 @@
+import type {Task} from "./domain.ts";
+
+export function canSaveTaskAnswer(t:Pick<Task,"answer"|"status"|"runOpen"|"control">){
+  return !!t.answer && !t.control && (t.status==="completed" || t.status==="waiting_user" || (t.status==="paused" && !t.runOpen));
+}
+
 export const artifactKinds = ["reading", "comparison", "review", "brief"] as const;
 export type ArtifactKind = (typeof artifactKinds)[number];
 

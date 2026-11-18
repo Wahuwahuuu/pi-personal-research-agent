@@ -23,7 +23,7 @@ import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pau
 import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries,storeReadingEntries} from "../packages/research/memory.ts";
-import {ARTIFACT_REVISION_BODY_LIMIT, ARTIFACT_TITLE_LIMIT} from "./artifact-contract.ts";
+import {canSaveTaskAnswer,ARTIFACT_REVISION_BODY_LIMIT, ARTIFACT_TITLE_LIMIT} from "./artifact-contract.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
 import {MAX_PROJECT_PAPERS,Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
 import {mutateMemory,purgeProjectMemories,type MemoryMutation} from "./memory-mutations.ts";
@@ -980,7 +980,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if(r.method==="GET")return json(this.artifacts.list(p.get("project")??undefined,Number(p.get("after")??0),Number(p.get("limit")??30)));
       if(r.method==="POST"){
         const b=await this.body(r),t=getTask(this.state,text(b.taskId,128));
-        if(!t.answer||!["completed","waiting_user"].includes(t.status))throw new Problem("RESULT_NOT_READY",409);
+        if(!canSaveTaskAnswer(t))throw new Problem("RESULT_NOT_READY",409);
         const c=this.state.conversations?.find(c=>c.id===t.conversationId);if(!c)throw new Problem("NOT_FOUND",404);
         const index=t.researchIndex, report=t.workflow?.comparison;
         const coverage=index&&report?{indexVersion:index,report,papers:()=>this.artifactPapers(index)}:undefined;

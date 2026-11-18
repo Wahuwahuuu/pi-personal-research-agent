@@ -132,6 +132,7 @@ const messages: Record<string, string> = {
   BILLING_UNAVAILABLE: "暂时无法核对预算，请稍后重试。",
   GOAL_BUDGET: "这项目标已达到累计上限，部分成果和未完成事项已保留。",
   PAUSE_PENDING: "当前步骤尚未结束，请在进度保存后继续。",
+  AMEND_SOURCE_TASK: "请在来源研究任务中补充要求。",
   PAUSE_REQUIRED: "请先暂停任务，待当前步骤结束后再调整方向。",
   TASK_NOT_PAUSED: "任务尚未暂停，请刷新查看最新状态。",
   NODE_SCOPE_UPDATE_REQUIRED: "这项研究需要更新本机科研节点。更新并重新连接后，会从已有进度继续。",

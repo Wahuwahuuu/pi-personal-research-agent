@@ -1,3 +1,4 @@
+import {canSaveTaskAnswer} from "../src/artifact-contract.ts";
 import {VALIDATION_LIMITS} from "../src/validation-limits.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -278,4 +279,41 @@ test("turns admitted in the same millisecond have a stable head after restoratio
   assert.equal(nextResearchTurn([second,first],()=>true)?.id,"a");
   assert.equal(nextResearchTurn(structuredClone([first,second]),()=>true)?.id,"a");
   assert.equal(nextResearchTurn([first,second],turn=>turn.id!=="a"),undefined);
+});
+
+test("a clarification for a waiting task pauses the same turn and preserves the original findings until explicit resume",()=>{
+ const {s,t}=fixture();
+ t.goal=undefined;t.status="waiting_user";t.calls=3;t.tools=2;t.activeMs=8000;t.answer="Partial result";
+ t.workflow={phase:"finished",warnings:[],execution:{state:"partial",remaining_needs:["The remaining source"]}} as any;
+ const original=structuredClone(t.workflow),originalId=t.id;
+ amendTask(s,t,"Focus on the remaining source");
+ assert.equal(t.id,originalId);assert.equal(s.tasks.length,1);assert.equal(t.status,"paused");assert.deepEqual(t.workflow,original);
+ assert.equal(canSaveTaskAnswer(t),true);assert.equal(canSaveTaskAnswer({...t,runOpen:true}),false);assert.equal(canSaveTaskAnswer({...t,status:"running"}),false);
+ assert.equal(t.answer,"Partial result");assert.equal(t.calls,3);assert.equal(t.tools,2);assert.equal(t.activeMs,8000);
+ const restored=structuredClone(s),again=restored.tasks[0];resumeTask(restored,again);
+ assert.equal(again.id,originalId);assert.equal(again.status,"queued");assert.equal(again.workflow?.phase,"prepare");assert.equal(again.calls,3);assert.equal(again.tools,2);
+ assert.equal(again.amendments?.[0].text,"Focus on the remaining source");
+});
+
+test("waiting amendments reject exhausted, in-flight or invalidated turns before changing their evidence or state",()=>{
+ for(const reason of ["requests","time","active","invalidated","terminal"]){
+  const {s,t}=fixture();t.goal=undefined;t.status="waiting_user";t.calls=reason==="requests"?6:2;t.activeMs=reason==="time"?180000:0;t.runOpen=reason==="active";t.answer="Recorded answer";
+  if(reason==="invalidated")t.error="CONTEXT_CHANGED";
+  if(reason==="terminal")t.status="completed";
+  const previous=structuredClone(t);
+  assert.throws(()=>amendTask(s,t,"Narrow the task"),reason==="requests"||reason==="time"?/MODEL_BUDGET/:reason==="invalidated"?/NEW_TASK_REQUIRED/:/PAUSE_REQUIRED/);
+  assert.deepEqual(t,previous);
+ }
+});
+
+test("a user's clarification can use the next existing long-goal segment without creating a new budget",()=>{
+ const {s,t}=fixture();t.status="waiting_user";t.calls=6;t.tools=2;t.answer="Partial result";
+ t.workflow={phase:"finished",warnings:[],execution:{state:"partial",remaining_needs:["Locate the baseline"],stop_reason:"no_execution_progress"}} as any;
+ assert.equal(t.goal!.segments.length,1);amendTask(s,t,"Only locate the baseline");
+ assert.equal(t.workflow?.phase,"finished");assert.equal(t.goal!.segments.length,1);
+ resumeTask(s,t);assert.equal(t.goal!.segments.length,2);assert.equal(t.calls,6);assert.equal(t.tools,2);assert.equal(t.workflow?.phase,"prepare");assert.equal(s.tasks.length,1);
+ const capped=fixture();capped.t.calls=24;capped.t.status="waiting_user";
+ assert.throws(()=>amendTask(capped.s,capped.t,"One more attempt"),/GOAL_BUDGET/);assert.equal(capped.t.status,"waiting_user");
+ capped.t.calls=3;capped.t.tools=40;capped.t.error="GOAL_BUDGET";capped.t.status="paused";
+ assert.throws(()=>resumeTask(capped.s,capped.t),/GOAL_BUDGET/);assert.equal(capped.t.status,"paused");
 });

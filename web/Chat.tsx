@@ -1,5 +1,5 @@
 import {ComparisonEvidence} from "./ComparisonEvidence.tsx";
-import {artifactKinds, type ArtifactKind} from "../src/artifact-contract.ts";
+import {artifactKinds, canSaveTaskAnswer, type ArtifactKind} from "../src/artifact-contract.ts";
 import {artifactLabels} from "./types.ts";
 import {deviceView} from "./device-state.ts";
 import { ContextWindow } from "./ContextWindow.tsx";
@@ -340,7 +340,7 @@ export function Chat({
                         查看 {t.researchEvidence.length} 处原文
                       </button>
                     ) : null}
-                    {!t.control && t.answer && (t.status === "completed" || t.status === "waiting_user") && (
+                    {canSaveTaskAnswer(t) && (
                       <SaveAnswer task={t} run={run} refresh={refresh} />
                     )}
                     {!t.control && !["completed", "failed", "cancelled"].includes(
@@ -358,12 +358,12 @@ export function Chat({
                         停止这项工作
                       </button>
                     )}
-                    {t.status === "waiting_user" && (
+                    {t.status === "waiting_user" && t.control && (
                       <button
                         className="text-button"
                         onClick={() => input.current?.focus()}
                       >
-                        {t.control ? "选择任务" : "补充要求"}
+                        选择任务
                       </button>
                     )}
                   </div>

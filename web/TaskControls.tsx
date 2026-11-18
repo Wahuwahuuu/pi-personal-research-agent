@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { hasContinuationBudget } from "../src/domain.ts";
 import type { Task } from "./types.ts";
 import type { Run } from "./hooks.ts";
 import { mutate } from "./api.ts";
@@ -13,10 +14,13 @@ export function TaskControls({
   refresh: () => void;
 }) {
   const [editing, setEditing] = useState(false),
+    [saving, setSaving] = useState(false),
     [direction, setDirection] = useState("");
   if(t.control)return null;
   const terminal = ["completed", "failed", "cancelled"].includes(t.status),
-    paused = t.status === "paused";
+    paused = t.status === "paused", waiting = t.status === "waiting_user",
+    stopped = paused || waiting, hasBudget = hasContinuationBudget(t),
+    canAmend = !t.budgetTaskId && hasBudget && t.error !== "CONTEXT_CHANGED";
   const control = (action: string, body: Record<string, unknown> = {}) =>
     run(async () => {
       await mutate("tasks/" + t.id + "/" + action, "POST", body);
@@ -26,10 +30,10 @@ export function TaskControls({
     <div className="task-controls">
       {!terminal && (
         <div className="button-row">
-          {paused ? (
+          {stopped ? (
             <button
               className="text-button"
-              disabled={t.runOpen || t.error === "GOAL_BUDGET"}
+              disabled={t.runOpen || !hasBudget || t.error === "CONTEXT_CHANGED" || !!(waiting && t.budgetTaskId)}
               onClick={() => void control("resume")}
             >
               继续执行
@@ -42,13 +46,13 @@ export function TaskControls({
               暂停任务
             </button>
           )}
-          {paused && (
+          {stopped && canAmend && (
             <button
               className="text-button"
               disabled={t.runOpen}
               onClick={() => setEditing(true)}
             >
-              调整方向
+              {waiting ? "补充这项任务" : "调整方向"}
             </button>
           )}
           <label className="task-priority">
@@ -67,7 +71,9 @@ export function TaskControls({
           </label>
         </div>
       )}
-      {paused && (
+      {stopped && !hasBudget && <p className="help" role="status">这项任务已达到执行上限。已有回答和证据可在来源讨论中查看。</p>}
+      {stopped && t.budgetTaskId && <p className="help">请在来源研究任务中补充要求。</p>}
+      {paused && hasBudget && (
         <p className="help" role="status">
           {t.runOpen
             ? "已收到暂停请求，当前步骤结束后保存进度。"
@@ -116,7 +122,7 @@ export function TaskControls({
         <Dialog
           open={editing}
           onClose={() => setEditing(false)}
-          title="调整任务方向"
+          title={waiting ? "补充这项任务" : "调整任务方向"}
         >
           <p>
             补充要求会保留已有证据和累计用量。保存后保持暂停，由你决定何时继续。
@@ -124,13 +130,15 @@ export function TaskControls({
           <form
             onSubmit={(e) => {
               e.preventDefault();
+              if (saving || !direction.trim()) return;
+              setSaving(true);
               void run(async () => {
-                await mutate("tasks/" + t.id + "/amend", "POST", {
-                  input: direction,
-                });
-                setEditing(false);
-                setDirection("");
-                refresh();
+                try {
+                  await mutate("tasks/" + t.id + "/amend", "POST", { input: direction });
+                  setEditing(false);
+                  setDirection("");
+                  refresh();
+                } finally { setSaving(false); }
               });
             }}
           >
@@ -144,8 +152,8 @@ export function TaskControls({
                 autoFocus
               />
             </Field>
-            <button className="primary" disabled={!direction.trim()}>
-              保存调整
+            <button className="primary" disabled={saving || !direction.trim()}>
+              {saving ? "正在保存…" : waiting ? "保存补充要求" : "保存调整"}
             </button>
           </form>
         </Dialog>
