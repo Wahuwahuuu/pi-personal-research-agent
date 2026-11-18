@@ -1,3 +1,4 @@
+import {verifyArtifactEdits} from "./artifact-edits-browser.ts";
 import {verifyProjectScope} from "./project-scope-browser.ts";
 import {verifyProjectRecords} from "./project-records-browser.ts";
 import {verifyProjectDiscussions} from "./project-discussions-browser.ts";
@@ -225,6 +226,10 @@ try {
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...await verifyChangeFeedBrowser(base,page,api,screenshot));
+  }else if(process.env.PRA_BROWSER_SCOPE==="artifact-edits"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    checks.push(await verifyArtifactEdits(base,page,api));
   }else if(process.env.PRA_BROWSER_SCOPE==="context"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
@@ -333,6 +338,7 @@ try {
   checks.push(
     "artifact editing renders safe Markdown, table and formula; version and exports come from backend",
   );
+  checks.push(await verifyArtifactEdits(base,page,api));
   await route("projects");
   await page.getByRole("button", { name: "新建项目", exact: true }).click();
   await page.getByLabel("项目名称", { exact: true }).fill("长期记忆与证据");

@@ -763,15 +763,16 @@ export function ArtifactView({
       { version: number; editor: string; created: number }[]
     >(id ? "artifacts/" + id + "/versions" : undefined, revision);
   const [historical, setHistorical] = useState<SavedArtifact>(),
-    [editing, setEditing] = useState(false),
-    [content, setContent] = useState(""),
-    [title, setTitle] = useState(""),
+    [draft, setDraft] = useState<{ version: number; title: string; content: string }>(),
+    [saving, setSaving] = useState(false),
     [deleting, setDeleting] = useState(false);
   useEffect(() => {
     setHistorical(undefined);
-    setEditing(false);
+    setDraft(undefined);
   }, [id]);
-  const a = historical ?? detail.value,
+  const latest = detail.value;
+  const changedWhileEditing = !!draft && !!latest && draft.version !== latest.version;
+  const a = historical ?? latest,
     labels: Record<string, string> = {
       reading: "阅读卡",
       comparison: "比较研究",
@@ -804,22 +805,21 @@ export function ArtifactView({
                   {a.partial ? " · 部分完成" : ""}
                 </p>
               </div>
-              <button
-                onClick={() => {
-                  setContent(a.content);
-                  setTitle(a.title);
-                  setEditing((v) => !v);
-                }}
-                disabled={!!historical}
-              >
-                编辑
-              </button>
+              {!draft && (
+                <button
+                  onClick={() => setDraft({ version: a.version, title: a.title, content: a.content })}
+                  disabled={!!historical}
+                >
+                  编辑
+                </button>
+              )}
             </div>
             <div className="artifact-toolbar">
               <label>
                 版本{" "}
                 <select
                   aria-label="成果版本"
+                  disabled={!!draft}
                   value={a.version}
                   onChange={(e) =>
                     void run(async () => {
@@ -861,26 +861,45 @@ export function ArtifactView({
                 </a>
               ))}
             </div>
-            {editing ? (
+            {draft ? (
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
+                  if (saving || changedWhileEditing) return;
+                  setSaving(true);
                   void run(async () => {
-                    await mutate("artifacts/" + a.id, "PATCH", {
-                      version: a.version,
-                      content,
-                      title,
-                    });
-                    setEditing(false);
-                    refresh();
+                    try {
+                      await mutate("artifacts/" + a.id, "PATCH", draft);
+                      setDraft(undefined);
+                      refresh();
+                    } catch (error) {
+                      if (error instanceof ApiError && error.message === "VERSION_CONFLICT") detail.reload();
+                      throw error;
+                    } finally {
+                      setSaving(false);
+                    }
                   });
                 }}
               >
+                {changedWhileEditing && latest && (
+                  <div className="warning" role="alert">
+                    另一窗口已保存第 {latest.version} 版。你的草稿仍在下方。
+                    <details>
+                      <summary>查看第 {latest.version} 版的标题与正文</summary>
+                      <strong>{latest.title}</strong>
+                      <Markdown text={latest.content} sources={latest.sources} onCitation={s => onSource(s, latest.id)} />
+                    </details>
+                    <button type="button" disabled={saving} onClick={() => setDraft({ ...draft, version: latest.version })}>
+                      基于第 {latest.version} 版继续编辑
+                    </button>
+                  </div>
+                )}
                 <Field label="成果名称">
                   <input
-                    value={title}
+                    value={draft.title}
                     maxLength={150}
-                    onChange={(e) => setTitle(e.target.value)}
+                    disabled={saving}
+                    onChange={(e) => setDraft({ ...draft, title: e.target.value })}
                     required
                   />
                 </Field>
@@ -891,15 +910,16 @@ export function ArtifactView({
                   <textarea
                     className="artifact-editor"
                     rows={20}
-                    value={content}
-                    onChange={(e) => setContent(e.target.value)}
+                    value={draft.content}
+                    disabled={saving}
+                    onChange={(e) => setDraft({ ...draft, content: e.target.value })}
                     maxLength={12000}
                     required
                   />
                 </Field>
                 <div className="button-row">
-                  <button className="primary">保存新版本</button>
-                  <button type="button" onClick={() => setEditing(false)}>
+                  <button className="primary" disabled={saving || changedWhileEditing}>{saving ? "正在保存…" : "保存新版本"}</button>
+                  <button type="button" disabled={saving} onClick={() => setDraft(undefined)}>
                     放弃修改
                   </button>
                 </div>
