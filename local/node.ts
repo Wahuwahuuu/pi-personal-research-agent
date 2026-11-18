@@ -6,6 +6,7 @@ import {timingSafeEqual,randomUUID} from "node:crypto";
 import {LibraryClient,type ImportJob} from "./library-client.ts";
 import {SnapshotManager} from "./snapshots.ts";
 import { bindNodeAccount } from "./account-binding.ts";
+import {catalogRegistrationIssues, persistentRegistrationIssue, reconnectDelay} from "./registration-policy.ts";
 import { createLocalReading } from "../packages/research/local-reading.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
 import { nodeCatalog, catalogPages } from "./catalog.ts";
@@ -157,6 +158,7 @@ if(!controlToken&&!config.fixture&&process.platform==="win32"){
   if(saved.status!==0)throw Error("LOCAL_CREDENTIAL_SAVE_FAILED");
  }
 }
+let registrationError = "", registrationBlocked = false, reconnectRequested = false;
 let socket: WebSocket | undefined,
   retry = 0,
   stopping = false,
@@ -273,7 +275,19 @@ async function execute(op: Operation) {
     void announceReady();
   }
 }
+function reconnectNow() {
+  if (stopping) return;
+  clearTimeout(timer);
+  registrationBlocked = false;
+  registrationError = "";
+  retry = 0;
+  if (!socket) return connect();
+  reconnectRequested = true;
+  socket.terminate();
+}
+
 function connect() {
+  if (stopping || registrationBlocked || socket) return;
   const endpoint = new URL("/api/device/connect", url);
   endpoint.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const proxy = config.proxy ?? process.env.HTTPS_PROXY;
@@ -283,7 +297,21 @@ function connect() {
     maxPayload: 1000000,
     handshakeTimeout: 15000,
   });
-  socket = ws;catalogAcknowledged=false;
+  socket = ws;
+  catalogAcknowledged = false;
+  announcedReady = false;
+  let acceptedHello = false, registeredAt = 0;
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  function registrationFailed(code: string, blocked = false) {
+    if (socket !== ws || ws.readyState >= WebSocket.CLOSING) return;
+    registrationError = code;
+    registrationBlocked = blocked;
+    ws.terminate();
+  }
+  function expectAck(ms: number) {
+    clearTimeout(deadline);
+    deadline = setTimeout(() => registrationFailed("NODE_REGISTRATION_TIMEOUT"), ms);
+  }
   let pong = true;
   const heartbeat = setInterval(() => {
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -295,7 +323,7 @@ function connect() {
     ws.send("ping");
   }, 30000);
   ws.on("open", () => {
-    retry = 0;announcedReady=false;catalogAcknowledged=false;
+    expectAck(30_000);
     send({
       type: "hello",
       version: 1,
@@ -315,20 +343,45 @@ function connect() {
         return;
       }
       const m = JSON.parse(raw);
+      if (socket !== ws || ws.readyState !== WebSocket.OPEN) return;
+      if (m.type === "error" && !catalogAcknowledged) {
+        const permanent = persistentRegistrationIssue(m.code);
+        registrationFailed(permanent ?? "NODE_REGISTRATION_FAILED", !!permanent);
+        return;
+      }
       if (m.type === "hello_ack") {
-        try {bindNodeAccount(db,m.accountScope);}catch {stopping=true;ws.close(1008,"account mismatch");console.error("ACCOUNT_DATA_DIRECTORY_MISMATCH");return;}
+        if (acceptedHello) return;
+        try { bindNodeAccount(db, m.accountScope); }
+        catch { registrationFailed("ACCOUNT_DATA_DIRECTORY_MISMATCH", true); return; }
+        acceptedHello = true;
+        expectAck(120_000); // Allow the bounded catalog upload to drain before waiting for its receipt.
         send({ type: "catalog_begin", pages: pages.length });
         pages.forEach((value, page) =>
           send({ type: "catalog_page", page, value }),
         );
-        send({ type: "catalog_end" });
+        ws.send(JSON.stringify({ type: "catalog_end" }), error => {
+          if (socket !== ws || ws.readyState !== WebSocket.OPEN || catalogAcknowledged) return;
+          if (error) registrationFailed("NODE_REGISTRATION_FAILED");
+          else expectAck(60_000);
+        });
       } else if (m.type === "catalog_ack") {
-        catalogAcknowledged=true;readerReadySent=false;flushReaders();
+        if (!acceptedHello || (m.indexVersion !== undefined && m.indexVersion !== indexVersion)) {
+          registrationFailed("NODE_REGISTRATION_ACK_MISMATCH");
+          return;
+        }
+        if (catalogAcknowledged) return;
+        catalogAcknowledged = true;
+        registeredAt = Date.now();
+        registrationError = "";
+        clearTimeout(deadline);
+        readerReadySent=false;flushReaders();
         for (const r of db
           .prepare("SELECT frame FROM outbox WHERE acked=0")
           .all() as { frame: string }[])
           send(JSON.parse(r.frame));
         void announceReady();void flushImports(true);
+      } else if (!catalogAcknowledged && !(acceptedHello && ["reader_purge", "purge_operations"].includes(m.type))) {
+        return;
       } else if(m.type==="reader_open"){
         if(!catalogAcknowledged)throw Error("HELLO_REQUIRED");
         readerQueue.receive(m);flushReaders();
@@ -359,16 +412,36 @@ function connect() {
       console.error("INVALID_CLOUD_FRAME");
     }
   });
+  ws.on("unexpected-response", (_request, response) => {
+    response.resume();
+    const rejected = response.statusCode === 401 || response.statusCode === 403;
+    registrationFailed(rejected ? "DEVICE_CREDENTIAL_REJECTED" : "NODE_REGISTRATION_FAILED", rejected);
+  });
   ws.on("error", () => {});
-  ws.on("close", () => {
-    catalogAcknowledged=false;readerReadySent=false;
-    for(const r of readerQueue.all())readerQueue.cancel(r.id); // A disconnected open intent must not create a surprise window after reconnect.
+  ws.on("close", (code, reason) => {
+    clearTimeout(deadline);
     clearInterval(heartbeat);
-    if (!stopping)
-      timer = setTimeout(
-        connect,
-        Math.min(30000, 1000 * 2 ** Math.min(retry++, 5)),
-      );
+    if (socket !== ws) return;
+    socket = undefined;
+    catalogAcknowledged=false;announcedReady=false;readerReadySent=false;
+    if (!reconnectRequested) {
+      if (code === 1008 && ["expired", "revoked"].includes(reason.toString())) {
+        registrationError = "DEVICE_CREDENTIAL_REJECTED";
+        registrationBlocked = true;
+      } else if (code === 1000 && reason.toString() === "replaced") {
+        registrationError = "DEVICE_CONNECTION_REPLACED";
+        registrationBlocked = true;
+      }
+    }
+    for(const r of readerQueue.all())readerQueue.cancel(r.id); // A disconnected open intent must not create a surprise window after reconnect.
+    if (stopping || registrationBlocked) return;
+    if (reconnectRequested) {
+      reconnectRequested = false;
+      connect();
+    } else {
+      if (registeredAt && Date.now() - registeredAt >= 30_000) retry = 0;
+      timer = setTimeout(connect, reconnectDelay(retry++));
+    }
   });
 }
 function stop() {
@@ -395,9 +468,15 @@ async function announceReady(){
  preparing=true;
  try{
   await snapshots?.ready();
-  if(socket===ws&&ws.readyState===WebSocket.OPEN&&!paused&&!building&&!active){announcedReady=true;send({type:"ready",phase:catalog.papers.length?"ready":"empty"});}
- }catch{lastLocalError="MODEL_LOADING_FAILED";ws.terminate();}
- finally{preparing=false;}
+  if(socket===ws&&ws.readyState===WebSocket.OPEN&&catalogAcknowledged&&!paused&&!building&&!active){
+   if(lastLocalError==="MODEL_LOADING_FAILED")lastLocalError="";
+   announcedReady=true;send({type:"ready",phase:catalog.papers.length?"ready":"empty"});
+  }
+ }catch{if(socket===ws){lastLocalError="MODEL_LOADING_FAILED";ws.terminate();}}
+ finally{
+  preparing=false;
+  if(socket!==ws&&catalogAcknowledged)void announceReady();
+ }
 }
 function unavailable(phase:"indexing"|"paused"|"loading"){
  announcedReady=false;send({type:"availability",ready:false,phase});
@@ -407,7 +486,8 @@ async function refreshLibrary(){
  if(await snapshots.refresh()){
   indexVersion=snapshots.activeVersion;
   const runtime=await snapshots.runtime(indexVersion);catalog=runtime.catalog;reading=runtime.reading;pages=catalogPages(catalog);
-  announcedReady=false;socket?.terminate();
+  announcedReady=false;
+  if(!registrationBlocked || catalogRegistrationIssues.has(registrationError)) reconnectNow();
  }
 }
 async function pollLibrary(){
@@ -440,7 +520,11 @@ localHandler=async(req,res)=>{
   if(req.method==="GET"&&path==="/local/status"){
    // Return this read, not the scheduler cache: a completed retry must not show an older cancellation.
    const currentImports=library?await library.jobs():importJobs;
-   reply({instanceId:controlKey(configPath),application,connected:socket?.readyState===WebSocket.OPEN,ready:announcedReady,paused,phase:paused?"paused":building?"indexing":active?"reading":announcedReady?(catalog.papers.length?"ready":"empty"):"loading",error:lastLocalError,indexVersion,imports:currentImports,libraryEnabled:!!library});return true;
+   const connected=socket?.readyState===WebSocket.OPEN;
+   const ready=connected&&catalogAcknowledged&&announcedReady;
+   const phase=registrationBlocked?"registration_blocked":paused?"paused":building?"indexing":active?"reading":
+    !connected?"reconnecting":!catalogAcknowledged?"registering":ready?(catalog.papers.length?"ready":"empty"):"loading";
+   reply({instanceId:controlKey(configPath),application,connected,ready,paused,phase,error:registrationError||lastLocalError,indexVersion,imports:currentImports,libraryEnabled:!!library});return true;
   }
   if(req.method==="GET"&&path==="/local/library"){
    const params=new URL(req.url!,"http://127.0.0.1").searchParams;
@@ -464,7 +548,7 @@ localHandler=async(req,res)=>{
   if(path==="/local/control"){
    if(value.action==="pause"){paused=true;unavailable("paused");}
    else if(value.action==="resume"){paused=false;void announceReady();}
-   else if(value.action==="reconnect"){socket?.terminate();}
+   else if(value.action==="reconnect"){reconnectNow();}
    else if(value.action==="shutdown"){await requestStop(configPath,config.dataDir);reply({accepted:true,instanceId:controlKey(configPath)});setTimeout(stop,25);return true;}
    else throw Error("ACTION_DENIED");
    reply({accepted:true});return true;
