@@ -760,6 +760,22 @@
     gap: 8px;
     margin-top: 18px;
   }
+  .artifact-save {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .artifact-save select {
+    max-width: 100%;
+    min-height: 30px;
+    padding: 2px 4px;
+    color: var(--muted);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 5px;
+    font-size: 12px;
+  }
   .message-actions button {
     font-size: 11px;
   }

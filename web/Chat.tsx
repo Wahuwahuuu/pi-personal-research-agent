@@ -1,3 +1,5 @@
+import {artifactKinds, type ArtifactKind} from "../src/artifact-contract.ts";
+import {artifactLabels} from "./types.ts";
 import {deviceView} from "./device-state.ts";
 import { ContextWindow } from "./ContextWindow.tsx";
 import { TaskControls } from "./TaskControls.tsx";
@@ -36,6 +38,38 @@ function memoryResult(memory:NonNullable<NonNullable<Task["workflow"]>["memory"]
       return "阅读结果已保留，本轮记忆整理未完成。";
   }
 }
+function SaveAnswer({task, run, refresh}: {task: Task; run: Run; refresh: () => void}) {
+  const [selection, setSelection] = useState<ArtifactKind>();
+  const [saving, setSaving] = useState(false);
+  const kind = selection ?? (task.workflow?.comparison ? "comparison" : "reading");
+  return (
+    <span className="artifact-save">
+      <select aria-label="成果类型" value={kind} disabled={saving}
+        onChange={e => setSelection(e.currentTarget.value as ArtifactKind)}>
+        {artifactKinds.map(type => <option key={type} value={type}>{artifactLabels[type]}</option>)}
+      </select>
+      <button className="text-button" disabled={saving}
+        onClick={event => {
+          const trigger = event.currentTarget, from = location.hash;
+          setSaving(true);
+          void run(async () => {
+            try {
+              const artifact = await mutate("artifacts", "POST", {
+                taskId: task.id, kind, title: task.input.slice(0, 100),
+              });
+              refresh();
+              if (trigger.isConnected && location.hash === from) navigate("artifacts", artifact.id);
+            } finally {
+              setSaving(false);
+            }
+          });
+        }}>
+        {saving ? "正在保存…" : "保存为研究成果"}
+      </button>
+    </span>
+  );
+}
+
 export function Chat({
   id,
   data,
@@ -303,25 +337,8 @@ export function Chat({
                         查看 {t.researchEvidence.length} 处原文
                       </button>
                     ) : null}
-                    {!t.control && t.answer && (
-                      <button
-                        className="text-button"
-                        onClick={() =>
-                          void run(async () => {
-                            const a = await mutate("artifacts", "POST", {
-                              taskId: t.id,
-                              kind: t.workflow?.comparison
-                                ? "comparison"
-                                : "reading",
-                              title: t.input.slice(0, 100),
-                            });
-                            refresh();
-                            navigate("artifacts", a.id);
-                          })
-                        }
-                      >
-                        保存为研究成果
-                      </button>
+                    {!t.control && t.answer && (t.status === "completed" || t.status === "waiting_user") && (
+                      <SaveAnswer task={t} run={run} refresh={refresh} />
                     )}
                     {!t.control && !["completed", "failed", "cancelled"].includes(
                       t.status,

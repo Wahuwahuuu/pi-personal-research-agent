@@ -1,3 +1,4 @@
+import {verifyAnswerArtifactKinds} from "./artifact-kinds-browser.ts";
 import assert from "node:assert/strict";
 import { expect, type Page, type Route } from "@playwright/test";
 
@@ -67,11 +68,12 @@ export async function verifyArtifactEdits(base: string, page: Page, api: Api) {
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
     }
     await verifyArtifactEditCapacity(base, page, api, a.id);
+    await verifyAnswerArtifactKinds(base, page, api, task.id);
   } finally {
     await api("conversations/" + task.conversationId, "DELETE", request());
     await page.setViewportSize({ width: 1440, height: 900 });
   }
-  return "Concurrent artifact edits require an explicit merge. Long Markdown survives a desktop edit, mobile rename, replay, history and export.";
+  return "Concurrent artifact edits require an explicit merge. Long Markdown survives a desktop edit, mobile rename, replay, history and export. A completed answer can be saved as four independent artifact types.";
 }
 
 /** The same saved Markdown must survive a long edit, a title-only edit, history, and export. */

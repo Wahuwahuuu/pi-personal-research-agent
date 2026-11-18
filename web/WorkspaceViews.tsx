@@ -1,3 +1,4 @@
+import {artifactLabels} from "./types.ts";
 import {ARTIFACT_CONTENT_LIMIT, ARTIFACT_TITLE_LIMIT} from "../src/artifact-contract.ts";
 import {ProjectResearchRecords} from "./ProjectResearchRecords.tsx";
 import {WatchPlans} from "./WatchPlans.tsx";
@@ -773,13 +774,7 @@ export function ArtifactView({
   }, [id]);
   const latest = detail.value;
   const changedWhileEditing = !!draft && !!latest && draft.version !== latest.version;
-  const a = historical ?? latest,
-    labels: Record<string, string> = {
-      reading: "阅读卡",
-      comparison: "比较研究",
-      review: "主题综述",
-      brief: "阶段简报",
-    };
+  const a = historical ?? latest;
   if (id)
     return (
       <section className="page artifact-page">
@@ -799,7 +794,7 @@ export function ArtifactView({
               <div>
                 <h1>{a.title}</h1>
                 <p>
-                  {labels[a.kind]} · 第 {a.version} 版 ·{" "}
+                  {artifactLabels[a.kind]} · 第 {a.version} 版 ·{" "}
                   {a.editor === "user"
                     ? "人工编辑，修改内容未自动复核"
                     : "来自研究回答"}
@@ -994,7 +989,7 @@ export function ArtifactView({
               <Icon name="artifacts" size={24} />
               <span className="grow">
                 <small>
-                  {labels[a.kind]} · 第 {a.version} 版
+                  {artifactLabels[a.kind]} · 第 {a.version} 版
                   {a.partial ? " · 部分完成" : ""}
                 </small>
                 <strong>{a.title}</strong>

@@ -1,9 +1,13 @@
+import type {ArtifactKind} from "../src/artifact-contract.ts";
 import type { Task as DomainTask, Notice, Plan } from "../src/domain.ts";
 import type { Project, Settings } from "../src/workspace.ts";
 import type { ResearchConversation } from "../packages/research/cloud-workflow.ts";
 import type { Chunk } from "../packages/research/core.ts";
 import type { Artifact } from "../src/artifacts.ts";
 export type { Project, Settings, Notice, Plan, Chunk, Artifact };
+export const artifactLabels: Record<ArtifactKind, string> = {
+  reading: "阅读卡", comparison: "比较研究", review: "主题综述", brief: "阶段简报",
+};
 export type Task = Omit<DomainTask, "modelPrompt">;
 export type Conversation = Pick<
   ResearchConversation,

@@ -1,3 +1,6 @@
+export const artifactKinds = ["reading", "comparison", "review", "brief"] as const;
+export type ArtifactKind = (typeof artifactKinds)[number];
+
 /** Markdown and HTML form lengths use UTF-16 code units. */
 export const ARTIFACT_CONTENT_LIMIT = 50_000;
 export const ARTIFACT_TITLE_LIMIT = 150;

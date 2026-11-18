@@ -1,12 +1,12 @@
-import {ARTIFACT_CONTENT_LIMIT, ARTIFACT_TITLE_LIMIT} from "./artifact-contract.ts";
+import {ARTIFACT_CONTENT_LIMIT, ARTIFACT_TITLE_LIMIT, artifactKinds, type ArtifactKind} from "./artifact-contract.ts";
 import {appendChanges, initializeChangeFeed} from "./change-feed.ts";
 import {createHash} from "node:crypto";
 import {arxivVersion} from "../packages/research/source-links.ts";
 import type {StateStorage} from "./state-store.ts";
 import {Problem,text} from "./domain.ts";
 import type {Chunk,Paper} from "../packages/research/core.ts";
-export const artifactKinds=["reading","comparison","review","brief"] as const;
-export interface Artifact {id:string;projectId:string;conversationId:string;taskId:string;kind:typeof artifactKinds[number];title:string;created:number;updated:number;version:number;partial:boolean}
+export {artifactKinds};
+export interface Artifact {id:string;projectId:string;conversationId:string;taskId:string;kind:ArtifactKind;title:string;created:number;updated:number;version:number;partial:boolean}
 // Keep the original revision table writable by previously deployed Workers.
 function initializeVersionTitles(db:StateStorage) {
  if(db.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='pra_artifact_version_titles'").toArray().length)return;
