@@ -37,6 +37,7 @@ export class StateRepository {
   private positions = new Map<Collection, Map<string, number>>();
   private storage: StateStorage;
   private histories = new Map<string, HistoryPartition>();
+  private overviewWindows = new WeakMap<State, {times: Map<string, number>; floor: number}>();
   private historyCounts = new Map<string, number>();
   private knownConversations = new Set<string>();
   private messageParents = new Map<string, string>();
@@ -307,7 +308,7 @@ export class StateRepository {
     const state = this.read(true);
     this.knownConversations=new Set((state.conversations??[]).map(c=>c.id));
     this.cached = this.fingerprints(this.split(state));
-    bindTaskQueries(state,{page:query=>this.taskPageRows(state,query),active:includeOpen=>this.activeTaskRows(state,includeOpen),byRequest:requestId=>this.taskRequest(state,requestId)});
+    bindTaskQueries(state,{recentOverview:limit=>this.recentOverviewRows(state,limit),page:query=>this.taskPageRows(state,query),active:includeOpen=>this.activeTaskRows(state,includeOpen),byRequest:requestId=>this.taskRequest(state,requestId)});
     return state;
   }
   /** Loaded/new values are authoritative until save; SQL is only used for untouched entities. */
@@ -321,7 +322,7 @@ export class StateRepository {
     if(saved.size)for(const row of this.storage.sql.exec<{id:string}>("SELECT id FROM pra_data_tasks WHERE json_extract(header,'$.requestId')=?",requestId).toArray())if(saved.has(row.id))ids.add(row.id);
     return state.tasks.find(t=>ids.has(t.id));
   }
-  private storedTaskPage(saved: Map<string,Task>, query: TaskPageQuery, projectChats?: string[]): Task[] {
+  private storedTaskPage(saved: Map<string,Task>, query: TaskPageQuery, projectChats?: string[], createdById?: Map<string,number>): Task[] {
     const where: string[] = [], args: string[] = [];
     const single = query.conversationId ?? (projectChats?.length === 1 ? projectChats[0] : undefined);
     if(single){where.push("parent=?");args.push(single);}
@@ -341,11 +342,41 @@ export class StateRepository {
       const needed=query.limit+1-selected.length;
       const rows=select("json_extract(header,'$.created')=? AND id<?",[timestamp,id],needed,true);
       if(rows.length<needed)rows.push(...select("json_extract(header,'$.created')<?",[timestamp],needed-rows.length));
-      for(const row of rows){const task=saved.get(row.id);if(task)selected.push(task);}
+      for (const row of rows) {
+        const task = saved.get(row.id);
+        if (task) { selected.push(task); createdById?.set(row.id, row.created); }
+      }
       if(rows.length<needed)break;
       const last=rows.at(-1)!;timestamp=last.created;id=last.id;
     }
     return selected;
+  }
+  private recentOverviewRows(state: State, limit: number): Task[] {
+    const {saved} = this.taskOverlay(state);
+    const time = (task: Task, known: ReadonlyMap<string, number>) =>
+      saved.has(task.id) ? known.get(task.id)! : task.created;
+    const select = (known: ReadonlyMap<string, number>) => state.tasks
+      .filter(task => !saved.has(task.id) || known.has(task.id))
+      .sort((a, b) => time(b, known) - time(a, known)).slice(0, limit);
+
+    const previous = this.overviewWindows.get(state);
+    if (previous) {
+      const items = select(previous.times);
+      if (previous.floor === -Infinity || (items.length === limit && time(items[limit - 1], previous.times) >= previous.floor)) return items;
+    }
+
+    const times = new Map<string, number>();
+    const rows = this.storedTaskPage(saved, {limit, timestamp: Number.MAX_SAFE_INTEGER, id: "~"}, undefined, times);
+    const extra = rows[limit];
+    const floor = extra ? times.get(rows[limit - 1].id)! : -Infinity;
+    if (extra && times.get(extra.id) === floor) {
+      // The homepage keeps collection order for ties. Include every ID at the cutoff without loading their bodies.
+      for (const row of this.storage.sql.exec<{id: string}>(
+        "SELECT id FROM pra_data_tasks WHERE json_extract(header,'$.created')=?", floor,
+      ).toArray()) if (saved.has(row.id)) times.set(row.id, floor);
+    }
+    this.overviewWindows.set(state, {times, floor});
+    return select(times);
   }
   private taskPageRows(state:State,query:TaskPageQuery):Task[]{
     const {saved,overlay}=this.taskOverlay(state);

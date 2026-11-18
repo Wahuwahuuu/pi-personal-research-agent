@@ -1,6 +1,6 @@
 import {modelOutputLimit} from "./model-limits.ts";
 import {memoryView} from "./memory-view.ts";
-import {activeTasks,conversationMessagePage,taskByRequest} from "./task-queries.ts";
+import {activeTasks,conversationMessagePage,recentOverviewTasks,taskByRequest} from "./task-queries.ts";
 import {SOURCE_BUILD} from "./source-build.ts";
 import {beginModelTiming, finishModelTiming, markToolDispatch, taskTimings, apiTiming, type ModelMeasurement} from "./timing.ts";
 import {retentionCandidates,retentionPreview,confirmRetention} from "./data-retention.ts";
@@ -980,7 +980,7 @@ export class PersonalAgent extends DurableObject<Env> {
     if(path==="/api/overview"&&r.method==="GET")return json({
       build:this.env.BUILD_ID??"development",sourceBuild:SOURCE_BUILD,release:RELEASE_CONTRACT,settings:this.workspace.settings(),
       projects:this.workspace.projects({limit:50}),conversations:conversationPage(this.state,{limit:30},this.repository),
-      tasks:[...this.state.tasks].sort((a,b)=>b.created-a.created).slice(0,50).map(t=>({...taskSummary(t),answer:t.answer?.slice(0,240)})),
+      tasks:recentOverviewTasks(this.state,50).map(t=>({...taskSummary(t),answer:t.answer?.slice(0,240)})),
       notices:[...this.state.notices].sort((a,b)=>b.created-a.created).slice(0,50),plans:this.state.plans,
       memoryCount:this.state.cloudMemory!.entries.length,deviceOnline:!!this.device(),deviceState:this.deviceState(),cursor:this.repository.cursor(),
       model:{id:this.env.MODEL_MODE==="mock"?MODEL.id:this.env.MODEL_ID,mode:this.env.MODEL_MODE,thinking:"off"}

@@ -108,7 +108,8 @@ export class Workspace {
  }
 }
 export function taskSummary(t:Task){
- const {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin}=t;
+ // Every summary needs the input. Read its body before consulting the lazily loaded routing fields.
+ const {input,id,conversationId,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin}=t;
  return {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin,paperWait:t.paperWait,budgetTaskId:t.budgetTaskId,control:t.control,amendments:t.amendments,runOpen:t.runOpen,priority:t.priority,goal:t.goal,pauseRequested:t.pauseRequested,progress:t.workflow?.progress??null};
 }
 export function conversationPage(s:State,options:{q?:string;projectId?:string;archived?:boolean;after?:number;limit?:number}={},reader?:{historyCount:(c:NonNullable<State["conversations"]>[number])=>number}){

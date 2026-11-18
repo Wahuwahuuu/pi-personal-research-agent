@@ -1,10 +1,14 @@
 import {Problem,type State,type Task} from "./domain.ts";
 export interface TaskPageOptions {projectId?:string;conversationId?:string;status?:string;before?:string;limit?:number}
 export interface TaskPageQuery {projectConversations?:ReadonlySet<string>;conversationId?:string;status?:string;timestamp:number;id:string;limit:number}
-interface TaskQueries {page:(query:TaskPageQuery)=>Task[];active:(includeOpen:boolean)=>Task[];byRequest:(requestId:string)=>Task|undefined}
+interface TaskQueries {recentOverview:(limit:number)=>Task[];page:(query:TaskPageQuery)=>Task[];active:(includeOpen:boolean)=>Task[];byRequest:(requestId:string)=>Task|undefined}
 const readers=new WeakMap<State,TaskQueries>();
 export function bindTaskQueries(state:State,reader:TaskQueries){readers.set(state,reader);}
 export function taskByRequest(state:State,requestId:string):Task|undefined{const reader=readers.get(state);return reader?reader.byRequest(requestId):state.tasks.find(t=>t.requestId===requestId);}
+export function recentOverviewTasks(state:State,limit:number):Task[]{
+ if(!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
+ return readers.get(state)?.recentOverview(limit)??[...state.tasks].sort((a,b)=>b.created-a.created).slice(0,limit);
+}
 export const closedTask=(task:Task)=>["completed","failed","cancelled"].includes(task.status);
 export const taskPageOrder=(a:Pick<Task,"created"|"id">,b:Pick<Task,"created"|"id">)=>b.created-a.created||(a.id===b.id?0:a.id<b.id?1:-1);
 export function matchesTaskPage(task:Task,query:TaskPageQuery){return (!query.projectConversations||query.projectConversations.has(task.conversationId??""))&&(!query.conversationId||task.conversationId===query.conversationId)&&(!query.status||task.status===query.status)&&(task.created<query.timestamp||task.created===query.timestamp&&task.id<query.id);}

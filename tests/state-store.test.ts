@@ -1,5 +1,5 @@
 import {readResearchDialogue, recordDialogueTurn} from "../packages/research/context-window.ts";
-import {activeTasks,taskByRequest} from "../src/task-queries.ts";
+import {activeTasks,recentOverviewTasks,taskByRequest} from "../src/task-queries.ts";
 import {ProactiveResearch} from "../src/proactive-research.ts";
 import {orderedTasks} from "../src/task-control.ts";
 import {resolveConversationControl,recordConversationControl} from "../src/conversation-control.ts";
@@ -394,6 +394,39 @@ test("request lookup honors modified IDs and removal before commit rather than r
  const f=fixture(),store=new StateRepository(f.storage),s=store.load();const a=submit(s,"a","a","chat"),b=submit(s,"b","b","chat");store.save(s);
  const cold=new StateRepository(f.storage),loaded=cold.load();loaded.tasks[0].requestId="changed";loaded.tasks=loaded.tasks.filter(t=>t.id!==b.id);
  assert.equal(taskByRequest(loaded,"a"),undefined);assert.equal(taskByRequest(loaded,"b"),undefined);assert.equal(taskByRequest(loaded,"changed")!.id,a.id);f.db.close();
+});
+
+test("the homepage reads a bounded task window and preserves stable ties, removals and unsaved timestamps", () => {
+ const f=fixture(), repo=new StateRepository(f.storage), seed=repo.load();
+ const base=submit(seed,"homepage","base","chat",1);
+ seed.tasks=Array.from({length:300},(_,i)=>({...base,id:"r"+String(999-i),requestId:"over-"+i,created:i<270?i:270}));
+ repo.save(seed);
+ const loaded=new StateRepository(f.storage).load();
+ const expected=seed.tasks.slice().sort((a,b)=>b.created-a.created).slice(0,12).map(t=>t.id);
+ f.queries.length=0;
+ assert.deepEqual(recentOverviewTasks(loaded,12).map(t=>t.id),expected);
+ assert.equal(f.queries.filter(q=>q.sql.startsWith("SELECT header FROM pra_data_tasks")).length,0);
+ assert.equal(f.queries.filter(q=>q.sql.includes("position,value FROM pra_data_tasks WHERE id=")).length,0);
+ recentOverviewTasks(loaded,12).forEach(taskSummary);
+ f.queries.length=0;
+ assert.deepEqual(recentOverviewTasks(loaded,12).map(t=>t.id),expected);
+ assert.equal(f.queries.length,0);
+ // Change the ordering within the boundary, remove candidates, promote a cold task and add an unsaved task.
+ loaded.tasks.reverse();
+ loaded.tasks=loaded.tasks.filter(t=>!expected.slice(0,7).includes(t.id));
+ loaded.tasks.find(t=>t.id===seed.tasks[1].id)!.created=450;
+ loaded.tasks.push({...base,id:"newest",created:600});
+ const stateOrder=loaded.tasks.map(t=>t.id);
+ const created=new Map(seed.tasks.map(t=>[t.id,t.created]));
+ created.set(seed.tasks[1].id,450);created.set("newest",600);
+ const ordered=stateOrder.slice().sort((a,b)=>created.get(b)!-created.get(a)!);
+ assert.deepEqual(recentOverviewTasks(loaded,12).map(t=>t.id),ordered.slice(0,12));
+ assert.deepEqual(recentOverviewTasks(loaded,50).map(t=>t.id),ordered.slice(0,50));
+ // Dropping the entire cached window must bring untouched older tasks into view.
+ loaded.tasks=loaded.tasks.filter(t=>!ordered.slice(0,60).includes(t.id));
+ assert.deepEqual(recentOverviewTasks(loaded,12).map(t=>t.id),ordered.slice(60,72));
+ assert.equal(recentOverviewTasks(initialState(),50).length,0);
+ f.db.close();
 });
 
 test("project task pages follow current conversations across moves and read only the requested task bodies",()=>{
