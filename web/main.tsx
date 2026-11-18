@@ -44,7 +44,7 @@ const navigation = [
   ["inbox", "收件箱"],
   ["memory", "记忆"],
 ];
-type Evidence = { source?: Chunk; task?: Task; paper?: Paper;artifactId?:string };
+type Evidence = { source?: Chunk; task?: Task; paper?: Paper; catalog?: Paper[]; artifactId?:string };
 function SourcePanel({
   accountId,
   evidence,
@@ -57,7 +57,9 @@ function SourcePanel({
   select: (s: Chunk) => void;
 }) {
   const source = evidence.source,
+    index = source?.index_version ?? evidence.task?.researchIndex,
     paper = evidence.paper,
+    pinnedCatalog = index && evidence.catalog?.[0]?.indexVersion === index ? evidence.catalog : undefined,
     paperId = source?.paper_id ?? paper?.paper_id;
   const panel = useRef<HTMLElement>(null),
     closeRef = useRef(close);
@@ -108,8 +110,9 @@ function SourcePanel({
       previous?.focus();
     };
   }, [mobile]);
-  const catalog = useResource<Paper[]>("papers");
-  const info = paper ?? catalog.value?.find((p) => p.paper_id === paperId);
+  const catalog = useResource<Paper[]>(!paper && !pinnedCatalog && index ? "papers?indexVersion=" + encodeURIComponent(index) : undefined);
+  const papers = pinnedCatalog ?? catalog.value;
+  const info = paper ?? papers?.find((p) => p.paper_id === paperId);
   return (
     <aside
       ref={panel}
@@ -198,7 +201,7 @@ function SourcePanel({
                   <span>{i + 1}</span>
                   <div>
                     <strong>
-                      {catalog.value?.find((p) => p.paper_id === s.paper_id)
+                      {papers?.find((p) => p.paper_id === s.paper_id && p.indexVersion === (s.index_version ?? evidence.task?.researchIndex))
                         ?.title ?? s.paper_id}
                     </strong>
                     <small>{s.text.slice(0, 100)}</small>
@@ -438,7 +441,7 @@ function Workspace({
       key={route.id ?? "new"}
       id={route.id}
       {...props!}
-      onSource={(source, task) => setEvidence({ source, task })}
+      onSource={(source, task, catalog) => setEvidence({ source, task, catalog })}
     />
   ) : route.page === "conversations" ? (
     <Conversations revision={revision} run={run} refresh={refresh} />

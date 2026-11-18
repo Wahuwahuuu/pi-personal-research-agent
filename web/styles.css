@@ -760,6 +760,30 @@
     gap: 8px;
     margin-top: 18px;
   }
+  .comparison-coverage {
+    margin-top: 14px;
+    border-block-start: 1px solid var(--line);
+    padding-top: 8px;
+  }
+  .comparison-coverage > summary { cursor: pointer; font-size: 13px; }
+  .comparison-paper { margin-block: 14px; }
+  .comparison-paper h4 { margin: 0 0 6px; font-size: 14px; overflow-wrap: anywhere; }
+  .comparison-paper dl, .comparison-cell dd { margin: 0; }
+  .comparison-cell {
+    display: grid;
+    grid-template-columns: minmax(5em, 25%) minmax(0, 1fr);
+    gap: 12px;
+    padding-block: 7px;
+    border-block-start: 1px solid var(--line);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  .coverage-state { color: var(--muted); }
+  .coverage-state.supported { color: var(--accent); }
+  .comparison-cell .text-button { margin-inline-end: 10px; }
+  @media (max-width: 600px) {
+    .comparison-cell { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  }
   .artifact-save {
     display: inline-flex;
     align-items: center;

@@ -1,3 +1,4 @@
+import {ComparisonEvidence} from "./ComparisonEvidence.tsx";
 import {artifactKinds, type ArtifactKind} from "../src/artifact-contract.ts";
 import {artifactLabels} from "./types.ts";
 import {deviceView} from "./device-state.ts";
@@ -16,7 +17,7 @@ import {
   Field,
 } from "./components.tsx";
 import { navigate, useResource, type Run } from "./hooks.ts";
-import type { Overview, Task, Chunk, Conversation, Page } from "./types.ts";
+import type { Overview, Task, Chunk, Conversation, Page, Paper } from "./types.ts";
 interface Messages extends Page<Task> {
   conversation: Conversation;
 }
@@ -83,7 +84,7 @@ export function Chat({
   revision: number;
   run: Run;
   refresh: () => void;
-  onSource: (source: Chunk, task?: Task) => void;
+  onSource: (source: Chunk, task?: Task, catalog?: Paper[]) => void;
 }) {
   const messages = useResource<Messages>(
     id ? "conversations/" + id + "/messages?limit=30" : undefined,
@@ -325,6 +326,8 @@ export function Chat({
                       </p>
                     )}
                   </div>
+                  {t.workflow?.comparison && <ComparisonEvidence report={t.workflow.comparison} index={t.researchIndex}
+                    sources={t.researchEvidence ?? []} onSource={(source, catalog) => onSource(source, t, catalog)} />}
                   <TaskProgress task={t} />
                   <ContextWindow task={t} />
                   <TaskControls task={t} run={run} refresh={refresh} />
