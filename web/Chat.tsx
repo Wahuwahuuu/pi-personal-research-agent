@@ -64,6 +64,7 @@ export function Chat({
     [title, setTitle] = useState(""),
     [deleting, setDeleting] = useState(false),
     [localError, setLocalError] = useState("");
+  const draftRevision = useRef(0);
   const input = useRef<HTMLTextAreaElement>(null),
     bottom = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -80,8 +81,15 @@ export function Chat({
     active = rows.filter(
       (t) => !t.control && !["completed", "failed", "cancelled"].includes(t.status),
     );
+  function editDraft(value: string) {
+    draftRevision.current++;
+    setDraft(value);
+  }
   async function send() {
     if (!draft.trim() || busy) return;
+    const composer = input.current;
+    const submittedFrom = location.hash;
+    const submittedRevision = draftRevision.current;
     setBusy(true);
     setLocalError("");
     try {
@@ -91,10 +99,14 @@ export function Chat({
         mode: longGoal ? "long" : "normal",
         ...(id ? { conversationId: id } : {}),
       });
-      setDraft("");
       refresh();
-      navigate("chat", task.conversationId);
-      input.current?.focus();
+      if (!composer || input.current !== composer || location.hash !== submittedFrom) return;
+      if (!id) {
+        navigate("chat", task.conversationId);
+        return;
+      }
+      if (draftRevision.current === submittedRevision) setDraft("");
+      if (composer.form?.contains(document.activeElement)) composer.focus();
     } catch (e) {
       setLocalError(errorText(e));
     } finally {
@@ -200,8 +212,9 @@ export function Chat({
               ].map((v) => (
                 <button
                   key={v}
+                  disabled={busy && !id}
                   onClick={() => {
-                    setDraft(v);
+                    editDraft(v);
                     input.current?.focus();
                   }}
                 >
@@ -362,7 +375,8 @@ export function Chat({
           <textarea
             ref={input}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            readOnly={busy && !id}
+            onChange={(e) => editDraft(e.target.value)}
             maxLength={12000}
             rows={2}
             placeholder="交代研究任务，或继续刚才的讨论…"
