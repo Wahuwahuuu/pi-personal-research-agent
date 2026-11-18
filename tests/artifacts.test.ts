@@ -98,3 +98,54 @@ test("artifact creation, revision and deletion write ordered durable change even
   ]);
  }finally{db.close();}
 });
+
+test("each revision keeps its title and timestamp in the page and versioned exports",()=>{
+ const {db,a}=setup();
+ try{
+  const first=a.create(input,"First body",[source]);
+  const second=a.revise(first.id,1,"Second body","Renamed");
+  a.revise(first.id,2,"Third body");
+  const v1=a.get(first.id,1),v2=a.get(first.id,2),v3=a.get(first.id);
+  assert.equal(v1.title,first.title);assert.equal(v2.title,second.title);assert.equal(v3.title,second.title);
+  assert.equal(v1.updated,first.updated);assert.equal(v2.updated,second.updated);
+  assert.ok(exportArtifact(v1,"md",[]).content.startsWith("# Reading\n\nFirst body"));
+  assert.ok(exportArtifact(v2,"html",[]).content.includes("<title>Renamed</title>"));
+  assert.equal(a.list().items[0].title,"Renamed");
+ }finally{db.close();}
+});
+
+test("upgrading uses unambiguous artifact receipts and labels missing legacy titles",()=>{
+ const {db,a,storage}=setup();
+ try{
+  const first=a.create(input,"One",[]);
+  const two=a.revise(first.id,1,"Two","Second");
+  a.revise(first.id,2,"Three","Third");a.revise(first.id,3,"Four","Current");
+  db.exec("DROP TABLE IF EXISTS pra_artifact_version_titles");
+  db.exec("CREATE TABLE pra_mutations(id TEXT PRIMARY KEY,operation TEXT NOT NULL,result TEXT NOT NULL)");
+  const receipt=db.prepare("INSERT INTO pra_mutations VALUES(?,?,?)");
+  receipt.run("a","artifact:create",JSON.stringify(first));receipt.run("b","artifact:"+first.id,JSON.stringify(two));
+  receipt.run("c","artifact:"+first.id,JSON.stringify({...two,title:"Conflicting receipt"}));
+  receipt.run("d","project:create",JSON.stringify({...first,version:3,title:"Unrelated receipt"}));
+  const upgraded=new Artifacts(storage);
+  assert.equal(upgraded.get(first.id,1).title,"Reading");
+  assert.equal(upgraded.get(first.id,2).title,"历史标题未记录");assert.equal(upgraded.get(first.id,3).title,"历史标题未记录");
+  assert.equal(upgraded.get(first.id).title,"Current");
+  assert.ok(exportArtifact(upgraded.get(first.id,3),"md",[]).content.startsWith("# 历史标题未记录\n\nThree"));
+  upgraded.revise(first.id,4,"Five","Newest");
+  assert.equal(new Artifacts(storage).get(first.id,4).title,"Current");
+  upgraded.delete(first.id);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM pra_artifact_version_titles WHERE id=?").get(first.id)?.n,0);
+ }finally{db.close();}
+});
+
+test("earlier six-column writers remain compatible and deletion removes stored titles",()=>{
+ const {db,a}=setup();
+ try{
+  db.prepare("INSERT INTO pra_artifacts VALUES(?,?,?,?,?,?,?,?,?,?)").run("legacy","p","c","old","reading","Legacy head",1,1,1,0);
+  db.prepare("INSERT INTO pra_artifact_versions VALUES(?,?,?,?,?,?)").run("legacy",1,"Old text","[]","agent",1);
+  a.revise("legacy",1,"New text","Renamed head");
+  assert.equal(a.get("legacy",1).title,"Legacy head");
+  db.prepare("DELETE FROM pra_artifact_versions WHERE id=?").run("legacy");
+  assert.equal(db.prepare("SELECT count(*) AS n FROM pra_artifact_version_titles WHERE id=?").get("legacy")?.n,0);
+ }finally{db.close();}
+});

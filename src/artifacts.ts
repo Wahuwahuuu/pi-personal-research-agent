@@ -6,6 +6,34 @@ import {Problem,text} from "./domain.ts";
 import type {Chunk,Paper} from "../packages/research/core.ts";
 export const artifactKinds=["reading","comparison","review","brief"] as const;
 export interface Artifact {id:string;projectId:string;conversationId:string;taskId:string;kind:typeof artifactKinds[number];title:string;created:number;updated:number;version:number;partial:boolean}
+// Keep the original revision table writable by previously deployed Workers.
+function initializeVersionTitles(db:StateStorage) {
+ if(db.sql.exec("SELECT name FROM sqlite_master WHERE type='table' AND name='pra_artifact_version_titles'").toArray().length)return;
+ db.transactionSync(()=>{
+  db.sql.exec(`CREATE TABLE pra_artifact_version_titles(
+    id TEXT NOT NULL,version INTEGER NOT NULL,title TEXT NOT NULL,PRIMARY KEY(id,version),
+    FOREIGN KEY(id,version) REFERENCES pra_artifact_versions(id,version) ON DELETE CASCADE
+  ) WITHOUT ROWID`);
+  if(!db.sql.exec("SELECT id FROM pra_artifacts WHERE version>1 LIMIT 1").toArray().length)return;
+  const columns=db.sql.exec<{name:string}>("PRAGMA table_info(pra_mutations)").toArray();
+  if(!columns.some(c=>c.name==="operation")||!columns.some(c=>c.name==="result"))return;
+  // Old saves kept a copy of the response in the idempotency receipt. Only accept matching revisions.
+  db.sql.exec(`WITH receipts AS (
+    SELECT operation,json_extract(result,'$.id') AS id,json_extract(result,'$.version') AS version,
+      json_extract(result,'$.title') AS title,json_extract(result,'$.content') AS content,
+      json_extract(result,'$.editor') AS editor
+    FROM pra_mutations WHERE operation GLOB 'artifact:*' AND json_valid(result)
+  )
+  INSERT INTO pra_artifact_version_titles(id,version,title)
+  SELECT v.id,v.version,MIN(r.title)
+  FROM receipts r JOIN pra_artifact_versions v ON v.id=r.id AND v.version=r.version
+    JOIN pra_artifacts a ON a.id=v.id
+  WHERE (r.operation='artifact:create' OR r.operation='artifact:'||v.id)
+    AND v.version<a.version AND r.content=v.content AND r.editor=v.editor
+    AND typeof(r.title)='text' AND length(trim(r.title)) BETWEEN 1 AND 150
+  GROUP BY v.id,v.version HAVING MIN(r.title)=MAX(r.title)`);
+ });
+}
 export class Artifacts {
  readonly db:StateStorage;
  constructor(db:StateStorage){this.db=db;
@@ -15,6 +43,7 @@ export class Artifacts {
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_artifact_tombstones(id TEXT PRIMARY KEY,task_id TEXT NOT NULL,kind TEXT NOT NULL,deleted INTEGER NOT NULL)");
   db.sql.exec("CREATE INDEX IF NOT EXISTS pra_artifact_tombstones_origin ON pra_artifact_tombstones(task_id,kind)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_changes(seq INTEGER PRIMARY KEY AUTOINCREMENT,created INTEGER NOT NULL,value TEXT NOT NULL)");
+  initializeVersionTitles(db);
   this.purgeDeleted();
 
  }
@@ -33,8 +62,11 @@ export class Artifacts {
  get(id:string,version?:number){
   if(this.deleted(id))throw new Problem("NOT_FOUND",404);
   const r=this.db.sql.exec<any>("SELECT * FROM pra_artifacts WHERE id=?",id).toArray()[0];if(!r)throw new Problem("NOT_FOUND",404);
-  const v=this.db.sql.exec<any>("SELECT * FROM pra_artifact_versions WHERE id=? AND version=?",id,version??r.version).toArray()[0];if(!v)throw new Problem("NOT_FOUND",404);
-  return{...this.parse(r),version:v.version,content:v.content as string,sources:JSON.parse(v.sources) as Chunk[],editor:v.editor as string};
+  const v=this.db.sql.exec<any>(`SELECT v.*,t.title AS versionTitle FROM pra_artifact_versions v
+    LEFT JOIN pra_artifact_version_titles t ON t.id=v.id AND t.version=v.version
+    WHERE v.id=? AND v.version=?`,id,version??r.version).toArray()[0];if(!v)throw new Problem("NOT_FOUND",404);
+  const title=v.version===r.version?r.title:v.versionTitle??"历史标题未记录";
+  return{...this.parse(r),version:v.version,title:title as string,updated:v.created as number,content:v.content as string,sources:JSON.parse(v.sources) as Chunk[],editor:v.editor as string};
  }
  list(projectId?:string,after=0,limit=30){
   if(!Number.isInteger(after)||after<0||!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
@@ -52,6 +84,7 @@ export class Artifacts {
   this.db.transactionSync(()=>{
    this.db.sql.exec("INSERT INTO pra_artifacts VALUES(?,?,?,?,?,?,?,?,1,?)",id,input.projectId,input.conversationId,input.taskId,input.kind,input.title,now,now,Number(input.partial));
    this.db.sql.exec("INSERT INTO pra_artifact_versions VALUES(?,1,?,?,'agent',?)",id,content,JSON.stringify(sources),now);
+   this.db.sql.exec("INSERT INTO pra_artifact_version_titles VALUES(?,1,?)",id,input.title);
    this.changed(id);
   });return this.get(id);
  }
@@ -63,7 +96,9 @@ export class Artifacts {
   const a=this.get(id);if(expected!==a.version)throw new Problem("VERSION_CONFLICT",409);text(content,50000);if(title!==undefined)text(title,150);
   this.db.transactionSync(()=>{const now=Date.now();
    this.db.sql.exec("INSERT INTO pra_artifact_versions VALUES(?,?,?,?,'user',?)",id,expected+1,content,JSON.stringify(a.sources),now);
-   this.db.sql.exec("UPDATE pra_artifacts SET version=?,title=?,updated=? WHERE id=?",expected+1,title??a.title,now,id);
+   const nextTitle=title??a.title;
+   this.db.sql.exec("INSERT OR IGNORE INTO pra_artifact_version_titles VALUES(?,?,?),(?,?,?)",id,expected,a.title,id,expected+1,nextTitle);
+   this.db.sql.exec("UPDATE pra_artifacts SET version=?,title=?,updated=? WHERE id=?",expected+1,nextTitle,now,id);
    this.changed(id);
   });return this.get(id);
  }
