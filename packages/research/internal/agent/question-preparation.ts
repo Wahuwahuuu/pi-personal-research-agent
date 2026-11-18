@@ -23,6 +23,7 @@ export interface PreparationContext {
   targetLimit?:number;
   preferResolvedPaper?:boolean;
   personalMemory?:boolean;
+  groundDiscovery?:boolean;
 }
 export interface PreparedQuestion {
   frame: FullFrame; rewrite: string; warnings: string[]; wrapper: "none" | "preparation";
@@ -97,6 +98,22 @@ export function isMemorySessionInput(original:string):boolean{
   return /^(?:请)?(?:以后|今后|后续|默认|始终|一直).{0,12}(?:中文|英文|英语|汉语|简短|简洁|详细).{0,12}$/u.test(value)&&!/论文|实验|公式|检索|总结|翻译|比较/u.test(value);
 }
 
+function groundedDiscovery(context:PreparationContext,quote:unknown,explicit:readonly string[]):boolean {
+  const input=context.original;
+  const directChinese=/(?:检索|搜索|查找|寻找|推荐|找|筛选)[^。！？\n]{0,64}(?:论文|文献|研究|文章|资料)|(?:有哪些|有没有|最新|近期)[^。！？\n]{0,48}(?:论文|文献)/u;
+  const directEnglish=/\b(?:find|search|look for|recommend|list)\b[^.!?\n]{0,90}\b(?:papers?|articles?|studies|publications?|literature)\b|\b(?:papers?|publications?|literature) (?:on|about)\b/iu;
+  const clauses=input.split(/[。！？.!?，,；;\n]+/u);
+  const declines=/(?:不要|不必|无需|不用|别|请勿|暂不|先不)(?:再|去|另外)?(?:找|查|搜|检索|推荐)|\b(?:do not|don['’]t|no need to|avoid|without)\s+(?:search|look|find|recommend)/iu;
+  const asks=(part:string)=>directChinese.test(part)||directEnglish.test(part);
+  if(clauses.some(part=>declines.test(part)))return clauses.some(part=>!declines.test(part)&&asks(part));
+  if(explicit.length||clauses.some(asks))return true;
+  if(context.priorObjects?.targets.some(id=>context.allowed.has(id))&&/类似|同类|更多|相近|\b(?:similar|more like|related)\b/iu.test(input))return true;
+  if(typeof quote!=="string"||!quote.trim()||codepoints(quote)>300||!input.includes(quote))return false;
+  // A formatting instruction quoted verbatim still supplies no subject to search for.
+  const styleOnly=/^(?:(?:请|你|可以|尽管|更|再|稍微|完整|详细|简短|简要|具体|的|方法|回答|说明|介绍|解释|展开|一点|一些|说|写|些)+|(?:please\s+)?(?:keep (?:it|the (?:reply|answer|introduction)) (?:short|brief)|(?:you (?:can|may) )?(?:elaborate|expand|be (?:brief|detailed))))[.!?。！？]?$/iu;
+  return !styleOnly.test(quote.trim());
+}
+
 export function rawQuestionFrame(original: string, frameId: string): FullFrame {
   return { frame_id: frameId, question_text: original, candidate_papers: [], ordered_targets: [], information_needs: [{ need_id: "n1", text: WHOLE_QUESTION_NEED }],
     queries: [], ambiguity: null, user_constraints: [], intent: isConversationalInput(original)?"session_control":"single_paper_qa", follow_up: false, constraints: [], comparison_dimensions: [] };
@@ -117,6 +134,7 @@ export function parseQuestionPreparation(response: string, context: PreparationC
     if (Object.keys(raw).length === 1 && Object.hasOwn(raw, "preparation")) { raw = object(raw.preparation); wrapper = "preparation"; }
     if (!["intent", "targets", "rewrite", "queries"].some(key => Object.hasOwn(raw, key))) fail("preparation", "question-preparation fields, not a final-answer envelope");
     const fields = ["intent", "targets", "rewrite", "queries", "constraints", "needs", "comparison_dimensions", "clarification"];
+    if(context.groundDiscovery)fields.push("discovery_request_quote");
     if (Object.keys(raw).some(key => !fields.includes(key))) warnings.push("unused_fields_ignored");
     const conversational=isConversationalInput(context.original)||context.personalMemory===true&&isMemorySessionInput(context.original);
     let intent = conversational?"session_control":typeof raw.intent === "string" && Object.hasOwn(intentMap, raw.intent) ? intentMap[raw.intent] : "single_paper_qa";
@@ -139,6 +157,12 @@ export function parseQuestionPreparation(response: string, context: PreparationC
     }
     if(conversational)targets=[];
     if(context.preferResolvedPaper&&asksForAbstract(context.original)&&intent==='paper_discovery'){intent=targets.length>1?'scoped_summary':'single_paper_qa';warnings.push('paper_reading_intent_restored');}
+    if(context.groundDiscovery&&intent==="paper_discovery"&&!groundedDiscovery(context,raw.discovery_request_quote,explicit)){
+      // A provider rewrite can invent a search topic. Keep an ungrounded suggestion in the conversation.
+      intent="session_control";targets=[];
+      raw={...raw,rewrite:context.original,queries:[],needs:[],comparison_dimensions:[],clarification:null};
+      warnings.push("discovery_request_unconfirmed");
+    }
     let rewrite = context.original;
     if (raw.rewrite !== undefined) {
       try { rewrite = text(raw.rewrite, "rewrite", 12000); }

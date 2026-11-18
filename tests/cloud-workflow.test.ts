@@ -479,3 +479,34 @@ test("citation repair shows the original numerical candidate with a copyable mar
   const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"The reported result was 31% [cite:incorrect]."}));
   assert.equal(out.status,"waiting_user","a matching candidate cannot silently repair a citation or validate the answer");
 });
+
+test("automatic routing keeps ungrounded discovery rewrites out of cloud-only conversations",()=>{
+ const request="Please use a shorter introduction next time.";
+ for(const discovery_request_quote of [undefined,"nonexistent scientific topic"]){
+  const c=setup(request),w={...newWorkflow(),automatic:true,cloudOnly:true};
+  const proposal={intent:"find_papers",rewrite:"Search the literature for concise introductions",targets:[],queries:["writing studies"],needs:["find papers"],constraints:[],discovery_request_quote};
+  advanceWorkflow(w,c,JSON.stringify(proposal));
+  assert.equal(w.cloudOnly,true);assert.deepEqual(workflowTools(w,c.calls),[]);
+  assert.equal(w.prepared?.rewrite,request);assert.equal(w.prepared?.frame.intent,"session_control");
+  assert.ok(w.prepared?.warnings.includes("discovery_request_unconfirmed"));
+  assert.ok(!JSON.stringify(w.prepared).includes("writing studies"));
+ }
+ for(const [request,quote] of [
+  ["Find papers on acoustics; keep the reply short.",undefined],
+  ["帮我找两篇电池论文，简要列出。",undefined],
+  ["Batteries with solid electrolytes — recent work?","solid electrolytes"],
+ ]){
+  const c=setup(request!),w={...newWorkflow(),automatic:true,cloudOnly:true};
+  advanceWorkflow(w,c,JSON.stringify({intent:"find_papers",targets:[],rewrite:request,queries:[],constraints:[],discovery_request_quote:quote}));
+  assert.equal(w.cloudOnly,false);assert.equal(w.prepared?.frame.intent,"paper_discovery");
+  assert.deepEqual(workflowTools(w,c.calls),["search_papers","retrieve_chunks"]);
+ }
+ for(const [request,quote] of [["Please elaborate.","elaborate"],["先不要搜索文献，请简单说明。","搜索文献"]]){
+  const c=setup(request),w={...newWorkflow(),automatic:true,cloudOnly:true};
+  advanceWorkflow(w,c,JSON.stringify({intent:"find_papers",targets:[],rewrite:"Find sources",constraints:[],discovery_request_quote:quote}));
+  assert.equal(w.cloudOnly,true);assert.equal(w.prepared?.rewrite,request);
+ }
+ const explicit=setup("Continue the library search"),research=newWorkflow();
+ advanceWorkflow(research,explicit,prepared("find_papers"));
+ assert.equal(research.prepared?.frame.intent,"paper_discovery");
+});
