@@ -61,16 +61,24 @@ export async function verifyArtifactEdits(base: string, page: Page, api: Api) {
       const external = "另一窗口修改 " + width;
       await page.getByRole("button", { name: "编辑", exact: true }).click();
       await body.fill(draft);
-      let release!: () => void;
-      const gate = new Promise<void>(done => { release = done; });
-      const delayRead = async (route: Route) => {
-        if (route.request().method() === "GET") await gate;
-        await route.continue();
-      };
-      if (delayedRefresh) await page.route(url, delayRead);
+      const delayed = delayedRefresh ? await page.evaluateHandle(target => {
+        const original = window.fetch;
+        let resume!: () => void;
+        const gate = new Promise<void>(done => { resume = done; });
+        const control = {seen:false, release() { window.fetch = original; resume(); }};
+        window.fetch = async (input, init) => {
+          const result = await original.call(window, input, init);
+          const address = input instanceof Request ? input.url : new URL(String(input), location.href).href;
+          const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+          if (method === "GET" && address === target) { control.seen = true; await gate; }
+          return result;
+        };
+        return control;
+      }, url) : undefined;
       try {
         await api(path, "PATCH", { ...request(), version: before.version, title: external, content: external });
-        if (delayedRefresh) {
+        if (delayed) {
+          await expect.poll(() => delayed.evaluate(control => control.seen), {timeout: 10000}).toBe(true);
           const [conflict] = await Promise.all([
             page.waitForResponse(r => r.url() === url && r.request().method() === "PATCH"),
             save.click(),
@@ -79,8 +87,10 @@ export async function verifyArtifactEdits(base: string, page: Page, api: Api) {
           assert.equal(conflict.status(), 409);
         }
       } finally {
-        release();
-        if (delayedRefresh) await page.unroute(url, delayRead);
+        if (delayed) {
+          await delayed.evaluate(control => control.release());
+          await delayed.dispose();
+        }
       }
       const alert = page.locator(".artifact-page").getByRole("alert");
       await expect(alert).toContainText("草稿");
