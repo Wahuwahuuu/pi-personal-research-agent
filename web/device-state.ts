@@ -23,6 +23,10 @@ export function deviceView(
       detail: "本机已连接，可执行科研工具",
     };
   const labels: Record<string, [string, string]> = {
+    syncing_catalog: [
+      "本机正在同步目录",
+      "本机已连接，正在同步论文目录。同步完成后会继续处理待办。",
+    ],
     indexing: [
       "本机正在建索引",
       "本机已连接，正在建立论文索引；检索任务会在完成后继续。",

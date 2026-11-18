@@ -506,8 +506,14 @@ export class PersonalAgent extends DurableObject<Env> {
     }
   }
   deviceState(){
-    const ws=this.connectedDevice(),a=ws?.deserializeAttachment();
-    return{connected:!!ws,ready:!!a?.ready,phase:a?.ready?(a.phase==="empty"?"empty":"ready"):ws?(a?.phase??"loading"):"offline",canImport:!!a?.capabilities?.includes("library-v1")};
+    for (const ws of this.ctx.getWebSockets("device")) {
+      const a = ws.deserializeAttachment();
+      if (ws.readyState !== WebSocket.OPEN || a?.version !== 1 || !this.validHash(a.hash, "device")) continue;
+      if (!a.catalogReady) return {connected: true, ready: false, phase: "syncing_catalog", canImport: false};
+      const phase = a.ready ? (a.phase === "empty" ? "empty" : "ready") : (a.phase ?? "loading");
+      return {connected: true, ready: !!a.ready, phase, canImport: !!a.capabilities?.includes("library-v1")};
+    }
+    return {connected: false, ready: false, phase: "offline", canImport: false};
   }
   async resourcesChanged(){this.resourcesChecked=0;if(this.recoveryBlocked)return;await this.refreshResources();await this.maintenance.arm();}
   private async refreshResources(){
@@ -1155,6 +1161,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.deviceIndexes.declare(a.hash,a.indexVersion,m.retainedIndexes);
         a.ready = false;
         a.catalogReady = false;
+        delete a.phase;
         readerChanged = a.readerReady === true;
         a.readerReady = false;
         if(a.capabilities.includes("library-v1"))this.libraryJobs.reconnect(a.hash);

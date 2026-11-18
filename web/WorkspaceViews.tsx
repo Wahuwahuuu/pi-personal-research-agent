@@ -388,6 +388,8 @@ export function Library({
   refresh,
   onPaper,
 }: Props & { projectId?: string; onPaper: (p: Paper) => void }) {
+  const device = deviceView(data);
+  const syncingCatalog = data.deviceState?.phase === "syncing_catalog";
   const papers = useResource<Paper[]>("papers", revision),
     project = useResource<Project>(
       projectId ? "projects/" + encodeURIComponent(projectId) + "?view=summary" : undefined,
@@ -438,10 +440,11 @@ export function Library({
           <h1>{projectId ? "选择项目论文" : "论文库"}</h1>
           <p>
             {current ? "为「" + current.title + "」选择研究范围。" :
-              projectId ? "选择此项目研究时使用的论文。" : "本机索引的论文目录。原文片段可随讨论进入云端。"}
+              projectId ? "选择此项目研究时使用的论文。" : syncingCatalog && papers.value?.length ?
+              "本机正在同步论文目录。下方是此前已同步的论文。" : "本机索引的论文目录。原文片段可随讨论进入云端。"}
           </p>
         </div>
-        {!deviceView(data).connected && (
+        {!device.connected && (
           <button onClick={() => navigate("settings", "devices")}>
             <Icon name="desktop" />
             连接电脑
@@ -481,9 +484,9 @@ export function Library({
         <Loading />
       ) : !list.length ? (
         <Empty
-          title={query ? "未找到匹配的论文" : pendingImports?"首篇论文正在入库":deviceView(data).connected?(pendingImports===0?"添加你的第一篇论文":"论文库暂无可阅读的论文"):"论文目录还未连接"}
+          title={query ? "未找到匹配的论文" : syncingCatalog ? "正在同步论文目录" : pendingImports?"首篇论文正在入库":device.connected?(pendingImports===0?"添加你的第一篇论文":"论文库暂无可阅读的论文"):"论文目录还未连接"}
           action={
-            !query&&!deviceView(data).connected ? (
+            !query&&!device.connected ? (
               <button onClick={() => navigate("settings", "devices")}>
                 设置本地节点
               </button>
@@ -492,7 +495,7 @@ export function Library({
         >
           {query
             ? "试试标题中的其他关键词。"
-            : pendingImports?"入库待办已经保存。可在上方查看处理进度，完成后论文会出现在这里。":deviceView(data).connected?"从上方添加 arXiv，或在本机托盘选择文本 PDF。建立索引后，就可以开始阅读。":"连接本地节点后，已有索引会出现在这里。完整论文保留在本机。"}
+            : syncingCatalog ? device.detail : pendingImports?"入库待办已经保存。可在上方查看处理进度，完成后论文会出现在这里。":device.connected?"从上方添加 arXiv，或在本机托盘选择文本 PDF。建立索引后，就可以开始阅读。":"连接本地节点后，已有索引会出现在这里。完整论文保留在本机。"}
         </Empty>
       ) : (
         <div className="paper-list">

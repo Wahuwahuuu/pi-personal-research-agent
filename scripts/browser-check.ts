@@ -144,16 +144,42 @@ async function verifyImportBrowser(){
   const device=new WebSocket(base.replace("http","ws")+"/api/device/connect",{headers:{Authorization:"Bearer "+token}});
   device.on("error",()=>{});
   const protocolErrors:string[]=[];
+  let greetingConfirmed=false,assigned=0;
   const send=(value:unknown)=>device.send(JSON.stringify(value));
   device.on("message",raw=>{
    const m=JSON.parse(raw.toString());if(m.type==="error")protocolErrors.push(m.code);
-   if(m.type==="hello_ack"){send({type:"catalog_begin",pages:pages.length});pages.forEach((value,page)=>send({type:"catalog_page",page,value}));send({type:"catalog_end"});}
+   if(m.type==="hello_ack")greetingConfirmed=true;
    if(m.type==="catalog_ack")send({type:"availability",ready:false,phase:"indexing"});
-   if(m.type==="library_import")send({type:"library_result",id:m.id,generation:m.generation,phase:"indexing"});
+   if(m.type==="library_import"){assigned++;send({type:"library_result",id:m.id,generation:m.generation,phase:"indexing"});}
   });
   try{
    await new Promise<void>((ok,no)=>{device.once("open",ok);device.once("error",no);});
-   send({type:"hello",version:1,deviceId:"browser-import",indexVersion:catalog.indexVersion,tools:["search_papers","retrieve_chunks"],capabilities:["library-v1"]});
+   assert.equal((await api("overview")).deviceState.connected,false);
+   send({type:"hello",version:1,deviceId:"browser-import",indexVersion:catalog.indexVersion,tools:["search_papers","retrieve_chunks"],capabilities:["library-v1","reader-v1"]});
+   await until(async()=>greetingConfirmed);
+   const syncing=await api("overview");
+   assert.deepEqual(syncing.deviceState,{connected:true,ready:false,phase:"syncing_catalog",canImport:false});
+   assert.equal(syncing.deviceOnline,false);
+   assert.equal((await api("reader/status")).available,false);
+   const priorPapers=await api("papers");
+   for(const width of [1440,390]){
+    await page.setViewportSize({width,height:width===1440?900:844});
+    await route("papers");
+    await expect(page.locator(".topbar-status")).toContainText("本机正在同步目录");
+    if(priorPapers.length){
+     await expect(page.getByText("本机正在同步论文目录。下方是此前已同步的论文。",{exact:true})).toBeVisible();
+     await expect(page.locator(".paper-list").getByRole("button",{name:priorPapers[0].title,exact:true})).toBeVisible();
+    }else await expect(page.getByRole("heading",{name:"正在同步论文目录"})).toBeVisible();
+    await expect(importRow).toContainText("等待论文目录同步");
+    await expect(page.getByRole("button",{name:"连接电脑",exact:true})).not.toBeVisible();
+    await screenshot("imports-registering-"+width);
+    await route("chat");
+    await expect(page.locator(".connection-note")).toContainText("正在同步论文目录");
+   }
+   assert.equal(assigned,0);
+   checks.push("both widths show the confirmed node syncing its catalog, while tool, reader and import dispatch all wait");
+   await route("papers");
+   send({type:"catalog_begin",pages:pages.length});pages.forEach((value,page)=>send({type:"catalog_page",page,value}));send({type:"catalog_end"});
    await expect(page.locator(".topbar-status")).toContainText("本机正在建索引");
    await expect(page.getByRole("button",{name:"连接电脑",exact:true})).not.toBeVisible();
    await expect(importRow).toContainText("正在建立检索索引");

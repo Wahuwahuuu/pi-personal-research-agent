@@ -46,6 +46,7 @@ export function LibraryImports({
     if (["published", "failed", "cancelled"].includes(job.status))
       return phases[job.phase];
     if (!connected) return "等待你的电脑上线";
+    if (data.deviceState?.phase === "syncing_catalog") return "等待论文目录同步";
     if (!data.deviceState?.canImport) return "等待本机启用论文导入";
     if (data.deviceState.phase === "paused") return "本机已暂停，待办已保留";
     return phases[job.phase] ?? "等待处理";
