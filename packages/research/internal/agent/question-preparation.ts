@@ -212,7 +212,8 @@ export function parseQuestionPreparation(response: string, context: PreparationC
     const scope = targets.length ? targets : [...context.allowed];
     const routing: PreparedQuestion["routing"] = !nonFactual && !ambiguity && scope.length > 4 ? "autonomous_discovery" : "host_queries";
     let queries = advisoryStrings(raw.queries ?? [], "queries", 2, 1000);
-    if (!nonFactual && !ambiguity && !queries.length) {
+    const canScopeQueries = !nonFactual && !ambiguity && scope.length > 0;
+    if (canScopeQueries && !queries.length) {
       // Do not turn a complete long question into a valid-looking prefix.
       const complete = [rewrite, context.original].find(query => query.trim() && codepoints(query) <= 1000);
       if (complete) { queries = [complete]; warnings.push("query_defaulted_to_rewrite"); }
@@ -223,7 +224,7 @@ export function parseQuestionPreparation(response: string, context: PreparationC
       candidate_papers: [...targets], ordered_targets: [...targets], constraints, comparison_dimensions: dimensions,
       user_constraints: constraints.map(item => `${item.key}: ${item.value}`), ambiguity,
       information_needs: [{ need_id: "n1", text: WHOLE_QUESTION_NEED }, ...needs.map((need, i) => ({ need_id: `n${i + 2}`, text: need }))],
-      queries: nonFactual || ambiguity || routing === "autonomous_discovery" ? [] : queries.map(query => ({ query, paper_ids: [...scope] })),
+      queries: canScopeQueries && routing === "host_queries" ? queries.map(query => ({ query, paper_ids: [...scope] })) : [],
       ...(inherited.length ? { inherited_constraints: inherited } : {}) };
     return { frame, rewrite, warnings: [...new Set(warnings)], wrapper, routing, policy_version: PREPARATION_POLICY_VERSION, diagnostics };
   } catch (error) { throw new RuntimeFailure("PREPARATION_ERROR", error instanceof Error ? error.message : "Invalid question preparation"); }

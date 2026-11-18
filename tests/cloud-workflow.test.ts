@@ -551,3 +551,19 @@ test("a parsed reading digest does not report persistence before the host saves 
  assert.equal(w.memory.state,"pending");
  assert.deepEqual(w.memory.digest,{version:2,readings:[]});
 });
+
+test("empty published catalogs and offline routing never prepare a paperless tool request", () => {
+  for (const indexVersion of ["library-empty-v1", "cloud-only"]) {
+    for (const queries of [[], ["method or experiment"]]) {
+      const c = setup();
+      c.catalog = {indexVersion, papers: [], evidence: []};
+      const w = {...newWorkflow(), automatic: indexVersion === "cloud-only", cloudOnly: indexVersion === "cloud-only"};
+      advanceWorkflow(w, c, JSON.stringify({intent:"answer", targets:[], rewrite:c.input, queries, constraints:[]}));
+      assert.deepEqual(w.prepared?.frame.queries, []);
+      assert.equal(w.prepared?.retrieval_plan?.reason, "target_discovery_required");
+      assert.equal(w.preparedIndex, indexVersion);
+      assert.equal(w.phase, "agent");
+      assert.equal(w.cloudOnly, false);
+    }
+  }
+});

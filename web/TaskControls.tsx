@@ -1,17 +1,19 @@
 import { useState } from "react";
 import { hasContinuationBudget } from "../src/domain.ts";
 import type { Task } from "./types.ts";
-import type { Run } from "./hooks.ts";
+import {navigate, type Run} from "./hooks.ts";
 import { mutate } from "./api.ts";
 import { Dialog, Field, date } from "./components.tsx";
 export function TaskControls({
   task: t,
   run,
   refresh,
+  projectId,
 }: {
   task: Task;
   run: Run;
   refresh: () => void;
+  projectId?: string;
 }) {
   const [editing, setEditing] = useState(false),
     [saving, setSaving] = useState(false),
@@ -30,7 +32,13 @@ export function TaskControls({
     <div className="task-controls">
       {!terminal && (
         <div className="button-row">
-          {stopped ? (
+          {waiting && t.paperWait && (
+            <>
+              <button className="text-button" onClick={() => navigate("papers", projectId)}>打开论文库</button>
+              <button className="text-button" onClick={() => void control("pause")}>暂停自动继续</button>
+            </>
+          )}
+          {stopped && !(waiting && t.paperWait) ? (
             <button
               className="text-button"
               disabled={t.runOpen || !hasBudget || t.error === "CONTEXT_CHANGED" || !!(waiting && t.budgetTaskId)}
@@ -38,14 +46,14 @@ export function TaskControls({
             >
               继续执行
             </button>
-          ) : (
+          ) : !stopped ? (
             <button
               className="text-button"
               onClick={() => void control("pause")}
             >
               暂停任务
             </button>
-          )}
+          ) : null}
           {stopped && canAmend && (
             <button
               className="text-button"

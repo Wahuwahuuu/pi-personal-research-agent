@@ -135,6 +135,8 @@ const messages: Record<string, string> = {
   AMEND_SOURCE_TASK: "请在来源研究任务中补充要求。",
   PAUSE_REQUIRED: "请先暂停任务，待当前步骤结束后再调整方向。",
   TASK_NOT_PAUSED: "任务尚未暂停，请刷新查看最新状态。",
+  PAPER_LIBRARY_EMPTY: "本机论文库还没有论文。导入一篇论文后，这项研究会自动继续。",
+  SCOPE_PAPERS_UNAVAILABLE: "当前资料库缺少这次对话范围内的论文。所需论文入库后，这项研究会自动继续。",
   NODE_SCOPE_UPDATE_REQUIRED: "这项研究需要更新本机科研节点。更新并重新连接后，会从已有进度继续。",
   INVALID_SCOPE: "部分论文不在当前可用资料中，请检查项目论文范围。",
   MODEL_CONCURRENCY: "同一时刻已有模型请求执行，本次额外请求已停止。",

@@ -291,7 +291,7 @@ export function Chat({
                       sources={t.researchEvidence ?? []}
                       onCitation={(s) => onSource(s, t)}
                     />
-                  ) : t.preview ? (
+                  ) : t.status === "waiting_user" && t.paperWait ? null : t.preview ? (
                     <div className="stream-preview">{t.preview}</div>
                   ) : (
                     <p className="muted">
@@ -330,7 +330,7 @@ export function Chat({
                     sources={t.researchEvidence ?? []} onSource={(source, catalog) => onSource(source, t, catalog)} />}
                   <TaskProgress task={t} />
                   <ContextWindow task={t} />
-                  <TaskControls task={t} run={run} refresh={refresh} />
+                  <TaskControls task={t} run={run} refresh={refresh} projectId={messages.value?.conversation.projectId} />
                   <div className="message-actions">
                     {t.researchEvidence?.length ? (
                       <button

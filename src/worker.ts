@@ -35,6 +35,7 @@ import { StateRepository, type StateStorage } from "./state-store.ts";
 import {expandVisibleCitations} from "../packages/research/visible-citations.ts";
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/research/cloud-memory.ts";
+import {awaitsResearchCatalog, holdForMissingPapers, revisitPaperWait} from "./research-availability.ts";
 import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
 import {assertModelSubmission} from "./provider-context.ts";
 import {managedRuntimeSettings} from "./runtime-settings.ts";
@@ -1231,6 +1232,13 @@ export class PersonalAgent extends DurableObject<Env> {
         );
         this.catalogCache.delete(c.indexVersion);
         a.catalogReady = true;
+        let resumed = false;
+        for (const task of activeTasks(this.state)) {
+          if (!task.paperWait || task.status !== "waiting_user" || this.state.cloudMemory?.invalidatedTurns?.includes(task.id)) continue;
+          const conversation = this.state.conversations?.find(c => c.id === task.conversationId);
+          if (conversation && revisitPaperWait(task, c, conversation.scope)) resumed = true;
+        }
+        if (resumed) this.save();
         delete a.upload;
         ws.serializeAttachment(a);
         this.sendPurges(ws);
@@ -1460,7 +1468,7 @@ export class PersonalAgent extends DurableObject<Env> {
   private nextResearchTask(tasks: readonly import("./domain.ts").Task[], device: {catalogReady?:boolean; capabilities?:string[]} | null | undefined) {
     return nextResearchTurn(tasks, task =>
       (task.status === "queued" || !!device?.catalogReady &&
-        (!task.sessionId || task.error === SCOPED_RESEARCH_UPDATE) &&
+        (!task.sessionId || awaitsResearchCatalog(task) || task.error === SCOPED_RESEARCH_UPDATE) &&
         (task.error !== SCOPED_RESEARCH_UPDATE || !!device.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY))) &&
       task.proactive?.stage !== "imports" && (task.origin !== "schedule" || !this.resources.blocked) &&
       (!task.conversationId || !this.deletions.blocksConversation(task.conversationId)) && this.proactive.allowed(task)
@@ -1633,7 +1641,15 @@ export class PersonalAgent extends DurableObject<Env> {
       return;
     const t = this.nextResearchTask(activeTasks(this.state), attachment);
     if (!t) return;
-    if(dev&&!requireScopedResearchNode(t,this.state.conversations?.find(c=>c.id===t.conversationId)?.scope??[],attachment.capabilities)){this.save();return;}
+    const scope = this.state.conversations?.find(c => c.id === t.conversationId)?.scope ?? [];
+    if(dev&&!requireScopedResearchNode(t,scope,attachment.capabilities)){this.save();return;}
+    if (t.researchIndex && !t.paperWait && t.workflow?.phase === "agent" && t.tools === 0)
+      holdForMissingPapers(t, this.catalog(t.researchIndex), scope);
+    if (t.paperWait) {
+      revisitPaperWait(t, attachment?.catalogReady ? this.catalog(attachment.indexVersion) : undefined, scope);
+      this.save();
+      if (t.status !== "queued") return;
+    }
     if(!t.researchIndex&&t.workflow?.cloudOnly)t.researchIndex=attachment?.catalogReady?attachment.indexVersion:this.state.conversations?.find(c=>c.id===t.conversationId)?.domain?.index_version??this.state.tasks.findLast(previous=>previous.researchIndex&&previous.researchIndex!=="cloud-only")?.researchIndex??"cloud-only";
     if (!t.researchIndex) {
       if (!dev || !attachment.catalogReady) {
@@ -1641,7 +1657,12 @@ export class PersonalAgent extends DurableObject<Env> {
         return;
       }
       t.researchIndex = attachment.indexVersion;
-      if(t.workflow?.automatic&&t.workflow.preparedIndex==="cloud-only"){t.workflow.phase="prepare";t.workflow.cloudOnly=false;}
+      if (t.workflow?.automatic && t.workflow.preparedIndex === "cloud-only") {
+        t.status = "queued";
+        if (holdForMissingPapers(t, this.catalog(attachment.indexVersion), scope)) { this.save(); return; }
+        t.workflow.phase = "prepare";
+        t.workflow.cloudOnly = false;
+      }
     }
     if (!t.workflow?.cloudOnly && dev && !this.deviceIndexes.supports(attachment.hash,t.researchIndex!,attachment.indexVersion)) {
       failResearch(this.state, t, "INDEX_CHANGED");

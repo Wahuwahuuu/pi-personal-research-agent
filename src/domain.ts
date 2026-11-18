@@ -41,6 +41,7 @@ export interface Task {
   goal?:LongGoal;priority?:0|1|2;pauseRequested?:boolean;pausedFrom?:Status;amendmentPending?:boolean;amendments?:{text:string;at:number}[];
   translationKey?: string;
   researchIndex?: string;
+  paperWait?: "library" | "scope";
   researchEvidence?: Chunk[];
   researchWaiting?: boolean;
   runOpen?: boolean;

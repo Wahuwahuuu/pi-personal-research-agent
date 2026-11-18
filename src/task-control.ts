@@ -114,6 +114,7 @@ export function pauseTask(t: Task) {
     throw new Problem("TASK_CLOSED", 409);
   if (t.status === "paused") return;
   t.pausedFrom = t.status;
+  if (t.paperWait && (t.error === "PAPER_LIBRARY_EMPTY" || t.error === "SCOPE_PAPERS_UNAVAILABLE")) t.error = undefined;
   t.pauseRequested = true;
   t.status = "paused";
   t.updated = Date.now();
@@ -141,6 +142,10 @@ export function resumeTask(s: State, t: Task) {
       throw new Problem(t.goal ? "GOAL_BUDGET" : "MODEL_BUDGET", 429);
   }
   if (t.amendmentPending) {
+    if (t.paperWait) {
+      delete t.paperWait;
+      delete t.researchIndex;
+    }
     t.workflow = {...newWorkflow(), automatic: t.kind === "auto", cloudOnly: t.kind !== "research"};
     delete t.amendmentPending;
   } else if (t.workflow?.phase === "finished") {
