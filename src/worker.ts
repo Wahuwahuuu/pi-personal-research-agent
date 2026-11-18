@@ -1228,6 +1228,8 @@ export class PersonalAgent extends DurableObject<Env> {
         a.bytes = 0;
         delete a.trailingHigh;
         ws.serializeAttachment(a);
+        // The UI remains in the registration phase until the complete directory is published.
+        return;
       } else if (m.type === "catalog_page") {
         if (
           !a.upload ||
@@ -1249,6 +1251,7 @@ export class PersonalAgent extends DurableObject<Env> {
         );
         a.nextPage++;
         ws.serializeAttachment(a);
+        return;
       } else if (m.type === "catalog_end") {
         if (!a.upload || a.nextPage !== a.pages)
           throw new Problem("CATALOG_INCOMPLETE");
