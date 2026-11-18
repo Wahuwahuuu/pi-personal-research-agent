@@ -1,3 +1,4 @@
+import {citationLabels,expandVisibleCitations,type VisibleCitations} from "./visible-citations.ts";
 import {citationIds} from "./internal/agent/p2-r2.ts";
 import {projectToolOutcomes,type ToolOutcomeOperation} from "./tool-outcomes.ts";
 import {projectRecentDialogue,type ContextWindow} from "./context-window.ts";
@@ -16,7 +17,7 @@ export interface ResearchConversation {
   id:string; title:string; projectId:string; scope:string[]; created:number; updated?:number; pinned?:boolean; archived?:boolean;
   sessionId?:string; domain?:DomainState; history:DialogueRecord[];
 }
-export interface ResearchWorkflow {
+export interface ResearchWorkflow extends VisibleCitations {
   contextWindow?:ContextWindow;
   phase:"prepare"|"agent"|"completion"|"comparison"|"translation"|"memory"|"finished";
   memory?:{answer:string;status:"completed"|"waiting_user";digest?:MemoryDigest;state:"pending"|"saved"|"failed"|"budget_exhausted";visibleSourceIds?:string[]};
@@ -25,7 +26,6 @@ export interface ResearchWorkflow {
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
   tracker?:ReturnType<TurnExecutionTracker["snapshot"]>;
   comparison?:ComparisonReport; comparisonRevision?:string; progress?:TaskProgress;
-  visibleSourceIds?:string[];
   citationRepair?:{answer:string;claims:unknown[]};
   answerRepairAttempts?:number;answerRepairPending?:boolean;
   warnings:string[];
@@ -42,7 +42,8 @@ export interface WorkflowContext {
 const PERSONAL_CONTEXT_ROUTING = "For this personal agent, classify what the user is asking to do, not the research vocabulary in the message. Use intent=session_update for ordinary conversation and for recalling, explaining or correcting the user's saved preferences, project scope, decisions, constraints and unresolved questions. Answer those from the visible project, dialogue and personal memory; missing personal context calls for clarification, not literature discovery. Do not expand a question about the user's own decisions into questions about standard scientific practice. Use research intents when the user requests new papers, paper originals or verification of scientific claims; remembered findings never replace source evidence. Do not require a manual chat/research mode.";
 const automaticRouting=(w:ResearchWorkflow)=>w.automatic&&w.phase==="prepare"?PERSONAL_CONTEXT_ROUTING+"\n":"";
 const ANSWER_FORMAT_REPAIR_INSTRUCTION="Rewrite the response as ordinary Markdown with exact citations. Do not use a JSON envelope or execution metadata. Answer the original question from the visible evidence and state actual gaps.";
-const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+(w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION);
+const VISIBLE_CITATION_INSTRUCTION="When a visible excerpt has answer_citation, copy that short marker exactly for that excerpt in your answer. The host resolves it to the permanent source ID. Use the full chunk_id for structured metadata. Use only excerpts actually visible in this step.";
+const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+VISIBLE_CITATION_INSTRUCTION+"\n"+(w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION);
 export function workflowInstruction(w:ResearchWorkflow):string{
  const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:agentInstruction(w);
  return automaticRouting(w)+(w.cloudOnly&&!(w.automatic&&w.phase==="prepare")?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals. For greetings and capabilities, answer briefly without citation markers or made-up source examples.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
@@ -151,19 +152,23 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Count the prompt as the JSON string actually nested in the provider request.
   // The remaining 8 KB is reserved for the locked Pi system/tool envelope; the
   // adapter still validates the entire request against its unchanged 48 KB limit.
-  const evidence:Chunk[]=[];
+  const labels = citationLabels(c.id, c.catalog.indexVersion, new Set(byId.keys()));
+  const evidence:(Chunk & {answer_citation?:string})[]=[];
   const window={archived:c.evidence.length,visible:0,omitted:c.evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
   payload.evidence=evidence;payload.evidence_window=window;
   const fits=()=>byteSize(JSON.stringify(payload))<=40000;
   if(!fits())throw Error("CONTEXT_LIMIT"); // Never silently shorten the user's request or corrections.
   let evidenceBytes=2;
   for(const source of [...repair,...ordered.filter(e=>!preferred.has(e.chunk_id))]){
-    const size=byteSize(source)+1;if(evidenceBytes+size>22000)continue;
-    evidence.push(source);window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;
+    const label = labels.get(source.chunk_id);
+    const projectedSource = label ? {...source, answer_citation:"[cite:"+label+"]"} : source;
+    const size=byteSize(projectedSource)+1;if(evidenceBytes+size>22000)continue;
+    evidence.push(projectedSource);window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;
     if(fits())evidenceBytes+=size;
     else {evidence.pop();window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;}
   }
   w.visibleSourceIds=evidence.map(e=>e.chunk_id);
+  w.citationLabels=evidence.some(e=>e.answer_citation) ? w.visibleSourceIds.map(id=>labels.get(id)??"") : undefined;
   return JSON.stringify(payload);
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return !w.cloudOnly&&w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
@@ -216,6 +221,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     if(!declared){declared={state:"partial",remaining_needs:["完成状态未能确认"],origin:"host"};w.warnings.push("COMPLETION_CHECK_INCOMPLETE");}
     output=w.candidate??"";
   }else{
+    output=expandVisibleCitations(output,w);
     w.candidate=output;
     declared=executionFromOutput(output);
     if(declared?.state!=="working"&&!hasWorkbenchAnswer(output))return repairAnswerFormat(w,c);

@@ -362,3 +362,50 @@ test("recovering an execution envelope still validates its shape and citations",
   c.calls = 6;
   assert.equal(advanceWorkflow(w, c, multiline).status, "waiting_user");
 });
+
+test("long source citations resolve to the original chunk in answers, checkpoints and later dialogue", () => {
+  const c = setup(), w = newWorkflow();
+  const id = "volume:local-" + "abcd".repeat(16) + ":page:120-180";
+  const source = {paper_id:"fixture-paper",chunk_id:id,paragraph_id:"p",section:"Methods",text:"We use paired observations.",start:0,end:27,index_version:catalog.indexVersion,citation:"[cite:"+id+"]"};
+  c.evidence = [source];
+  advanceWorkflow(w, c, prepared());
+  const item = JSON.parse(workflowPrompt(w, c)).evidence[0];
+  assert.match(item.answer_citation, /^\[cite:ref-[a-f0-9]{12}\]$/);
+  assert.equal(item.chunk_id, id);
+  assert.equal(item.text, source.text);
+  assert.equal(item.citation, source.citation);
+  assert.equal("answer_citation" in source, false);
+  const saved = JSON.parse(JSON.stringify(w));
+  assert.equal(JSON.parse(workflowPrompt(saved,c)).evidence[0].answer_citation,item.answer_citation);
+  const plain = "Paired observations. " + item.answer_citation;
+  assert.deepEqual(advanceWorkflow(saved,c,plain),{});
+  assert.equal(saved.candidate,"Paired observations. "+source.citation);
+  c.calls=6;
+  const result=advanceWorkflow(saved,c,JSON.stringify({state:"complete",remaining_needs:[],needs_sources:true}));
+  assert.equal(result.status,"completed");
+  assert.equal(result.answer,saved.candidate);
+  assert.equal(c.conversation.history.at(-1)?.final_answer,result.answer);
+});
+
+test("a compact citation cannot name an omitted source, another task or a different index", () => {
+  const c=setup(), w=newWorkflow();
+  const ids=["canonical-long-source-"+ "a".repeat(45),"canonical-long-source-"+ "b".repeat(45)];
+  c.evidence=ids.map((chunk_id,i)=>({chunk_id,paper_id:"fixture-paper",paragraph_id:"p"+i,section:"Methods",text:"Evidence.",start:0,end:9,citation:"[cite:"+chunk_id+"]",index_version:catalog.indexVersion}));
+  advanceWorkflow(w,c,prepared());
+  const entries=JSON.parse(workflowPrompt(w,c)).evidence;
+  const labels=entries.map((s:{answer_citation:string})=>s.answer_citation);
+  assert.ok(labels.every((v:string)=>v?.startsWith("[cite:ref-")));
+  const fresh=(context:WorkflowContext)=>{
+    const copy=structuredClone(w);
+    const prompt=JSON.parse(workflowPrompt(copy,context));
+    const output=JSON.stringify({execution:{state:"complete",remaining_needs:[]},answer:"A finding. "+labels[1]});
+    return {prompt,result:advanceWorkflow(copy,{...context,calls:6},output)};
+  };
+  assert.equal(fresh({...c,evidence:[c.evidence[0]]}).result.status,"waiting_user");
+  assert.equal(fresh({...c,id:"another-task"}).result.status,"waiting_user");
+  assert.equal(fresh({...c,catalog:{...c.catalog,indexVersion:"another-index"}}).result.status,"waiting_user");
+  const grouped=labels[0].slice(0,-1)+"; "+labels[1].slice(1);
+  const answer=advanceWorkflow(w,{...c,calls:6},JSON.stringify({execution:{state:"complete"},answer:"Both. "+grouped}));
+  assert.equal(answer.status,"completed");
+  assert.equal(answer.answer,"Both. [cite:"+ids[0]+"][cite:"+ids[1]+"]");
+});

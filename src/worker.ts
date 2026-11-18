@@ -31,6 +31,7 @@ export { IdentityRegistry };
 import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
 import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
 import { StateRepository, type StateStorage } from "./state-store.ts";
+import {expandVisibleCitations} from "../packages/research/visible-citations.ts";
 import {answerPreview} from "./model-response.ts";
 import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
@@ -269,9 +270,9 @@ export class PersonalAgent extends DurableObject<Env> {
                   onFailure:(code,detail)=>{const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running");if(task){task.modelFailure=code;task.modelFailureDetail=detail;}},
                   onVisible:(text)=>{
                     const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");
-                    if(!task||Date.now()-lastPreview<1000)return;
+                    if(!task?.workflow||Date.now()-lastPreview<1000)return;
                     const preview=answerPreview(text);if(!preview)return;
-                    task.preview=preview;lastPreview=Date.now();this.publish();
+                    task.preview=expandVisibleCitations(preview,task.workflow);lastPreview=Date.now();this.publish();
                   },
                 },
                 before,
