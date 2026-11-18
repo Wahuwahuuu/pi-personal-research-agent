@@ -124,7 +124,11 @@ export class IdentityRegistry extends DurableObject<Env> {
   }
   if(path==="/api/platform"||path==="/api/platform/refresh"){
    if(!identity)throw new Problem("UNAUTHORIZED",401);
-   if(path==="/api/platform"&&r.method==="GET")return json({...this.platform.view(),...await this.platformStatus(),workerName:this.env.RESOURCE_WORKER_NAME,cloudMonitoringConfigured:!!(this.env.CLOUDFLARE_METRICS_TOKEN&&this.env.CLOUDFLARE_ACCOUNT_ID&&this.env.RESOURCE_WORKER_NAME)});
+   if(path==="/api/platform"&&r.method==="GET"){
+    const status=await this.platformStatus();
+    if(url.searchParams.get("view")==="status")return json(status);
+    return json({...this.platform.view(),...status,workerName:this.env.RESOURCE_WORKER_NAME,cloudMonitoringConfigured:!!(this.env.CLOUDFLARE_METRICS_TOKEN&&this.env.CLOUDFLARE_ACCOUNT_ID&&this.env.RESOURCE_WORKER_NAME)});
+   }
    if(r.method==="POST"){
     if(identity.role!=="owner")throw new Problem("FORBIDDEN",403);
     if(path==="/api/platform/refresh"){const b=await this.body(r),status=await this.refreshPlatform("refresh:"+await digest(text(b.requestId,128)));await this.env.AGENTS.getByName(identity.id).resourcesChanged();return json({...this.platform.view(),...status});}

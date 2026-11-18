@@ -50,6 +50,7 @@ try{
  report.checks.push("dedicated credential reads five provider datasets in workerd; owner refresh is idempotent");
  high=true;const beforeCron=reads,blocked=await api("/__fixture/cron");
  assert.equal(reads,beforeCron+5);assert.equal(blocked.reason,"PLATFORM_RESOURCE_LIMIT");
+ const heldView=await api("/api/platform?view=status");assert.equal(heldView.reason,blocked.reason);assert.equal(heldView.blocked,true);assert.equal(heldView.snapshot,undefined);
  assert.equal((await api("/__fixture/discovery")).ok,false);
  assert.equal((await api("/__fixture/background-budget")).error,"PLATFORM_RESOURCE_LIMIT");
  assert.equal((await api("/api/budget")).validation.requests,0);
@@ -58,6 +59,9 @@ try{
  assert.equal(unknown.reason,"PLATFORM_METRICS_UNAVAILABLE");assert.equal(unknown.blocked,true);
  denied=false;high=false;const resumed=await api("/api/platform/refresh",{requestId:crypto.randomUUID()});
  assert.equal(resumed.blocked,false);assert.equal((await api("/__fixture/discovery")).ok,true);
+ const compact=await api("/api/platform?view=status");
+ assert.equal(compact.enabled,true);assert.equal(compact.blocked,false);assert.ok(compact.observedAt);
+ assert.deepEqual(Object.keys(compact).sort(),["blocked","enabled","nextCheck","observedAt"]);
  const view=await api("/api/platform");assert.equal(view.cloudMonitoringConfigured,true);assert.equal(JSON.stringify(view).includes(modelCredential),false);
  report.checks.push("provider denial holds work instead of inventing zero usage; new valid observations reopen admission");
  report.success=true;

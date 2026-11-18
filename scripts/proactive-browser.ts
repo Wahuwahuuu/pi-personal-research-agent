@@ -283,6 +283,43 @@ export async function verifyProactiveBrowser(
     checks.push(
       "inbox brief opens the actual artifact; source outage displays retained checkpoint and no fabricated discovery or reading progress",
     );
+    const permissionsBeforeStatus = await planPermissions();
+    let response: "stale" | "unavailable" | "live" = "stale";
+    let statusReads = 0;
+    const statusRoute = (url: URL) => url.pathname === "/api/platform" && url.searchParams.get("view") === "status";
+    await page.route(statusRoute, route => {
+      statusReads++;
+      if (response === "live") return route.continue();
+      if (response === "unavailable") return route.fulfill({status:503,json:{error:"SERVICE_UNAVAILABLE"}});
+      return route.fulfill({json:{enabled:true,blocked:true,reason:"PLATFORM_METRICS_STALE",observedAt:Date.now()-2*3600000,nextCheck:Date.now()+60000}});
+    });
+    const manage = page.getByRole("button", {name:"管理关注主题",exact:true});
+    await manage.click();
+    await manage.click();
+    const stale = page.getByText(/云端用量统计已过期/);
+    for (const width of [1440,390]) {
+      await page.setViewportSize({width,height:850});
+      await expect(stale).toBeVisible();
+      await expect(stale).toContainText("最近一次用量统计");
+      await expect(page.locator(".watch-row").filter({has:page.getByRole("heading",{name:"agents",exact:true})})).toContainText("原定检查");
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+    }
+    assert.equal(statusReads,1);
+    response="unavailable";
+    await manage.click();
+    await manage.click();
+    const retry = page.getByRole("button",{name:"重试状态查询",exact:true});
+    await expect(retry).toBeVisible();
+    await expect(stale).toHaveCount(0);
+    response="live";
+    await retry.focus();
+    await Promise.all([page.waitForResponse(r => statusRoute(new URL(r.url())) && r.ok()), retry.press("Enter")]);
+    await expect(retry).toHaveCount(0);
+    await expect(stale).toHaveCount(0);
+    assert.equal(statusReads,3);
+    await page.unroute(statusRoute);
+    assert.deepEqual(await planPermissions(),permissionsBeforeStatus);
+    checks.push("desktop and mobile show a resource hold independently of source history; failed status reads can be retried with the keyboard");
     assert.deepEqual(errors, []);
     return checks;
   } catch (e) {

@@ -3,6 +3,7 @@ import { api, mutate, errorText } from "./api.ts";
 import { Field, Loading, Pager, Status, date } from "./components.tsx";
 import { navigate, usePaged, useResource, type Run } from "./hooks.ts";
 import type { Overview, Plan, Task } from "./types.ts";
+import type { PlatformStatus } from "../src/platform-resources.ts";
 import type { PlanDraft } from "../src/plan-draft.ts";
 import type {
   ResearchBatch,
@@ -233,7 +234,29 @@ function PlanBatches({ plan, revision }: { plan: Plan; revision: number }) {
     </section>
   );
 }
+function useWatchPlatform(enabled: boolean) {
+  const [visible, setVisible] = useState(() => document.visibilityState === "visible");
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    const changed = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", changed);
+    return () => document.removeEventListener("visibilitychange", changed);
+  }, []);
+  const active = enabled && visible;
+  const platform = useResource<PlatformStatus>(active ? "platform?view=status" : undefined, refresh);
+  useEffect(() => {
+    if (!active || platform.loading) return;
+    const interval = platform.error || platform.value?.blocked ? 60000 : 300000;
+    const timer = window.setTimeout(() => setRefresh(value => value + 1), interval);
+    return () => window.clearTimeout(timer);
+  }, [active, platform.value, platform.error, platform.loading]);
+  return platform;
+}
+
 export function WatchPlans({ data, revision, run, refresh }: Props) {
+  const hasActivePlans = data.plans.some(plan => plan.enabled);
+  const platform = useWatchPlatform(hasActivePlans);
+  const blocked = !platform.error && platform.value?.blocked;
   const [selected, setSelected] = useState<string>(),
     [editing, setEditing] = useState<string>(),
     [description, setDescription] = useState("");
@@ -300,6 +323,17 @@ export function WatchPlans({ data, revision, run, refresh }: Props) {
         每天 09:00（上海时间）检查
         arXiv。先保存文献线索；启用自动处理后，在预算内入库、阅读并汇报值得关注的变化。
       </p>
+      {hasActivePlans && platform.error ? (
+        <p className="error" role="status">
+          暂时无法读取后台研究状态。{" "}
+          <button className="text-button" onClick={platform.reload}>重试状态查询</button>
+        </p>
+      ) : hasActivePlans && blocked ? (
+        <p className="warning" role="status">
+          {errorText(new Error(platform.value?.reason ?? "PLATFORM_METRICS_UNAVAILABLE"))}
+          {platform.value?.observedAt && " 最近一次用量统计为 " + date(platform.value.observedAt) + "。"}
+        </p>
+      ) : null}
       {editing && (
         <form
           className="watch-editor"
@@ -471,7 +505,9 @@ export function WatchPlans({ data, revision, run, refresh }: Props) {
                   {p.autoProcess
                     ? "自动处理已授权 · 每轮最多 " + (p.maxPapers ?? 3) + " 篇"
                     : "仅保存文献线索"}{" "}
-                  · {p.enabled ? "下次检查：" + date(p.next) : "已暂停"}
+                  · {p.enabled
+                    ? (blocked || p.next <= Date.now() ? "原定检查 " : "下次检查 ") + date(p.next)
+                    : "已暂停"}
                 </small>
                 {p.sourceError && (
                   <small className="error">
