@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync, randomBytes, sign } from "node:crypto"
 import { isoCBOR } from "@simplewebauthn/server/helpers";
 // Synthetic authenticator signs real WebAuthn challenges. This is protocol verification,
 // not a claim that Windows Hello or any physical authenticator has been exercised.
-function authenticator(origin:string){
+export function authenticator(origin:string){
  const {privateKey,publicKey}=generateKeyPairSync("ec",{namedCurve:"prime256v1"}),jwk=publicKey.export({format:"jwk"}),id=randomBytes(32),rp=new URL(origin).hostname;
  const cose=isoCBOR.encode(new Map<number,any>([[1,2],[3,-7],[-1,1],[-2,new Uint8Array(Buffer.from(jwk.x!,"base64url"))],[-3,new Uint8Array(Buffer.from(jwk.y!,"base64url"))]]));
  let counter=0,userHandle="";

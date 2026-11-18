@@ -161,8 +161,18 @@ export class IdentityRegistry extends DurableObject<Env> {
    const result=await verifyRegistrationResponse({response:b.response,expectedChallenge:c.value,expectedOrigin:url.origin,expectedRPID:url.hostname,requireUserVerification:true,supportedAlgorithmIDs:[-7,-257]});
    if(!result.verified)throw new Problem("AUTHENTICATION_FAILED",401);
    const first=this.store.credentials(c.user_id).length===0,credential=result.registrationInfo.credential;
-   const account=this.store.register(c.id,{id:credential.id,user_id:c.user_id,public_key:Buffer.from(credential.publicKey).toString("base64url"),counter:credential.counter,
-    transports:JSON.stringify(credential.transports??[]),name:text(b.name??"我的通行密钥",80),created:Date.now()});
+   const account=this.store.db.transactionSync(()=>{
+    const isNewInvitedMember=Boolean(c.invite_hash)&&!this.store.account(c.user_id);
+    const registered=this.store.register(c.id,{id:credential.id,user_id:c.user_id,public_key:Buffer.from(credential.publicKey).toString("base64url"),counter:credential.counter,
+     transports:JSON.stringify(credential.transports??[]),name:text(b.name??"我的通行密钥",80),created:Date.now()});
+    // Only a newly claimed, server-generated member ID has a known empty history.
+    // Existing accounts must import their actual usage before any paid admission.
+    if(isNewInvitedMember){
+     this.budget.import(registered.id,[]);
+     this.budget.validation.import(registered.id,{requests:0,input:0,output:0});
+    }
+    return registered;
+   });
    let recoveryCodes:string[]|undefined;
    if(first){recoveryCodes=Array.from({length:8},()=>token().slice(0,32));this.store.setRecovery(account.id,await Promise.all(recoveryCodes.map(digest)));}
    return this.sessionResponse(r,account,recoveryCodes?{recoveryCodes}:{});
