@@ -1,3 +1,4 @@
+import {ARTIFACT_CONTENT_LIMIT, ARTIFACT_TITLE_LIMIT} from "./artifact-contract.ts";
 import {appendChanges, initializeChangeFeed} from "./change-feed.ts";
 import {createHash} from "node:crypto";
 import {arxivVersion} from "../packages/research/source-links.ts";
@@ -74,7 +75,7 @@ export class Artifacts {
   return{items:rows.slice(0,limit).map(r=>this.parse(r)),nextCursor:rows.length>limit?after+limit:null};
  }
  create(input:Omit<Artifact,"id"|"created"|"updated"|"version">,content:string,sources:readonly Chunk[],options:{explicitSave?:boolean}={}){
-  if(!artifactKinds.includes(input.kind))throw new Problem("INVALID_ARTIFACT_KIND");text(content,50000);text(input.title,150);
+  if(!artifactKinds.includes(input.kind))throw new Problem("INVALID_ARTIFACT_KIND");text(content,ARTIFACT_CONTENT_LIMIT);text(input.title,ARTIFACT_TITLE_LIMIT);
   if(sources.length>100)throw new Problem("TOO_MANY_SOURCES");
   const prior=this.db.sql.exec<{id:string}>("SELECT id FROM pra_artifacts WHERE task_id=? AND kind=? AND id NOT IN (SELECT id FROM pra_artifact_tombstones)",input.taskId,input.kind).toArray()[0];
   if(prior)return this.get(prior.id);
@@ -93,7 +94,7 @@ export class Artifacts {
   catch(error){if(error instanceof Problem&&error.code==="RESOURCE_DELETED")return undefined;throw error;}
  }
  revise(id:string,expected:number,content:string,title?:string){
-  const a=this.get(id);if(expected!==a.version)throw new Problem("VERSION_CONFLICT",409);text(content,50000);if(title!==undefined)text(title,150);
+  const a=this.get(id);if(expected!==a.version)throw new Problem("VERSION_CONFLICT",409);text(content,ARTIFACT_CONTENT_LIMIT);if(title!==undefined)text(title,ARTIFACT_TITLE_LIMIT);
   this.db.transactionSync(()=>{const now=Date.now();
    this.db.sql.exec("INSERT INTO pra_artifact_versions VALUES(?,?,?,?,'user',?)",id,expected+1,content,JSON.stringify(a.sources),now);
    const nextTitle=title??a.title;

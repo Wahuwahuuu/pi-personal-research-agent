@@ -23,6 +23,7 @@ import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pau
 import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries,storeReadingEntries} from "../packages/research/memory.ts";
+import {ARTIFACT_REVISION_BODY_LIMIT, ARTIFACT_TITLE_LIMIT} from "./artifact-contract.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
 import {MAX_PROJECT_PAPERS,Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
 import {mutateMemory,purgeProjectMemories,type MemoryMutation} from "./memory-mutations.ts";
@@ -982,7 +983,7 @@ export class PersonalAgent extends DurableObject<Env> {
         if(!t.answer||!["completed","waiting_user"].includes(t.status))throw new Problem("RESULT_NOT_READY",409);
         const c=this.state.conversations?.find(c=>c.id===t.conversationId);if(!c)throw new Problem("NOT_FOUND",404);
         const artifact=this.workspace.once(b.requestId,"artifact:create",b,()=>this.artifacts.create({projectId:c.projectId,conversationId:c.id,taskId:t.id,
-          kind:b.kind as any??"reading",title:text(b.title??t.input.slice(0,120),150),partial:t.status!=="completed"},t.answer!,t.researchEvidence??[],{explicitSave:true}));
+          kind:b.kind as any??"reading",title:text(b.title??t.input.slice(0,120),ARTIFACT_TITLE_LIMIT),partial:t.status!=="completed"},t.answer!,t.researchEvidence??[],{explicitSave:true}));
         this.publish();return json(artifact,201);
       }
     }
@@ -1000,7 +1001,11 @@ export class PersonalAgent extends DurableObject<Env> {
         return json(value);
       }
       if(!artifact[2]&&r.method==="PATCH"){
-        const b=await this.body(r),value=this.workspace.once(b.requestId,"artifact:"+id,b,()=>this.artifacts.revise(id,Number(b.version),text(b.content,12000),typeof b.title==="string"?text(b.title,150):undefined));
+        const b=await this.body(r,false,ARTIFACT_REVISION_BODY_LIMIT);
+        const content=b.content;
+        if(typeof content!=="string")throw new Problem("INVALID_TEXT");
+        const title=typeof b.title==="string"?text(b.title,ARTIFACT_TITLE_LIMIT):undefined;
+        const value=this.workspace.once(b.requestId,"artifact:"+id,b,()=>this.artifacts.revise(id,Number(b.version),content,title));
         this.publish();return json(value);
       }
       if(!artifact[2]&&r.method==="DELETE"){const b=await this.body(r);const value=this.workspace.once(b.requestId,"artifact:delete:"+id,{},()=>{this.artifacts.delete(id);this.workspace.forgetEntity(id);this.state.notices=this.state.notices.filter(n=>n.artifactId!==id);this.save();return{ok:true};});this.publish();return json(value);}
@@ -1069,10 +1074,10 @@ export class PersonalAgent extends DurableObject<Env> {
     if(timing&&r.method==="GET")return json(taskTimings(this.state,getTask(this.state,timing[1])));
     if(task&&r.method==="GET"){const {modelPrompt,...t}=getTask(this.state,task[1]);return json(t);}
   }
-  async body(r: Request, optional=false) {
+  async body(r: Request, optional=false, limit=16000) {
     const raw = await r.text();
     if(optional&&!raw)return {};
-    if (raw.length > 16000) throw new Problem("BODY_TOO_LARGE", 413);
+    if (raw.length > limit) throw new Problem("BODY_TOO_LARGE", 413);
     if (
       new URL(r.url).pathname !== "/api/login" &&
       [this.env.ADMIN_TOKEN, this.env.MODEL_API_KEY].some(

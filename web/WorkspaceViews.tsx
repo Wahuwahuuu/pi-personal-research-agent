@@ -1,3 +1,4 @@
+import {ARTIFACT_CONTENT_LIMIT, ARTIFACT_TITLE_LIMIT} from "../src/artifact-contract.ts";
 import {ProjectResearchRecords} from "./ProjectResearchRecords.tsx";
 import {WatchPlans} from "./WatchPlans.tsx";
 import {deviceView} from "./device-state.ts";
@@ -897,7 +898,7 @@ export function ArtifactView({
                 <Field label="成果名称">
                   <input
                     value={draft.title}
-                    maxLength={150}
+                    maxLength={ARTIFACT_TITLE_LIMIT}
                     disabled={saving}
                     onChange={(e) => setDraft({ ...draft, title: e.target.value })}
                     required
@@ -913,7 +914,7 @@ export function ArtifactView({
                     value={draft.content}
                     disabled={saving}
                     onChange={(e) => setDraft({ ...draft, content: e.target.value })}
-                    maxLength={12000}
+                    maxLength={ARTIFACT_CONTENT_LIMIT}
                     required
                   />
                 </Field>
