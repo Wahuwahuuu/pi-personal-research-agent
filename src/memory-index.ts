@@ -49,14 +49,15 @@ export class MemoryIndex{
    }
   });this.known=current;
  }
- page(options:{query?:string;projectId?:string;category?:string;after?:number;limit?:number;includeInactive?:boolean;editedOnly?:boolean;paperIds?:readonly string[]}={}){
+ page(options:{query?:string;projectId?:string;projectOnly?:boolean;category?:string;after?:number;limit?:number;includeInactive?:boolean;editedOnly?:boolean;paperIds?:readonly string[]}={}){
   const after=options.after??0,limit=options.limit??30;if(!Number.isInteger(after)||after<0||!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
   const terms=memoryTokens(options.query??"").slice(0,40),where:string[]=[],args:unknown[]=[];
   let from="pra_memory_index m",rank="m.edited DESC,m.updated DESC,m.id";
   if(terms.length){from+=" JOIN pra_memory_fts ON pra_memory_fts.id=m.id";where.push("pra_memory_fts MATCH ?");args.push(terms.map(t=>'"'+t.replaceAll('"','""')+'"').join(" OR "));rank="m.edited DESC,bm25(pra_memory_fts),m.updated DESC,m.id";}
   if(!options.includeInactive)where.push("m.active=1");
   if(options.editedOnly)where.push("m.edited=1");
-  if(options.projectId!==undefined){where.push("(m.project='' OR m.project=?)");args.push(options.projectId);}
+  if(options.projectOnly&&!options.projectId)throw new Problem("INVALID_PROJECT_SCOPE");
+  if(options.projectId!==undefined){where.push(options.projectOnly?"m.project=?":"(m.project='' OR m.project=?)");args.push(options.projectId);}
   if(options.category){where.push("m.category=?");args.push(options.category);}
   if(options.paperIds?.length){where.push("(json_array_length(m.papers)=0 OR EXISTS(SELECT 1 FROM json_each(m.papers) p WHERE p.value IN ("+options.paperIds.map(()=>"?").join(",")+")))");args.push(...options.paperIds);}
   const rows=this.db.sql.exec<{value:string}>("SELECT m.value FROM "+from+(where.length?" WHERE "+where.join(" AND "):"")+" ORDER BY "+rank+" LIMIT ? OFFSET ?",...args,limit+1,after).toArray();

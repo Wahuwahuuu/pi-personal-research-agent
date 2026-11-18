@@ -2070,3 +2070,11 @@ textarea {
  .retention-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
  .retention-receipt:not(:empty) { margin-block:16px; }
 }
+
+.project-records { margin-block: 1rem; border-block: 1px solid var(--line); padding-block: .85rem; }
+.project-records > summary { cursor:pointer; font-weight:650; }
+.project-records[open] > summary { margin-bottom:1rem; }
+.project-records .field { max-width:20rem; }
+.project-memory { padding-block:.8rem; border-bottom:1px solid var(--line); overflow-wrap:anywhere; }
+.project-memory > p { white-space:pre-wrap; margin:0 0 .4rem; }
+.project-memory > small { color:var(--muted); }

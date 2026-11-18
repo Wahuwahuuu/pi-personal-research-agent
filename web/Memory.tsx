@@ -1,3 +1,4 @@
+import { MemoryEvidence, memorySourceLabel } from "./MemoryEvidence.tsx";
 import { useEffect, useRef, useState } from "react";
 import { api, mutate } from "./api.ts";
 import { Empty, Loading, Field, date, Dialog, Pager } from "./components.tsx";
@@ -189,38 +190,12 @@ export function MemoryView({
               </div>
               <p>{m.content}</p>
               <p className="help">
-                {m.projectId
-                  ? (data.projects.items.find((p) => p.id === m.projectId)
-                      ?.title ?? "研究项目")
-                  : "个人范围"}
-                {m.sourceStatus === "verified"
-                  ? " · 引文已核对，结论含义待审阅"
-                  : m.sourceStatus === "needs_review"
-                    ? " · 人工修改后待重新核对原文"
-                    : m.sourceStatus === "stale"
-                      ? " · 原文版本已变化，需重新核对"
-                      : ""}
+                {[
+                  m.projectId ? (data.projects.items.find(p => p.id === m.projectId)?.title ?? "研究项目") : "个人范围",
+                  memorySourceLabel(m),
+                ].filter(Boolean).join(" · ")}
               </p>
-              {!!m.sources?.length && (
-                <details className="memory-evidence">
-                  <summary>原文依据 · {m.sources.length} 处</summary>
-                  {m.sources.map((s, i) => (
-                    <figure key={s.chunk_id + ":" + i}>
-                      <blockquote>{s.quote}</blockquote>
-                      <figcaption>
-                        {s.paper_id} · {s.section}
-                        <details className="diagnostics">
-                          <summary>定位详情</summary>
-                          <p>
-                            {s.chunk_id} · 字符 {s.quote_start}–{s.quote_end} ·
-                            版本 {s.index_version}
-                          </p>
-                        </details>
-                      </figcaption>
-                    </figure>
-                  ))}
-                </details>
-              )}
+              <MemoryEvidence memory={m} />
               <div className="button-row">
                 {m.source_session && (
                   <button

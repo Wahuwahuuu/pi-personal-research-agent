@@ -1,3 +1,4 @@
+import {verifyProjectRecords} from "./project-records-browser.ts";
 import {verifyProjectDiscussions} from "./project-discussions-browser.ts";
 import {verifyRetentionBrowser} from "./retention-browser.ts";
 import {verifyChangeFeedBrowser} from "./change-feed-browser.ts";
@@ -205,7 +206,16 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
-  if(process.env.PRA_BROWSER_SCOPE==="projects"){
+  if(process.env.PRA_BROWSER_SCOPE==="records"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    const pair=await api("device/pair","POST",{requestId:crypto.randomUUID(),label:"Browser test"});
+    const file=resolve(directory,"record-node.json");
+    await writeFile(file,JSON.stringify({endpoint:base,dataDir:resolve(directory,"record-node"),port:0,fixture:true}));
+    child(["local/node.ts",file],{...process.env,PRA_DEVICE_TOKEN:pair.token,PRA_LOCAL_TOKEN:crypto.randomUUID()+crypto.randomUUID()});
+    await until(async()=>(await api("overview")).deviceState?.ready===true,60000);
+    checks.push(...await verifyProjectRecords(base,page,api,screenshot));
+  }else if(process.env.PRA_BROWSER_SCOPE==="projects"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...await verifyProjectDiscussions(base,page,api,screenshot));
@@ -674,14 +684,14 @@ try {
     kind: "local-browser-product-flows",
     timestamp: new Date().toISOString(),
     checks,
-    deviceFixture:["reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??""),nativeWindowObserved:false,
-    browser: ["projects","retention","changes","context","controls","imports","reader","deletions","recovery"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
+    deviceFixture:["records","reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??""),nativeWindowObserved:false,
+    browser: ["records","projects","retention","changes","context","controls","imports","reader","deletions","recovery"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
     viewports: ["1440x900", "390x844"],
     paidCalls: 0,
     cloudDeployment: false,
   };
   await writeFile(
-    process.env.PRA_BROWSER_SCOPE==="projects"?"docs/validation/browser-projects.json":process.env.PRA_BROWSER_SCOPE==="retention"?"docs/validation/browser-retention.json":process.env.PRA_BROWSER_SCOPE==="changes"?"docs/validation/browser-changes.json":process.env.PRA_BROWSER_SCOPE==="context"?"docs/validation/browser-context.json":process.env.PRA_BROWSER_SCOPE==="controls"?"docs/validation/browser-controls.json":process.env.PRA_BROWSER_SCOPE==="recovery"?"docs/validation/browser-recovery.json":process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
+    process.env.PRA_BROWSER_SCOPE==="records"?"docs/validation/browser-project-records.json":process.env.PRA_BROWSER_SCOPE==="projects"?"docs/validation/browser-projects.json":process.env.PRA_BROWSER_SCOPE==="retention"?"docs/validation/browser-retention.json":process.env.PRA_BROWSER_SCOPE==="changes"?"docs/validation/browser-changes.json":process.env.PRA_BROWSER_SCOPE==="context"?"docs/validation/browser-context.json":process.env.PRA_BROWSER_SCOPE==="controls"?"docs/validation/browser-controls.json":process.env.PRA_BROWSER_SCOPE==="recovery"?"docs/validation/browser-recovery.json":process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));

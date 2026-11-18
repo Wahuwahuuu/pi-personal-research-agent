@@ -145,3 +145,13 @@ test("a rejected reading batch leaves all slots untouched, including earlier ite
  await assert.rejects(storeReadingEntries(service,rows));
  assert.deepEqual(state.entries,before);
 });
+
+test("exact project records exclude personal and other projects without changing agent recall",()=>{
+ const {db,index}=setup(),own=entry("项目待核问题","p","question"),global=entry("个人待核问题","","question");
+ const elsewhere=entry("另一项目的问题","q","question");
+ index.sync([own,global,elsewhere,{...entry("已撤回的问题","p","question"),active:false}]);
+ assert.deepEqual(index.page({projectId:"p",projectOnly:true,category:"question"}).items.map(e=>e.id),[own.id]);
+ assert.deepEqual(new Set(index.page({projectId:"p",category:"question"}).items.map(e=>e.id)),new Set([own.id,global.id]));
+ assert.throws(()=>index.page({projectOnly:true}),/INVALID_PROJECT_SCOPE/);
+ db.close();
+});

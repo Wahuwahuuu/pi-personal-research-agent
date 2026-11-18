@@ -33,7 +33,7 @@ export function useResource<T>(path: string | undefined, revision = 0) {
     reload: () => setRetry((v) => v + 1),
   };
 }
-export function usePaged<T>(path: string | undefined, revision = 0) {
+export function usePaged<T>(path: string | undefined, revision = 0, cursorKey: "after" | "before" = "after") {
   const [position, setPosition] = useState<{
     path: string | undefined;
     cursors: (string | number)[];
@@ -41,7 +41,7 @@ export function usePaged<T>(path: string | undefined, revision = 0) {
   const cursors = position.path === path ? position.cursors : [""],
     current = cursors.at(-1)!;
   const pagePath = path && current !== ""
-    ? path + (path.includes("?") ? "&" : "?") + "after=" + encodeURIComponent(current)
+    ? path + (path.includes("?") ? "&" : "?") + cursorKey + "=" + encodeURIComponent(current)
     : path;
   const result = useResource<Page<T>>(pagePath, revision);
   return {

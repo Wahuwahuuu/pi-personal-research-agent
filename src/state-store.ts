@@ -249,23 +249,41 @@ export class StateRepository {
     if(saved.size)for(const row of this.storage.sql.exec<{id:string}>("SELECT id FROM pra_data_tasks WHERE json_extract(header,'$.requestId')=?",requestId).toArray())if(saved.has(row.id))ids.add(row.id);
     return state.tasks.find(t=>ids.has(t.id));
   }
-  private taskPageRows(state:State,query:TaskPageQuery):Task[]{
-    const {saved,overlay}=this.taskOverlay(state),selected:Task[]=[];
+  private storedTaskPage(saved: Map<string,Task>, query: TaskPageQuery, projectChats?: string[]): Task[] {
+    const where: string[] = [], args: string[] = [];
+    const single = query.conversationId ?? (projectChats?.length === 1 ? projectChats[0] : undefined);
+    if(single){where.push("parent=?");args.push(single);}
+    else if(projectChats){where.push("parent IN (SELECT value FROM json_each(?))");args.push(JSON.stringify(projectChats));}
+    if(query.status){where.push("json_extract(header,'$.status')=?");args.push(query.status);}
+    const table = projectChats ? "pra_data_tasks INDEXED BY pra_tasks_conversation_created" : "pra_data_tasks";
+    const select=(condition:string,bindings:unknown[],limit:number,sameTime=false)=>
+      this.storage.sql.exec<{id:string;created:number}>(
+        "SELECT id,json_extract(header,'$.created') AS created FROM "+table+" WHERE "+[condition,...where].join(" AND ")+
+        " ORDER BY "+(sameTime?"id DESC":"json_extract(header,'$.created') DESC,id DESC")+" LIMIT ?",
+        ...bindings,...args,limit,
+      ).toArray();
+    const selected: Task[] = [];
     let timestamp=query.timestamp,id=query.id;
-    while(saved.size&&selected.length<query.limit+1){
-      const where:string[]=[],args:any[]=[];
-      if(query.conversationId){where.push("parent=?");args.push(query.conversationId);}
-      if(query.status){where.push("json_extract(header,'$.status')=?");args.push(query.status);}
-      const select=(condition:string,bindings:any[],limit:number,sameTime=false)=>this.storage.sql.exec<{id:string;created:number}>("SELECT id,json_extract(header,'$.created') AS created FROM pra_data_tasks WHERE "+[condition,...where].join(" AND ")+" ORDER BY "+(sameTime?"id DESC":"json_extract(header,'$.created') DESC,id DESC")+" LIMIT ?",...bindings,...args,limit).toArray();
-      // Separate equal-time and older ranges: a tuple/OR over JSON expressions can scan the entire prefix.
-      const rows=select("json_extract(header,'$.created')=? AND id<?",[timestamp,id],query.limit+1,true);
-      if(rows.length<query.limit+1)rows.push(...select("json_extract(header,'$.created')<?",[timestamp],query.limit+1-rows.length));
-      if(!rows.length)break;
+    while(saved.size && selected.length<query.limit+1){
+      // Separate equal-time and older ranges to keep both index seeks bounded.
+      const needed=query.limit+1-selected.length;
+      const rows=select("json_extract(header,'$.created')=? AND id<?",[timestamp,id],needed,true);
+      if(rows.length<needed)rows.push(...select("json_extract(header,'$.created')<?",[timestamp],needed-rows.length));
       for(const row of rows){const task=saved.get(row.id);if(task)selected.push(task);}
+      if(rows.length<needed)break;
       const last=rows.at(-1)!;timestamp=last.created;id=last.id;
-      if(rows.length<query.limit+1)break;
     }
-    return [...selected,...overlay.filter(t=>matchesTaskPage(t,query))].sort(taskPageOrder).slice(0,query.limit+1);
+    return selected;
+  }
+  private taskPageRows(state:State,query:TaskPageQuery):Task[]{
+    const {saved,overlay}=this.taskOverlay(state);
+    const selected=overlay.filter(t=>matchesTaskPage(t,query));
+    if(query.projectConversations && !query.conversationId){
+      // Each group supplies at most one page, independent of the total number of projects.
+      const chats=[...query.projectConversations];
+      for(let i=0;i<chats.length;i+=128)selected.push(...this.storedTaskPage(saved,query,chats.slice(i,i+128)));
+    }else selected.push(...this.storedTaskPage(saved,query));
+    return selected.sort(taskPageOrder).slice(0,query.limit+1);
   }
   private activeTaskRows(state:State,includeOpen:boolean):Task[]{
     const {saved,overlay}=this.taskOverlay(state),selected:Task[]=[],predicate="json_extract(header,'$.status') NOT IN ('completed','failed','cancelled')"+(includeOpen?" OR json_extract(header,'$.runOpen')=1":"");

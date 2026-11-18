@@ -1,3 +1,4 @@
+import {ProjectResearchRecords} from "./ProjectResearchRecords.tsx";
 import {WatchPlans} from "./WatchPlans.tsx";
 import {deviceView} from "./device-state.ts";
 import {LibraryImports} from "./LibraryImports.tsx";
@@ -139,6 +140,7 @@ export function Projects({
               </Field>
               <button>保存目标</button>
             </form>
+            <ProjectResearchRecords projectId={p.id} revision={revision} />
             <h2 className="section-heading">相关讨论</h2>
             <div className="list">
               {discussions.error ? (

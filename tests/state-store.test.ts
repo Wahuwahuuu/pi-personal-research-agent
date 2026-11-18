@@ -327,3 +327,41 @@ test("request lookup honors modified IDs and removal before commit rather than r
  const cold=new StateRepository(f.storage),loaded=cold.load();loaded.tasks[0].requestId="changed";loaded.tasks=loaded.tasks.filter(t=>t.id!==b.id);
  assert.equal(taskByRequest(loaded,"a"),undefined);assert.equal(taskByRequest(loaded,"b"),undefined);assert.equal(taskByRequest(loaded,"changed")!.id,a.id);f.db.close();
 });
+
+test("project task pages follow current conversations across moves and read only the requested task bodies",()=>{
+ const f=fixture(),repo=new StateRepository(f.storage),s=repo.load();
+ const base=submit(s,"project task","root","research",100);
+ s.conversations=["c1","c2","c3"].map((id,i)=>({id,title:id,projectId:i===2?"outside":"target",scope:[],created:1,history:[]}));
+ s.tasks=Array.from({length:126},(_,i)=>({...base,id:"task"+String(i).padStart(3,"0"),requestId:"q"+i,
+  conversationId:"c"+(i%3+1),created:Math.floor(i/8),status:i%4?"completed" as const:"queued" as const}));
+ repo.save(s);
+ const cold=new StateRepository(f.storage),loaded=cold.load();f.queries.length=0;
+ const walk=(projectId:string,status?:string)=>{
+  const ids:string[]=[];let before:string|undefined;
+  do{const page=taskPage(loaded,{projectId,status,limit:9,before});ids.push(...page.items.map(t=>t.id));before=page.nextCursor??undefined;}while(before);
+  return ids;
+ };
+ const expected=(conversations:Set<string>,status?:string)=>s.tasks.filter(t=>conversations.has(t.conversationId!)&&(!status||t.status===status)).sort((a,b)=>b.created-a.created||b.id.localeCompare(a.id)).map(t=>t.id);
+ assert.deepEqual(walk("target"),expected(new Set(["c1","c2"])));
+ assert.deepEqual(walk("target","queued"),expected(new Set(["c1","c2"]),"queued"));
+ assert.deepEqual(walk("missing"),[]);assert.equal(payloadReads(f,"tasks"),0);
+ loaded.conversations![1].projectId="outside";
+ assert.deepEqual(walk("target"),expected(new Set(["c1"])));
+ assert.deepEqual(walk("outside"),expected(new Set(["c2","c3"])));
+ const beforeMove=walk("target"),moved=loaded.tasks.find(t=>t.id==="task002")!;
+ moved.conversationId="c1";moved.created=1000;
+ assert.deepEqual(walk("target"),[moved.id,...beforeMove]);
+ cold.save(loaded);const again=new StateRepository(f.storage).load();
+ assert.deepEqual(taskPage(again,{projectId:"target",limit:3}).items.map(t=>t.id),walk("target").slice(0,3));
+ f.db.close();
+});
+
+test("large project histories merge the newest tasks across conversation groups",()=>{
+ const f=fixture(),repo=new StateRepository(f.storage),s=repo.load(),base=submit(s,"grouped","root","research",100);
+ s.conversations=Array.from({length:260},(_,i)=>({id:"c"+i,title:"c",projectId:i===3?"other":"p",created:1,scope:[],history:[]}));
+ s.tasks=s.conversations.map((c,i)=>({...base,id:"task"+String(i).padStart(3,"0"),requestId:c.id,created:i%13,conversationId:c.id}));
+ repo.save(s);const loaded=new StateRepository(f.storage).load(),expected=taskPage(s,{projectId:"p",limit:17});
+ const actual=taskPage(loaded,{projectId:"p",limit:17});assert.deepEqual(actual.items.map(t=>t.id),expected.items.map(t=>t.id));
+ assert.deepEqual(taskPage(loaded,{projectId:"p",before:actual.nextCursor!,limit:17}).items.map(t=>t.id),
+  taskPage(s,{projectId:"p",before:expected.nextCursor!,limit:17}).items.map(t=>t.id));f.db.close();
+});

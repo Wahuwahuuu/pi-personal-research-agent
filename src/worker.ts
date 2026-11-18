@@ -959,7 +959,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const b=await this.body(r),job=this.libraryJobs.action(importAction[1],importAction[2] as "cancel"|"retry",b.requestId);
       this.dispatchImports();await this.maintenance.arm();this.publish();return json(this.libraryJobs.public(job));
     }
-    if(path==="/api/memories"&&r.method==="GET")return json(this.memoryIndex.page({query:p.get("q")??"",projectId:p.get("project")??undefined,category:p.get("category")??undefined,includeInactive:p.get("inactive")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit")??30)}));
+    if(path==="/api/memories"&&r.method==="GET")return json(this.memoryIndex.page({query:p.get("q")??"",projectId:p.get("project")??undefined,projectOnly:p.get("scope")==="project",category:p.get("category")??undefined,includeInactive:p.get("inactive")==="true",after:Number(p.get("after")??0),limit:Number(p.get("limit")??30)}));
     const memoryRevision=path.match(/^\/api\/memories\/([^/]+)\/revisions$/);
     if(memoryRevision&&r.method==="GET")return json(this.memoryIndex.revisions(memoryRevision[1]));
     if(path==="/api/overview"&&r.method==="GET")return json({
@@ -1052,7 +1052,7 @@ export class PersonalAgent extends DurableObject<Env> {
       return json({conversation:{id:c.id,title:c.title,scope:c.scope,projectId:c.projectId},items:page.items.reverse().map(({modelPrompt,...t})=>t),nextCursor:page.nextCursor});
     }
     if(path==="/api/tasks"&&r.method==="GET"){
-      const page=taskPage(this.state,{status:p.get("status")??undefined,before:p.get("before")??undefined,limit:Number(p.get("limit")??30)});
+      const page=taskPage(this.state,{projectId:p.get("project")??undefined,status:p.get("status")??undefined,before:p.get("before")??undefined,limit:Number(p.get("limit")??30)});
       return json({...page,items:page.items.map(taskSummary)});
     }
     const task=path.match(/^\/api\/tasks\/([^/]+)$/);
