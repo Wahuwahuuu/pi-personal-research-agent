@@ -45,6 +45,8 @@ export function cloudMemory(state:CloudMemoryState,papers:readonly Paper[],owner
   }
   const slot=input.slot??prior?.slot??"manual:"+createHash("sha256").update(input.content).digest("hex");
   if(!input.edited&&(state.deletedSlots.includes(tombstoneSlot({slot,projectId:prior?.projectId??projectId}))||prior?.edited))return prior;
+  // A later progress-only turn must not inherit an earlier claim's citation or replace its text.
+  if(!input.edited&&input.kind==="reading"&&prior?.sources?.length&&!input.sources?.length)return prior;
   if(input.edited)state.deletedSlots=state.deletedSlots.filter(s=>s!==tombstoneSlot({slot,projectId:prior?.projectId??projectId}));
   if(input.edited&&prior)invalidateMemoryInputs(state,[prior.id],prior.source_turn?[prior.source_turn]:[],[prior.id],input.source_turn?[input.source_turn]:[]);
   const now=new Date().toISOString();
@@ -73,6 +75,18 @@ export function cloudMemory(state:CloudMemoryState,papers:readonly Paper[],owner
     });return {entries:entries.slice(0,20)};
    }
    case "upsert": return {entry:save(params.entry)};
+   case "save_readings":{
+    const inputs=params.entries;
+    if(!Array.isArray(inputs)||inputs.length>36||inputs.some(input=>input?.edited!==false))throw Error("INVALID_MEMORY");
+    const original=state.entries,slots=new Set<string>();
+    try{
+     for(const input of inputs){
+      const before=state.entries,entry=save(input);
+      if(entry&&state.entries!==before)slots.add(entry.slot);
+     }
+     return {slots:[...slots]};
+    }catch(error){state.entries=original;throw error;}
+   }
    case "upsert_batch":return {entries:(params.entries as unknown[]).slice(0,20).map(save).filter(Boolean)};
    case "delete": case "delete_session": case "clear":{
      const remove=state.entries.filter(e=>params.action==="clear"||params.action==="delete"&&e.id===params.id||params.action==="delete_session"&&e.source_session===params.source_session);

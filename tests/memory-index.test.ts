@@ -4,7 +4,7 @@ import {DatabaseSync} from "node:sqlite";
 import {createHash} from "node:crypto";
 import {MemoryIndex,memoryTokens} from "../src/memory-index.ts";
 import {cloudMemory,newCloudMemory,type CloudMemoryEntry} from "../packages/research/cloud-memory.ts";
-import {digestEntries,validateMemoryDigest} from "../packages/research/memory.ts";
+import {digestEntries,validateMemoryDigest,storeReadingEntries} from "../packages/research/memory.ts";
 import type {StateStorage} from "../src/state-store.ts";
 import type {Chunk,EvidenceIdentity} from "../packages/research/core.ts";
 function setup(){const db=new DatabaseSync(":memory:");let depth=0;const p:StateStorage={sql:{exec<T>(q:string,...b:any[]){const s=db.prepare(q),v=(s.columns().length?s.all(...b):(s.run(...b),[]))as T[];return{toArray:()=>v};}},transactionSync<T>(fn:()=>T){if(depth)return fn();db.exec("BEGIN");depth++;try{const v=fn();db.exec("COMMIT");return v;}catch(e){db.exec("ROLLBACK");throw e;}finally{depth--;}}};return{db,p,index:new MemoryIndex(p)};}
@@ -104,4 +104,44 @@ test("explicit active project constraints survive lexical mismatch while correct
  const corrected={...current,content:"Use the revised inclusion boundary."};index.sync([corrected,other,inactive,inferred,scoped]);
  const reopened=new MemoryIndex(p);assert.equal(reopened.recall("What applies?",["a"],"p")[0].content,corrected.content);
  reopened.sync([other,inactive,inferred,scoped]);assert.deepEqual(reopened.recall("What applies?",["a"],"p"),[]);db.close();
+});
+
+test("an uncited progress update preserves the earlier conclusion and its original evidence",async()=>{
+ const state=newCloudMemory(),service=cloudMemory(state,[{paper_id:"a",title:"Synthetic",abstract:""}],"owner",[],{projectId:"p"});
+ const base={kind:"reading" as const,slot:"reading:v2:a",paper_ids:["a"],source_session:"conversation",source_turn:"first",edited:false};
+ const verified={...base,content:"Supported observation",category:"conclusion",sourceStatus:"verified",sources:[{quote:"original text"}]};
+ await service.save(verified);
+ const original=structuredClone(state.entries[0]);
+ await service.save({...base,content:"Only progress available",source_turn:"second"});
+ assert.deepEqual(state.entries[0],original);
+});
+
+test("generated memory receipts count persisted slots, respect corrections and never recreate a deleted question",async()=>{
+ const state=newCloudMemory(),papers=[{paper_id:"a",title:"Sample",abstract:""}];
+ const service=cloudMemory(state,papers,"owner",[],{projectId:"p"});
+ const source:Chunk={paper_id:"a",paragraph_id:"p",chunk_id:"c",start:0,end:8,text:"Evidence",section:"Results",index_version:"v"};
+ const row={paper_id:"a",topic:"Method",progress:"Read results",key_points:[{text:"Source-backed point",chunk_id:"c",quote:"Evidence"}],open_questions:["Scope?","Scope?"]};
+ const entries=(turn:string)=>digestEntries({version:2,readings:[row]},[source],papers,"s",turn,"p");
+ assert.deepEqual(await storeReadingEntries(service,[]),{conclusions:0,progress:0,questions:0});
+ assert.deepEqual(await storeReadingEntries(service,entries("t1")),{conclusions:1,progress:0,questions:1});
+ assert.equal(state.entries.length,2);
+ const conclusion=state.entries.find(e=>e.category==="conclusion")!,question=state.entries.find(e=>e.category==="question")!;
+ await service.save({id:conclusion.id,kind:conclusion.kind,paper_ids:["a"],content:"User correction",edited:true});
+ await service.remove(question.id);
+ assert.deepEqual(await storeReadingEntries(service,entries("t2")),{conclusions:0,progress:0,questions:0});
+ assert.deepEqual(state.entries.map(e=>e.content),["User correction"]);
+ const empty=newCloudMemory(),fresh=cloudMemory(empty,papers,"owner",[],{projectId:"p"});
+ const progress=digestEntries({version:2,readings:[{...row,key_points:[],open_questions:[]}]},[source],papers,"s","t3","p");
+ assert.deepEqual(await storeReadingEntries(fresh,progress),{conclusions:0,progress:1,questions:0});
+ empty.enabled=false;
+ assert.deepEqual(await storeReadingEntries(cloudMemory(empty,papers,"owner"),entries("t4")),{conclusions:0,progress:0,questions:0});
+ assert.equal(empty.entries[0].source_turn,"t3");
+});
+test("a rejected reading batch leaves all slots untouched, including earlier items within that batch",async()=>{
+ const state=newCloudMemory(),papers=[{paper_id:"a",title:"Sample",abstract:""}];
+ state.entries=Array.from({length:999},(_,i)=>entry("Existing "+i));
+ const before=structuredClone(state.entries),service=cloudMemory(state,papers,"owner",[],{projectId:"p"});
+ const rows=digestEntries({version:2,readings:[{paper_id:"a",topic:"Read",progress:"Observed",key_points:[],open_questions:["Pending?"]}]},[],papers,"s","t","p");
+ await assert.rejects(storeReadingEntries(service,rows));
+ assert.deepEqual(state.entries,before);
 });

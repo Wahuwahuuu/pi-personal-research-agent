@@ -3,7 +3,7 @@ import {citationIds} from "./internal/agent/p2-r2.ts";
 import type {ClaimAttribution} from "./internal/agent/citation-attribution.ts";
 import {projectToolOutcomes,type ToolOutcomeOperation} from "./tool-outcomes.ts";
 import {projectRecentDialogue,type ContextWindow} from "./context-window.ts";
-import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest} from "./memory.ts";
+import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest,type ReadingWriteCounts} from "./memory.ts";
 import {stageObject} from "./internal/agent/p2-stages.ts";
 import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "./translation.ts";
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
@@ -21,7 +21,7 @@ export interface ResearchConversation {
 export interface ResearchWorkflow extends VisibleCitations {
   contextWindow?:ContextWindow;
   phase:"prepare"|"agent"|"completion"|"comparison"|"translation"|"memory"|"finished";
-  memory?:{answer:string;status:"completed"|"waiting_user";digest?:MemoryDigest;state:"pending"|"saved"|"failed"|"budget_exhausted";visibleSourceIds?:string[]};
+  memory?:{answer:string;status:"completed"|"waiting_user";digest?:MemoryDigest;state:"pending"|"saved"|"unchanged"|"disabled"|"failed"|"budget_exhausted";written?:ReadingWriteCounts;failure?:"format"|"model"|"storage";visibleSourceIds?:string[]};
   cloudOnly?:boolean; automatic?:boolean; preparedIndex?:string;
   translation?:{sources:TranslationSource[];items?:TranslationSource[]};
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
@@ -237,10 +237,20 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return !w.cloudOnly&&w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
 export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
-  if(w.phase==="memory"){
-    try{w.memory!.digest=validateMemoryDigest(output,c.catalog.indexVersion,c.catalog.evidence,c.evidence.filter(e=>w.memory!.visibleSourceIds?.includes(e.chunk_id)));w.memory!.state="saved";}
-    catch{w.memory!.state="failed";w.warnings.push("MEMORY_SYNTHESIS_FAILED");}
-    w.phase="finished";return {answer:w.memory!.answer,status:w.memory!.status};
+  if (w.phase === "memory") {
+    const memory = w.memory!;
+    try {
+      const visible = c.evidence.filter(source => memory.visibleSourceIds?.includes(source.chunk_id));
+      memory.digest = validateMemoryDigest(output, c.catalog.indexVersion, c.catalog.evidence, visible);
+      memory.state = "pending";
+    } catch {
+      delete memory.digest;
+      memory.state = "failed";
+      memory.failure = "format";
+      w.warnings.push("MEMORY_SYNTHESIS_FAILED");
+    }
+    w.phase = "finished";
+    return {answer: memory.answer, status: memory.status};
   }
   if(w.phase==="translation"){
     w.translation!.items=parseTranslations(output,w.translation!.sources);
@@ -327,12 +337,12 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
 
 
 /** Reserve no extra budget; consolidation uses only the current task's remaining allowance. */
-export function beginMemory(w:ResearchWorkflow,outcome:{answer?:string;status?:"completed"|"waiting_user"},calls:number,evidence:readonly Chunk[]):boolean{
+export function beginMemory(w:ResearchWorkflow,outcome:{answer?:string;status?:"completed"|"waiting_user"},calls:number,evidence:readonly Chunk[],enabled=true):boolean{
  if(w.memory||w.translation||w.cloudOnly||outcome.status!=="completed"||!outcome.answer||!evidence.length)return false;
  const cited=new Set([...outcome.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]));
  if(!evidence.some(s=>cited.has(s.chunk_id)))return false;
- w.memory={answer:outcome.answer,status:outcome.status,state:calls<6?"pending":"budget_exhausted"};
- if(calls>=6)return false;w.phase="memory";return true;
+ w.memory={answer:outcome.answer,status:outcome.status,state:!enabled?"disabled":calls<6?"pending":"budget_exhausted"};
+ if(!enabled||calls>=6)return false;w.phase="memory";return true;
 }
 
 /** Optional consolidation may fail without undoing a previously completed research answer. */

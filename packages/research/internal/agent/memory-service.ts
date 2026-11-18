@@ -42,10 +42,25 @@ export class LongTermMemory {
     const slot=input.slot??(!input.id?'manual:'+sha(input.kind+':'+content.replace(/\s+/gu,' ')):undefined);
     const data=await this.operation({action:'upsert',entry:{...input,content,...(slot?{slot}:{}),paper_ids:input.paper_ids??[]}});return this.entry(data.entry);
   }
+  /** Source-bound entries written by the cloud host after research has finished. */
+  async saveReadingEntries(entries:readonly (Omit<LongMemoryEntry,"id"|"created_at"|"updated_at">&{sources?:readonly {quote:string}[]})[]):Promise<string[]> {
+    if(!this.enabled||!entries.length)return [];
+    if(entries.length>36)throw new RuntimeFailure("INVALID_INPUT","Too many reading records");
+    const slots=new Set(entries.map(entry=>entry.slot));
+    const clean=entries.map(entry=>{
+      const content=this.clean(entry.content);
+      if(entry.edited||Array.from(content).length>1200||entry.paper_ids.some(id=>!this.papers.has(id)))throw new RuntimeFailure("INVALID_INPUT","Invalid generated memory");
+      for(const source of entry.sources??[])this.clean(source.quote);
+      return {...entry,content};
+    });
+    const result=await this.operation({action:"save_readings",entries:clean});
+    if(!Array.isArray(result.slots)||!result.slots.every(slot=>typeof slot==="string"&&slots.has(slot)))throw new RuntimeFailure("INVALID_RESPONSE","Invalid memory receipt");
+    return [...new Set<string>(result.slots)];
+  }
   async remove(id:string){if(!uuid.test(id))throw new RuntimeFailure('INVALID_INPUT','Invalid memory ID');await this.operation({action:'delete',id});}
   async clear(){await this.operation({action:'clear'});}
   async removeSession(source_session:string){await this.operation({action:'delete_session',source_session});}
-  async remember(session:string,turn:string,question:string,state:DomainState,status:string,digest?:MemoryDigest,signal?:AbortSignal,options:{explicitInstructions?:boolean}={}){
+  async remember(session:string,turn:string,question:string,state:DomainState,status:string,digest?:MemoryDigest,signal?:AbortSignal,options:{explicitInstructions?:boolean;includeReadings?:boolean}={}){
     if(signal?.aborted||!this.enabled||status!=='completed')return {saved:0,note:this.enabled?'本轮未自动写入长期记忆。':'长期记忆已暂停。'};
     const pending:Array<Parameters<LongTermMemory['save']>[0]>=[];
     if(/以后|今后|之后|后续|默认|始终|一直|记住|我的偏好|我喜欢|我希望|我习惯/iu.test(question)){
@@ -61,7 +76,7 @@ export class LongTermMemory {
     if(explicit&&(!pending.some(item=>item.kind==='preference')||/研究|论文|方向|主题|项目/u.test(explicit)))pending.push({kind:'note',content:clip(explicit,1000),slot:'note:'+sha(explicit),source_session:session,source_turn:turn});
     if(options.explicitInstructions&&explicitMemoryInstruction(question))for(const entry of pending)entry.edited=true;
     const note=state.reading_notes?.find(note=>note.source_turn===turn);
-    if(note?.paper_ids.some(id=>this.papers.has(id))&&note.execution_state!=='working'&&!(note.execution_state==='partial'&&!note.citations.length))pending.push(...this.reading(session,note,digest));
+    if(options.includeReadings!==false&&note?.paper_ids.some(id=>this.papers.has(id))&&note.execution_state!=='working'&&!(note.execution_state==='partial'&&!note.citations.length))pending.push(...this.reading(session,note,digest));
     let saved=0;const entries=pending.slice(0,20).flatMap(entry=>{try{return [{...entry,content:this.clean(entry.content)}];}catch{return [];}});
     if(entries.length&&!signal?.aborted)try{const data=await this.operation({action:'upsert_batch',entries},signal);if(Array.isArray(data.entries))saved=data.entries.map(row=>this.entry(row)).filter(entry=>entry.source_turn===turn).length;}catch{/* 可选记忆保存不影响正常回答。 */}
     return {saved,note:saved?`已保存 ${saved} 条长期记忆。`:pending.length?'本轮回答已保留，长期记忆未能写入。':'本轮没有需要长期保存的新内容。'};

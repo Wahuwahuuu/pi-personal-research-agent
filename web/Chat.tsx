@@ -18,6 +18,24 @@ import type { Overview, Task, Chunk, Conversation, Page } from "./types.ts";
 interface Messages extends Page<Task> {
   conversation: Conversation;
 }
+function memoryResult(memory:NonNullable<NonNullable<Task["workflow"]>["memory"]>){
+  switch(memory.state){
+    case "saved":{
+      if(!memory.written)return "本次研究记忆已整理。";
+      const {conclusions,progress,questions}=memory.written;
+      const records=[conclusions&&`带原文依据的论文记录 ${conclusions} 条`,progress&&`阅读进度 ${progress} 条`,questions&&`待解决问题 ${questions} 条`].filter(Boolean);
+      return "已保存"+records.join("、")+"。";
+    }
+    case "unchanged":return "本轮整理已结束，研究记忆没有新增或更新。";
+    case "pending":return "正在整理有原文依据的研究记忆…";
+    case "disabled":return "长期记忆已暂停，本轮阅读结果可在对话中查看。";
+    case "budget_exhausted":return "本轮预算已用尽，阅读结果已保留，记忆尚未整理。";
+    case "failed":
+      if (memory.failure === "format") return "阅读结果已保留，记忆整理内容未通过校验。";
+      if (memory.failure === "storage") return "阅读结果已保留，研究记忆写入未完成。";
+      return "阅读结果已保留，本轮记忆整理未完成。";
+  }
+}
 export function Chat({
   id,
   data,
@@ -250,13 +268,7 @@ export function Chat({
                   <div role="status" aria-live="polite" aria-atomic="true">
                     {t.workflow?.memory && (
                       <p className="help">
-                        {t.workflow.memory.state === "saved"
-                          ? "本次研究记忆已整理。"
-                          : t.workflow.memory.state === "pending"
-                            ? "正在整理有原文依据的研究记忆…"
-                            : t.workflow.memory.state === "budget_exhausted"
-                              ? "本轮预算已用尽，阅读结果已保留，记忆尚未整理。"
-                              : "阅读结果已保留，本轮记忆整理未完成。"}{" "}
+                        {memoryResult(t.workflow.memory)}{" "}
                         <button
                           className="text-button"
                           onClick={() => navigate("memory")}

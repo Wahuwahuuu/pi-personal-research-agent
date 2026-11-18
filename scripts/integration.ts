@@ -248,6 +248,8 @@ try {
   const findings=await api("memories?category=conclusion&q="+encodeURIComponent("证据"));
   assert.equal(findings.items.length,1);assert.equal(findings.items[0].sources[0].quote,"Evidence.");assert.equal(findings.items[0].semanticStatus,"unreviewed");assert.equal(findings.items[0].projectId,"default");
   assert.equal(researchDone.workflow.memory.state,"saved");
+  assert.deepEqual(researchDone.workflow.memory.written,{conclusions:1,progress:0,questions:0});
+  assert.equal(researchDone.workflow.memory.digest,undefined);
   checks.push("real workerd FTS5 finds source-bound reading conclusions; consolidation is charged to the original task");
   const localBase="http://127.0.0.1:48739";
   assert.equal((await fetch(localBase+"/local/status")).status,401);

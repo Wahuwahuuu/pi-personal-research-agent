@@ -3,6 +3,8 @@ import {parseMemoryDigest,MEMORY_SYNTHESIS_INSTRUCTION,readingMemoryContent,type
 import {sourceMatches} from "./internal/agent/domain-memory.ts";
 import type {Chunk,EvidenceIdentity,Paper} from "./core.ts";
 import type {CloudMemoryEntry} from "./cloud-memory.ts";
+import type {LongTermMemory} from "./internal/agent/memory-service.ts";
+export interface ReadingWriteCounts {conclusions:number;progress:number;questions:number}
 export {parseMemoryDigest,MEMORY_SYNTHESIS_INSTRUCTION,type MemoryDigest};
 export function validateMemoryDigest(text:string,version:string,identities:readonly EvidenceIdentity[],sources:readonly Chunk[]){
  const index=new Map(identities.map(i=>[i.chunk_id,i])),evidence=new Map(sources.filter(s=>sourceMatches(s,version,index)).map(s=>[s.chunk_id,s]));
@@ -16,4 +18,18 @@ export function digestEntries(digest:MemoryDigest,source:readonly Chunk[],papers
   result.push({kind:"reading",category:citations.length?"conclusion":"reading",content:readingMemoryContent(papers.find(p=>p.paper_id===row.paper_id)?.title??row.paper_id,row),paper_ids:[row.paper_id],source_session:session,source_turn:turn,slot:"reading:v2:"+row.paper_id,edited:false,projectId,sources:citations,sourceStatus:citations.length?"verified":"unavailable",semanticStatus:"unreviewed",active:true});
   for(const question of row.open_questions)result.push({kind:"note",category:"question",content:question,paper_ids:[row.paper_id],source_session:session,source_turn:turn,slot:"question:"+row.paper_id+":"+createHash("sha256").update(question).digest("hex"),edited:false,projectId,active:true,semanticStatus:"unreviewed",sourceStatus:"unavailable",sources:[]});
  }return result;
+}
+
+/** Count only slots actually written after user edits, deletions and source checks. */
+export async function storeReadingEntries(service:LongTermMemory,entries:ReturnType<typeof digestEntries>):Promise<ReadingWriteCounts>{
+ const categories=new Map(entries.map(entry=>[entry.slot,entry.category]));
+ const counts={conclusions:0,progress:0,questions:0};
+ for(const slot of await service.saveReadingEntries(entries)){
+  switch(categories.get(slot)){
+   case "conclusion":counts.conclusions++;break;
+   case "reading":counts.progress++;break;
+   case "question":counts.questions++;break;
+  }
+ }
+ return counts;
 }

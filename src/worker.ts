@@ -22,7 +22,7 @@ import {PLATFORM_STOPS,applyPlatformWait,type PlatformStatus} from "./platform-r
 import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks,nextResearchTurn} from "./task-control.ts";
 import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
-import {digestEntries} from "../packages/research/memory.ts";
+import {digestEntries,storeReadingEntries} from "../packages/research/memory.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
 import {MAX_PROJECT_PAPERS,Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
 import {mutateMemory,type MemoryMutation} from "./memory-mutations.ts";
@@ -388,13 +388,43 @@ export class PersonalAgent extends DurableObject<Env> {
       }finally{this.recoveryBlocked=false;}
     });
   }
-  memoryService(projectId?:string){
-    const version=this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex&&t.researchIndex!=="cloud-only")?.researchIndex;
+  memoryService(projectId?:string,indexVersion?:string){
+    const version=indexVersion??this.device()?.deserializeAttachment()?.indexVersion??this.state.tasks.findLast(t=>t.researchIndex&&t.researchIndex!=="cloud-only")?.researchIndex;
     const papers=[...(version?this.catalog(version).papers:[])];
     for(const e of this.state.cloudMemory!.entries)for(const id of e.paper_ids)if(!papers.some(p=>p.paper_id===id))papers.push({paper_id:id,title:id,abstract:""});
     return cloudMemory(this.state.cloudMemory!,papers,this.ownerId,[this.env.ADMIN_TOKEN,this.env.MODEL_API_KEY??""],{
       projectId,...(projectId?{recall:(query:string,ids:readonly string[],preferences:boolean,recent:boolean)=>this.memoryIndex.recall(query,ids,projectId,preferences,recent)}:{})
     });
+  }
+  private async recordResearchMemory(task: Task) {
+    const workflow = task.workflow;
+    const conversation = this.state.conversations?.find(c => c.id === task.conversationId);
+    if (!workflow || workflow.translation || !conversation) return;
+    const memory = workflow.memory;
+    const service = this.memoryService(conversation.projectId, task.researchIndex);
+    if (conversation.domain) {
+      await service.remember(conversation.id, task.id, task.input, conversation.domain, task.status, undefined, undefined, {
+        explicitInstructions: true, includeReadings: !memory?.digest,
+      });
+    }
+    if (!memory?.digest) return;
+    try {
+      if (!service.enabled) {
+        memory.state = "disabled";
+        return;
+      }
+      const entries = digestEntries(memory.digest, task.researchEvidence ?? [], this.catalog(task.researchIndex!).papers,
+        conversation.id, task.id, conversation.projectId);
+      memory.written = await storeReadingEntries(service, entries);
+      const {conclusions, progress, questions} = memory.written;
+      memory.state = conclusions + progress + questions > 0 ? "saved" : "unchanged";
+    } catch {
+      memory.state = "failed";
+      memory.failure = "storage";
+      workflow.warnings.push("MEMORY_PERSIST_FAILED");
+    } finally {
+      delete memory.digest;
+    }
   }
   async applyMemoryMutation(action:MemoryMutation){
     // Catch inside the gate so a rejected edit does not reset the DO or disconnect clients.
@@ -1467,7 +1497,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if(t.pauseRequested){
         if(result.status==="done"&&!t.researchWaiting&&t.workflow){
           try{const outcome=advanceWorkflow(t.workflow,this.workflowContext(t),result.text??"");if(outcome.answer)t.answer=outcome.answer;
-          if(outcome.status==="completed"){t.status="completed";if(!t.proactive)t.pauseRequested=false;checkpoint(t,"completed");this.finishProactiveReading(t);this.save();continue;}}catch(error){if(error instanceof Problem&&error.code==="PROACTIVE_PERSIST_RETRY")throw error;}
+          if(outcome.status==="completed"){t.status="completed";if(!t.proactive)t.pauseRequested=false;checkpoint(t,"completed");await this.recordResearchMemory(t);this.finishProactiveReading(t);this.save();continue;}}catch(error){if(error instanceof Problem&&error.code==="PROACTIVE_PERSIST_RETRY")throw error;}
         }
         t.status="paused";checkpoint(t,"user_pause");this.save();continue;
       }
@@ -1491,20 +1521,9 @@ export class PersonalAgent extends DurableObject<Env> {
               if(nextSegment(t,"segment_budget")){this.save();continue;}
               if(t.status==="paused"){this.save();continue;}
             }
-            if(beginMemory(t.workflow,outcome,segmentUsage(t).calls,t.researchEvidence??[])){t.status="queued";this.save();continue;}
+            if(beginMemory(t.workflow,outcome,segmentUsage(t).calls,t.researchEvidence??[],this.state.cloudMemory!.enabled)){t.status="queued";this.save();continue;}
             t.status=outcome.status;checkpoint(t,outcome.status);
-            const conversation=this.state.conversations!.find(c=>c.id===t.conversationId)!;
-            if(!t.workflow.translation){
-              const service=this.memoryService(conversation.projectId);
-              await service.remember(conversation.id,t.id,t.input,conversation.domain!,t.status,t.workflow.memory?.digest,undefined,{explicitInstructions:true});
-              if(t.workflow.memory?.digest){
-                try{
-                  const entries=digestEntries(t.workflow.memory.digest,t.researchEvidence??[],this.catalog(t.researchIndex!).papers,conversation.id,t.id,conversation.projectId);
-                  for(const entry of entries)await service.save(entry);
-                  t.workflow.memory.state="saved";
-                }catch{t.workflow.memory.state="failed";t.workflow.warnings.push("MEMORY_PERSIST_FAILED");}
-              }
-            }
+            await this.recordResearchMemory(t);
 
           } else {
             t.status = validateResearchAnswer(t, result.text ?? "");
@@ -1526,7 +1545,7 @@ export class PersonalAgent extends DurableObject<Env> {
       } else if(t.modelFailure&&PLATFORM_STOPS.has(t.modelFailure)){
         t.platformWait="queued";t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();
       } else if(t.workflow?.phase==="memory"&&t.workflow.memory){
-        t.answer=t.workflow.memory.answer;t.status=t.workflow.memory.status;t.workflow.memory.state="failed";t.workflow.phase="finished";t.workflow.warnings.push("MEMORY_SYNTHESIS_FAILED");
+        t.answer=t.workflow.memory.answer;t.status=t.workflow.memory.status;t.workflow.memory.state="failed";t.workflow.memory.failure="model";t.workflow.phase="finished";t.workflow.warnings.push("MEMORY_SYNTHESIS_FAILED");
         this.finishProactiveReading(t);
         if(t.origin!=="schedule")notice(this.state,"task:"+t.id,"研究回答已保留，本轮记忆整理未完成。");
       } else if(t.modelFailure==="MODEL_BUDGET") {

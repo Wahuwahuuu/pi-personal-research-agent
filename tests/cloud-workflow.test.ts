@@ -543,3 +543,11 @@ test("comparison projects each retrieval in rank order and identifies its paper 
  restored.phase="comparison";
  assert.equal(JSON.parse(workflowPrompt(restored,c)).workspace.unique_chunks,c.evidence.length);
 });
+
+test("a parsed reading digest does not report persistence before the host saves it",()=>{
+ const c=setup(), w=newWorkflow();
+ w.phase="memory";w.memory={answer:"Retained answer",status:"completed",state:"pending",visibleSourceIds:[]};
+ assert.deepEqual(advanceWorkflow(w,c,'{"readings":[]}'),{answer:"Retained answer",status:"completed"});
+ assert.equal(w.memory.state,"pending");
+ assert.deepEqual(w.memory.digest,{version:2,readings:[]});
+});
