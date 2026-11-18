@@ -149,3 +149,49 @@ test("earlier six-column writers remain compatible and deletion removes stored t
   assert.equal(db.prepare("SELECT count(*) AS n FROM pra_artifact_version_titles WHERE id=?").get("legacy")?.n,0);
  }finally{db.close();}
 });
+
+test("a comparison preserves its original paper-by-dimension coverage across human edits and duplicate saves",()=>{
+ const {a,db,storage}=setup();
+ const other={...source,paper_id:"local-2",chunk_id:"second"};
+ const init={...input,kind:"comparison" as const};
+ const report={papers:[other.paper_id,source.paper_id],dimensions:["Method | result"],cells:[
+  {paper_id:other.paper_id,dimension:"Method | result",status:"partial" as const,summary:"Original <observation>",citations:["second"]},
+  {paper_id:source.paper_id,dimension:"Method | result",status:"supported" as const,summary:"Claim with stale evidence",citations:["source","absent"]},
+ ]};
+ let reads=0;
+ const options={coverage:{indexVersion:"v1",report,papers:()=>{reads++;return[{paper_id:other.paper_id,title:"Paper | Two",abstract:""}];}}};
+ const first=a.create(init,"Original comparison",[source,other],options);
+ assert.equal(reads,1);assert.equal(first.comparison?.indexVersion,"v1");
+ assert.deepEqual(first.comparison?.papers.map(p=>p.title),["Paper | Two",source.paper_id]);
+ assert.deepEqual(first.comparison?.papers.map(p=>p.cells[0].summary),["Original <observation>",""]);
+ const frozen=structuredClone(first.comparison);
+ report.cells[0].summary="Later model observation";
+ assert.deepEqual(a.create(init,"Duplicate",[],options).comparison,frozen);assert.equal(reads,1);
+ const revised=a.revise(first.id,1,"Edited comparison","New title");assert.deepEqual(revised.comparison,frozen);
+ const reopened=new Artifacts(storage);assert.deepEqual(reopened.get(first.id,1).comparison,frozen);
+ const md=exportArtifact(revised,"md",[]).content,html=exportArtifact(revised,"html",[]).content;
+ assert.match(md,/保存时的比较证据/);assert.ok(md.includes("Paper \\| Two")&&md.includes("出处 2"));assert.ok(!md.includes("Later model observation")&&!md.includes("Claim with stale evidence"));
+ assert.ok(html.includes("<table>")&&html.includes("&lt;observation&gt;")&&!html.includes("<observation>"));
+ assert.match(exportArtifact(revised,"bibtex",[]).content,/Paper \| Two/);
+ assert.equal(a.create({...input,taskId:"reading"},"Ordinary reading",[],options).comparison,undefined);
+ assert.equal(a.create({...init,taskId:"legacy"},"Comparison without coverage",[]).comparison,undefined);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_artifact_comparisons").get()?.n,1);
+ a.deleteTasks([init.taskId]);assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_artifact_comparisons").get()?.n,0);
+ db.close();
+});
+
+test("restoring an old comparison cannot revive its deleted coverage or attach it to a new save",()=>{
+ const {a,db,storage}=setup(),init={...input,kind:"comparison" as const};
+ const report={papers:[source.paper_id],dimensions:["Method"],cells:[{paper_id:source.paper_id,dimension:"Method",summary:"Coverage purge marker",status:"supported" as const,citations:["source"]}]};
+ const coverage={indexVersion:"v1",report,papers:()=>[]};
+ const saved=a.create(init,"Original",[source],{coverage});
+ const item=db.prepare("SELECT * FROM pra_artifacts WHERE id=?").get(saved.id)!;
+ const snapshot=db.prepare("SELECT snapshot FROM pra_artifact_comparisons WHERE id=?").get(saved.id)!.snapshot;
+ a.deleteConversation(init.conversationId);
+ db.prepare("INSERT INTO pra_artifacts VALUES(?,?,?,?,?,?,?,?,?,?)").run(...Object.values(item));
+ db.prepare("INSERT INTO pra_artifact_comparisons(id,snapshot) VALUES(?,?)").run(saved.id,snapshot);
+ const reopened=new Artifacts(storage);assert.throws(()=>reopened.get(saved.id),/NOT_FOUND/);
+ assert.equal(db.prepare("SELECT COUNT(*) AS n FROM pra_artifact_comparisons").get()?.n,0);
+ const replacement=reopened.create(init,"New request",[],{explicitSave:true});assert.notEqual(replacement.id,saved.id);assert.equal(replacement.comparison,undefined);
+ db.close();
+});

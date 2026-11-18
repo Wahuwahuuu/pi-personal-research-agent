@@ -16,6 +16,18 @@ export interface PaperCoverageView {
   cells: CoverageCell[];
 }
 
+export interface ComparisonSnapshot {
+  indexVersion: string;
+  papers: PaperCoverageView[];
+}
+
+export const coverageLabels: Record<CoverageCell["status"], string> = {
+  supported: "已关联原文",
+  partial: "部分有依据",
+  missing: "缺少原文",
+  pending: "待核对",
+};
+
 function retainedCell(
   dimension: string,
   saved: Cell | undefined,

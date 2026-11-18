@@ -1,6 +1,7 @@
 import {artifactLabels} from "./types.ts";
 import {ARTIFACT_CONTENT_LIMIT, ARTIFACT_TITLE_LIMIT} from "../src/artifact-contract.ts";
 import {ProjectResearchRecords} from "./ProjectResearchRecords.tsx";
+import {SavedComparisonEvidence} from "./ComparisonEvidence.tsx";
 import {WatchPlans} from "./WatchPlans.tsx";
 import {deviceView} from "./device-state.ts";
 import {LibraryImports} from "./LibraryImports.tsx";
@@ -755,7 +756,7 @@ export function ArtifactView({
   run,
   refresh,
   onSource,
-}: Props & { id?: string; onSource: (s: Chunk,artifactId:string) => void }) {
+}: Props & { id?: string; onSource: (s: Chunk,artifactId:string,savedTitle?:string) => void }) {
   const list = usePaged<Artifact>("artifacts?limit=30", revision),
     detail = useResource<SavedArtifact>(
       id ? "artifacts/" + id : undefined,
@@ -883,7 +884,7 @@ export function ArtifactView({
                     <details>
                       <summary>查看第 {latest.version} 版的标题与正文</summary>
                       <strong>{latest.title}</strong>
-                      <Markdown text={latest.content} sources={latest.sources} onCitation={s => onSource(s, latest.id)} />
+                      <Markdown text={latest.content} sources={latest.sources} onCitation={s => onSource(s, latest.id, latest.comparison?.papers.find(p=>p.id===s.paper_id)?.title)} />
                     </details>
                     <button type="button" disabled={saving} onClick={() => setDraft({ ...draft, version: latest.version })}>
                       基于第 {latest.version} 版继续编辑
@@ -924,9 +925,12 @@ export function ArtifactView({
               <Markdown
                 text={a.content}
                 sources={a.sources}
-                onCitation={(source)=>onSource(source,a.id)}
+                onCitation={(source)=>onSource(source,a.id,a.comparison?.papers.find(p=>p.id===source.paper_id)?.title)}
               />
             )}
+            {a.comparison ? <SavedComparisonEvidence snapshot={a.comparison} sources={a.sources}
+              onSource={(source,title)=>onSource(source,a.id,title)} /> : a.kind==="comparison" &&
+              <p className="help">保存这份成果时没有逐篇证据记录。你可以回到来源讨论继续比较。</p>}
             <div className="section-actions">
               <button onClick={() => navigate("chat", a.conversationId)}>
                 回到来源讨论

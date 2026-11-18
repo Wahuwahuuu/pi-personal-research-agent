@@ -44,7 +44,7 @@ const navigation = [
   ["inbox", "收件箱"],
   ["memory", "记忆"],
 ];
-type Evidence = { source?: Chunk; task?: Task; paper?: Paper; catalog?: Paper[]; artifactId?:string };
+type Evidence = { source?: Chunk; task?: Task; paper?: Paper; catalog?: Paper[]; artifactId?:string; savedTitle?:string };
 function SourcePanel({
   accountId,
   evidence,
@@ -134,7 +134,7 @@ function SourcePanel({
         </button>
       </header>
       <div className="evidence-scroll">
-        <h3>{info?.title ?? paperId}</h3>
+        <h3>{evidence.savedTitle ?? info?.title ?? paperId}</h3>
         {source ? (
           <>
             <p className="source-location">
@@ -460,7 +460,7 @@ function Workspace({
       key={route.id ?? "list"}
       id={route.id}
       {...props!}
-      onSource={(source,artifactId) => setEvidence({ source,artifactId })}
+      onSource={(source,artifactId,savedTitle) => setEvidence({ source,artifactId,savedTitle })}
     />
   ) : route.page === "inbox" ? (
     <Inbox {...props!} />

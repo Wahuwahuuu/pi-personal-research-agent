@@ -1,18 +1,68 @@
 import { useState } from "react";
 import {
   comparisonEvidence,
+  coverageLabels,
   type CoverageReport,
-  type CoverageCell,
+  type ComparisonSnapshot,
+  type PaperCoverageView,
 } from "../src/comparison-evidence.ts";
 import { useResource } from "./hooks.ts";
 import type { Chunk, Paper } from "./types.ts";
 
-const statusText: Record<CoverageCell["status"], string> = {
-  supported: "已关联原文",
-  partial: "部分有依据",
-  missing: "缺少原文",
-  pending: "待核对",
-};
+function CoverageRows({
+  papers,
+  index,
+  sources,
+  onSource,
+}: {
+  papers: PaperCoverageView[];
+  index?: string;
+  sources: Chunk[];
+  onSource: (source: Chunk, paper: PaperCoverageView) => void;
+}) {
+  return papers.map((paper) => (
+    <section
+      key={paper.id}
+      aria-label={paper.title}
+      className="comparison-paper"
+    >
+      <h4>{paper.title}</h4>
+      <dl>
+        {paper.cells.map((cell) => (
+          <div key={cell.dimension} className="comparison-cell">
+            <dt>{cell.dimension}</dt>
+            <dd>
+              <span className={"coverage-state " + cell.status}>
+                {coverageLabels[cell.status]}
+              </span>
+              {cell.summary && <p>{cell.summary}</p>}
+              {cell.citations.map((id, i) => {
+                const original = sources.find(
+                  (s) =>
+                    s.chunk_id === id &&
+                    s.paper_id === paper.id &&
+                    s.index_version === index,
+                );
+                return (
+                  original && (
+                    <button
+                      key={id}
+                      className="text-button"
+                      aria-label={cell.dimension + "，原文 " + (i + 1)}
+                      onClick={() => onSource(original, paper)}
+                    >
+                      原文 {i + 1}
+                    </button>
+                  )
+                );
+              })}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  ));
+}
 
 export function ComparisonEvidence({
   report,
@@ -31,9 +81,6 @@ export function ComparisonEvidence({
       ? "papers?indexVersion=" + encodeURIComponent(index)
       : undefined,
   );
-  const papers = open
-    ? comparisonEvidence(report, index, sources, catalog.value ?? [])
-    : [];
   return (
     <details
       className="comparison-coverage"
@@ -50,49 +97,44 @@ export function ComparisonEvidence({
               重新读取论文题名
             </button>
           )}
-          {papers.map((paper) => (
-            <section
-              key={paper.id}
-              aria-label={paper.title}
-              className="comparison-paper"
-            >
-              <h4>{paper.title}</h4>
-              <dl>
-                {paper.cells.map((cell) => (
-                  <div key={cell.dimension} className="comparison-cell">
-                    <dt>{cell.dimension}</dt>
-                    <dd>
-                      <span className={"coverage-state " + cell.status}>
-                        {statusText[cell.status]}
-                      </span>
-                      {cell.summary && <p>{cell.summary}</p>}
-                      {cell.citations.map((id, i) => (
-                        <button
-                          key={id}
-                          className="text-button"
-                          aria-label={cell.dimension + "，原文 " + (i + 1)}
-                          onClick={() => {
-                            const source = sources.find(
-                              (s) =>
-                                s.chunk_id === id &&
-                                s.paper_id === paper.id &&
-                                s.index_version === index,
-                            );
-                            if (source)
-                              onSource(source, catalog.value);
-                          }}
-                        >
-                          原文 {i + 1}
-                        </button>
-                      ))}
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </section>
-          ))}
+          <CoverageRows
+            papers={comparisonEvidence(
+              report,
+              index,
+              sources,
+              catalog.value ?? [],
+            )}
+            index={index}
+            sources={sources}
+            onSource={(source) => onSource(source, catalog.value)}
+          />
         </>
       )}
+    </details>
+  );
+}
+
+export function SavedComparisonEvidence({
+  snapshot,
+  sources,
+  onSource,
+}: {
+  snapshot: ComparisonSnapshot;
+  sources: Chunk[];
+  onSource: (source: Chunk, title: string) => void;
+}) {
+  return (
+    <details className="comparison-coverage">
+      <summary>保存时的比较证据 · {snapshot.papers.length} 篇</summary>
+      <p className="help">
+        这些记录来自首次保存成果时的研究。你可以打开当时的原文，核对各项依据。
+      </p>
+      <CoverageRows
+        papers={snapshot.papers}
+        index={snapshot.indexVersion}
+        sources={sources}
+        onSource={(source, paper) => onSource(source, paper.title)}
+      />
     </details>
   );
 }

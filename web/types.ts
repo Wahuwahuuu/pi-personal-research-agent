@@ -74,6 +74,7 @@ export interface Overview {
 }
 export type { CloudMemoryEntry as Memory } from "../packages/research/cloud-memory.ts";
 export interface SavedArtifact extends Artifact {
+  comparison?: import("../src/comparison-evidence.ts").ComparisonSnapshot;
   content: string;
   sources: Chunk[];
   editor: string;

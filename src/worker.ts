@@ -982,8 +982,10 @@ export class PersonalAgent extends DurableObject<Env> {
         const b=await this.body(r),t=getTask(this.state,text(b.taskId,128));
         if(!t.answer||!["completed","waiting_user"].includes(t.status))throw new Problem("RESULT_NOT_READY",409);
         const c=this.state.conversations?.find(c=>c.id===t.conversationId);if(!c)throw new Problem("NOT_FOUND",404);
+        const index=t.researchIndex, report=t.workflow?.comparison;
+        const coverage=index&&report?{indexVersion:index,report,papers:()=>this.artifactPapers(index)}:undefined;
         const artifact=this.workspace.once(b.requestId,"artifact:create",b,()=>this.artifacts.create({projectId:c.projectId,conversationId:c.id,taskId:t.id,
-          kind:b.kind as any??"reading",title:text(b.title??t.input.slice(0,120),ARTIFACT_TITLE_LIMIT),partial:t.status!=="completed"},t.answer!,t.researchEvidence??[],{explicitSave:true}));
+          kind:b.kind as any??"reading",title:text(b.title??t.input.slice(0,120),ARTIFACT_TITLE_LIMIT),partial:t.status!=="completed"},t.answer!,t.researchEvidence??[],{explicitSave:true,coverage}));
         this.publish();return json(artifact,201);
       }
     }
@@ -994,8 +996,9 @@ export class PersonalAgent extends DurableObject<Env> {
         if(artifact[2]==="versions")return json(this.artifacts.versions(id));
         const value=this.artifacts.get(id,p.has("version")?Number(p.get("version")):undefined);
         if(artifact[2]==="export"){
-          const t=this.state.tasks.find(t=>t.id===value.taskId),papers=t?.researchIndex?this.catalog(t.researchIndex).papers:[];
-          const output=exportArtifact(value,p.get("format")??"md",papers);
+          const format=p.get("format")??"md";
+          const index=value.comparison?.indexVersion??this.state.tasks.find(t=>t.id===value.taskId)?.researchIndex;
+          const output=exportArtifact(value,format,format==="bibtex"&&index?this.artifactPapers(index):[]);
           return new Response(output.content,{headers:{"Content-Type":output.type,"Content-Disposition":'attachment; filename="research.'+output.extension+'"',"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
         }
         return json(value);
@@ -1397,6 +1400,10 @@ export class PersonalAgent extends DurableObject<Env> {
   async webSocketError() {
     if(this.recoveryBlocked)return;
     await this.maintenance.arm(Date.now() + 60000);
+  }
+  private artifactPapers(version:string){
+    try{return this.catalog(version).papers;}
+    catch(error){if(error instanceof Problem && error.code==="CATALOG_REQUIRED")return [];throw error;}
   }
   catalog(version: string): ResearchCatalog {
     if(version==="cloud-only")return {indexVersion:version,papers:[],evidence:[]};
