@@ -648,16 +648,21 @@ try {
     "long-goal creation, pause, direction amendment, priority and offline resume preserve real progress on desktop and mobile; cancellation persists",
   );
   await verifyImportBrowser();
+  await page.setViewportSize({ width: 390, height: 844 });
   await route("settings/account");
   await page.getByRole("button", { name: "退出登录", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "使用通行密钥登录" }),
   ).toBeVisible();
   await page.getByRole("button", { name: "使用通行密钥登录" }).click();
-  await expect(
-    page.getByRole("button", { name: "开始新讨论", exact: true }).first(),
-  ).toBeVisible({ timeout: 20000 });
-  checks.push("browser passkey sign-in works after logout");
+  const openNavigation = page.getByRole("button", { name: "打开导航" });
+  await expect(openNavigation).toBeVisible({ timeout: 20000 });
+  await openNavigation.click();
+  const navigationDialog = page.getByRole("dialog", { name: "研究工作区" });
+  await navigationDialog.getByRole("button", { name: "开始新讨论", exact: true }).click();
+  await expect(navigationDialog).not.toBeVisible();
+  await expect(page.getByRole("textbox", { name: "消息" })).toBeVisible();
+  checks.push("mobile passkey sign-in restores navigation and the new discussion composer");
   }
   assert.deepEqual(errors, [], "unhandled browser errors");
   const report = {
