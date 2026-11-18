@@ -12,9 +12,36 @@ function entry(content:string,projectId="p",category:CloudMemoryEntry["category"
 test("Chinese FTS5 finds substrings without local models and excludes unrelated projects and paper scope",()=>{
  const {db,index}=setup(),rows=[entry("长期记忆需要支持显式纠正"),entry("证据可靠性通过原文位置校验"),entry("长期记忆另一项目的结论","other"),entry("偏好使用中文","","preference")];index.sync(rows);
  assert.ok(memoryTokens("长期记忆").includes("记忆"));assert.equal(index.page({query:"记忆",projectId:"p"}).items.length,1);
- assert.equal(index.recall("可靠性",["a"],"p")[1].id,rows[1].id);
+ assert.deepEqual(index.recall("可靠性",["a"],"p").map(e=>e.id),[rows[1].id,rows[3].id]);
  assert.equal(index.page({query:'" OR * AND 中文',projectId:"p"}).items.length,1);
  assert.equal(index.page({query:"记忆",projectId:"p",paperIds:["b"]}).items.length,0);db.close();
+});
+test("a named project rule reaches the front of a crowded recall window and remains scoped after edits",()=>{
+ const {db,index}=setup();
+ const target={...entry("颜色映射要求使用远端波段","p","constraint"),edited:true};
+ const recent=Array.from({length:14},(_,i)=>({...entry("通用采样条件 "+i,"p","constraint"),edited:true,updated_at:"2026-11-12T00:00:00Z"}));
+ const excluded={...target,id:crypto.randomUUID(),projectId:"outside",updated_at:"2026-11-13T00:00:00Z"};
+ index.sync([target,excluded,...recent]);
+ assert.equal(index.recall("远端波段",["a"],"p")[0].id,target.id);
+ const revised={...target,content:"颜色映射改用近红外"};
+ index.sync([revised,excluded,...recent]);
+ const recall=index.recall("近红外",["a"],"p");
+ assert.equal(recall[0].content,revised.content);
+ assert.equal(recall.filter(e=>e.id===revised.id).length,1);
+ assert.ok(recall.every(e=>e.id!==excluded.id));
+ db.close();
+});
+test("preferences-only recall can match an older preference without admitting notes",()=>{
+ const {db,index}=setup();
+ const old=entry("输出使用灰度图","","preference");
+ const recent=Array.from({length:12},(_,i)=>({...entry("格式要求 "+i,"","preference"),updated_at:"2026-11-12T00:00:00Z"}));
+ const note={...entry("灰度图的实验观察","p","constraint"),edited:true};
+ index.sync([old,note,...recent]);
+ const recalled=index.recall("灰度图",["a"],"p",true);
+ assert.equal(recalled[0].id,old.id);
+ assert.ok(recalled.every(e=>e.category==="preference"));
+ assert.ok(index.recall("!",["a"],"p",true).every(e=>e.category==="preference"));
+ db.close();
 });
 test("20 explicit memories survive reopen; 10 corrections and 10 deletions cannot leak through search or revision storage",()=>{
  const {db,p,index}=setup();const rows=Array.from({length:20},(_,i)=>entry("显式记忆 "+i));

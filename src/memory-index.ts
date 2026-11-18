@@ -63,11 +63,15 @@ export class MemoryIndex{
   return{items:rows.slice(0,limit).map(r=>JSON.parse(r.value) as CloudMemoryEntry),nextCursor:rows.length>limit?after+limit:null};
  }
  recall(query:string,paperIds:readonly string[],projectId:string,preferencesOnly=false,recent=false){
-  const relevant=this.page({query,projectId,paperIds,limit:20}).items;
+  const matches=memoryTokens(query).length
+   ? this.page({query,projectId,paperIds,category:preferencesOnly?"preference":undefined,limit:20}).items
+   : [];
   const constraints=preferencesOnly?[]:this.page({projectId,paperIds,category:"constraint",editedOnly:true,limit:8}).items;
   const preferences=this.page({projectId,category:"preference",limit:8}).items;
-  const recentItems=recent?this.page({projectId,paperIds,limit:10}).items:[];
-  return [...constraints,...preferences,...(preferencesOnly?[]:[...relevant,...recentItems])].filter((e,i,a)=>a.findIndex(v=>v.id===e.id)===i).slice(0,20);
+  const recentItems=recent&&!preferencesOnly?this.page({projectId,paperIds,limit:10}).items:[];
+  // The prompt admits whole records within a byte budget. Keep its first slot for the best scoped match.
+  const candidates=[...matches.slice(0,1),...constraints,...preferences,...matches.slice(1),...recentItems];
+  return candidates.filter((e,i,a)=>a.findIndex(v=>v.id===e.id)===i).slice(0,20);
  }
  revisions(id:string){if(!this.known.has(id))throw new Problem("NOT_FOUND",404);return this.db.sql.exec<{revision:number;changed:number;value:string}>("SELECT * FROM pra_memory_revisions WHERE id=? ORDER BY revision DESC LIMIT 100",id).toArray().map(r=>({revision:r.revision,changed:r.changed,entry:JSON.parse(r.value)}));}
 }
