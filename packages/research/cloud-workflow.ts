@@ -72,6 +72,15 @@ function comparison(w:ResearchWorkflow,c:WorkflowContext){
   if(w.comparison){m.applyCheck(w.comparison,new Map(c.evidence.map(e=>[e.chunk_id,e])));}
   return m;
 }
+/** Reserve the penultimate call for the independent coverage check once each target has returned source text. */
+export function reserveComparisonCheck(workflow: ResearchWorkflow, context: WorkflowContext): void {
+  if (context.calls !== 4 || workflow.phase !== "agent" || workflow.cloudOnly ||
+      workflow.comparison || workflow.citationRepair || workflow.answerRepairPending) return;
+  const workspace = comparison(workflow, context);
+  if (!workspace || workspace.baselineMissing.length) return;
+  const papersWithText = new Set(context.evidence.filter(chunk => chunk.text.trim()).map(chunk => chunk.paper_id));
+  if (workspace.papers.every(id => papersWithText.has(id))) workflow.phase = "comparison";
+}
 function progress(w:ResearchWorkflow,c:WorkflowContext,execution?:TurnExecution,answer=""){
   const p=new TaskProgressTracker(c.input);
   p.plan(c.input,w.prepared?.frame.information_needs??[],targets(w),nonFactual(w));

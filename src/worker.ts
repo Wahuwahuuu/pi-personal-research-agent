@@ -37,7 +37,7 @@ import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/researc
 import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
 import {assertModelSubmission} from "./provider-context.ts";
 import {managedRuntimeSettings} from "./runtime-settings.ts";
-import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,reserveComparisonCheck,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
@@ -1623,9 +1623,14 @@ export class PersonalAgent extends DurableObject<Env> {
         this.save();
       }
       if (terminal(t)||t.pauseRequested) return;
-      const observations = resumePrompt(this.state, t, (v) => this.catalog(v));
-      if (t.workflow) await (await (await this.harness.pi()).conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:!this.proactive.control(t)&&workflowTools(t.workflow,segmentUsage(t).calls).length ? null : [],instructions:this.proactive.control(t)?this.proactive.instruction(t):workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
       const context=t.workflow?this.workflowContext(t):undefined;
+      const proactiveControl=this.proactive.control(t);
+      if (t.workflow && context && !proactiveControl) reserveComparisonCheck(t.workflow,context);
+      // A coverage check has its own evidence window. Deliver any pending tool observations to the subsequent answer step.
+      const observations = t.workflow?.phase === "comparison"
+        ? {ids:[],prompt:""}
+        : resumePrompt(this.state, t, (v) => this.catalog(v));
+      if (t.workflow) await (await (await this.harness.pi()).conversation(Number(t.sessionId) as ConversationId,BACKGROUND_CONTEXT))!.configure({tools:!proactiveControl&&workflowTools(t.workflow,segmentUsage(t).calls).length ? null : [],instructions:proactiveControl?this.proactive.instruction(t):workflowInstruction(t.workflow)},BACKGROUND_CONTEXT);
       if(context){
         const memoryRecall=await this.memoryService(context.conversation.projectId).recall(t.input,context.conversation.scope),recalled=memoryRecall.items;context.memories=recalled;context.memoryStatus=memoryRecall.status;
         const domain=context.conversation.domain;
@@ -1635,7 +1640,7 @@ export class PersonalAgent extends DurableObject<Env> {
         ].filter(id=>!this.state.cloudMemory!.invalidatedTurns?.includes(id)));
         context.project=this.workspace.getProject(context.conversation.projectId);context.researchDirection=this.workspace.settings().researchDirection;
       }
-      const prompt = this.proactive.control(t)?this.proactive.prompt(t,context!.memories):t.workflow ? workflowPrompt(t.workflow,context!, observations.ids.length ? JSON.parse(observations.prompt) : undefined,{systemInstructionProvided:true}) : observations.ids.length
+      const prompt = proactiveControl?this.proactive.prompt(t,context!.memories):t.workflow ? workflowPrompt(t.workflow,context!, observations.ids.length ? JSON.parse(observations.prompt) : undefined,{systemInstructionProvided:true}) : observations.ids.length
         ? observations.prompt
         : JSON.stringify({
             instruction:

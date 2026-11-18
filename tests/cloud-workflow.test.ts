@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {nodeCatalog} from "../local/catalog.ts";
-import {newWorkflow,advanceWorkflow,workflowPrompt,workflowInstruction,workflowTools,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {newWorkflow,advanceWorkflow,reserveComparisonCheck,workflowPrompt,workflowInstruction,workflowTools,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 const catalog=await nodeCatalog(undefined,true);
 function setup(input="Explain the method"):WorkflowContext{return {id:"turn1",input,calls:1,evidence:[],catalog,conversation:{id:"c",title:"research",projectId:"p",scope:[],created:0,history:[]},memories:[],operations:[]};}
 const prepared=(intent="answer",targets:string[]=[])=>JSON.stringify({intent,targets,rewrite:"Explain the method",queries:[],constraints:[]});
@@ -408,4 +408,46 @@ test("a compact citation cannot name an omitted source, another task or a differ
   const answer=advanceWorkflow(w,{...c,calls:6},JSON.stringify({execution:{state:"complete"},answer:"Both. "+grouped}));
   assert.equal(answer.status,"completed");
   assert.equal(answer.answer,"Both. [cite:"+ids[0]+"][cite:"+ids[1]+"]");
+});
+
+test("two remaining calls can verify a comparison before the final answer even if prior steps only called tools",()=>{
+  const context=setup("Compare methods in Paper A and Paper B"), workflow=newWorkflow();
+  const papers=[{paper_id:"a",title:"Paper A",abstract:""},{paper_id:"b",title:"Paper B",abstract:""}];
+  context.catalog={...catalog,papers};
+  advanceWorkflow(workflow,context,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:context.input,queries:[],constraints:[],comparison_dimensions:["method"]}));
+  const evidence=papers.map(paper=>{
+    const text="The method uses "+paper.title+".", id=paper.paper_id+"1";
+    return {paper_id:paper.paper_id,chunk_id:id,paragraph_id:"p",section:"Methods",text,
+      start:0,end:Array.from(text).length,index_version:"fixture-v1",citation:"[cite:"+id+"]",truncated:false};
+  });
+  context.evidence=evidence;
+  context.operations=papers.map(p=>({tool:"retrieve_chunks",params:{paper_ids:[p.paper_id],query:"method"},state:"done"}));
+  context.calls=3;
+  reserveComparisonCheck(workflow,context);
+  assert.equal(workflow.phase,"agent");
+  reserveComparisonCheck(workflow,{...context,calls:5});
+  assert.equal(workflow.phase,"agent","the last call remains available for an answer");
+  context.calls=4;
+  reserveComparisonCheck(workflow,{...context,evidence:evidence.slice(0,1)});
+  reserveComparisonCheck(workflow,{...context,operations:context.operations.slice(0,1)});
+  assert.equal(workflow.phase,"agent","every target needs both a returned retrieval and actual source text");
+  const repair={...workflow,answerRepairPending:true};
+  reserveComparisonCheck(repair,context);
+  assert.equal(repair.phase,"agent");
+  reserveComparisonCheck(workflow,context);
+  assert.equal(workflow.phase,"comparison");
+  assert.deepEqual(workflowTools(workflow,context.calls),[]);
+  const check=JSON.parse(workflowPrompt(workflow,context));
+  assert.deepEqual(check.evidence.map((chunk:{chunk_id:string})=>chunk.chunk_id),["a1","b1"]);
+  context.calls=5;
+  advanceWorkflow(workflow,context,JSON.stringify({cells:check.response_template.cells.map((cell:{paper_id:string})=>({...cell,status:"supported",summary:"Method verified",citations:[cell.paper_id+"1"]}))}));
+  const final=JSON.parse(workflowPrompt(workflow,context,{observations:[{operationId:"returned",tool:"retrieve_chunks",result:{chunks:evidence}}]}));
+  assert.equal(final.stage,"agent");
+  assert.deepEqual(final.observations[0].result.chunk_ids,["a1","b1"]);
+  assert.equal(final.remaining_model_requests,1);
+  assert.deepEqual(workflowTools(workflow,context.calls),[]);
+  context.calls=6;
+  const answer=advanceWorkflow(workflow,context,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"Paper A uses its method [cite:a1]. Paper B uses its method [cite:b1]."}));
+  assert.equal(answer.status,"completed");
+  assert.equal(workflow.comparison?.cells.filter(cell=>cell.status==="supported").length,2);
 });
