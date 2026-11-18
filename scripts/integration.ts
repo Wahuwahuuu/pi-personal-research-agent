@@ -686,6 +686,17 @@ try {
   await until(async()=>(await api("deletions/"+newConversation.id)).status==="completed");
   assert.ok(!(await api("projects")).items.some((p:any)=>p.id===project.id));
   checks.push("project, settings, conversation archive/search and paginated product APIs persist real data; deleting project schedules real conversation deletion");
+  const emptyProject=await api("projects","POST",{requestId:"manual-project",title:"Standalone project memory"});
+  const manualInput={requestId:"scoped-memory",projectId:emptyProject.id,category:"question",content:"A scoped question"};
+  const manual=await api("memories","POST",manualInput),manualEdit={requestId:"scoped-memory-edit",id:manual.id,content:"Revised scoped question"};
+  await api("memories","POST",manualEdit);assert.equal((await api("memories/"+manual.id+"/revisions")).length,2);
+  const deletion={requestId:"empty-project-delete"};
+  for(let i=0;i<2;i++)assert.deepEqual((await api("projects/"+emptyProject.id,"DELETE",deletion)).deletions,[]);
+  assert.equal((await api("memories?scope=project&project="+emptyProject.id)).items.length,0);
+  assert.ok(!(await api("state")).cloudMemory.entries.some((entry:any)=>entry.id===manual.id));
+  await api("memories/"+manual.id+"/revisions","GET",undefined,404);
+  for(const body of [manualInput,manualEdit])await api("memories","POST",body,410);
+  checks.push("deleting a project without conversations removes manual memory, revisions and all prior write receipts");
   const long=await api("tasks","POST",{input:"Long offline research",kind:"research",mode:"long",requestId:"long-goal"});
   await until(async()=>(await api("tasks/"+long.id)).status==="waiting_device");
   const beforePause=await api("tasks/"+long.id);

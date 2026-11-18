@@ -25,7 +25,7 @@ import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries,storeReadingEntries} from "../packages/research/memory.ts";
 import {Artifacts,exportArtifact} from "./artifacts.ts";
 import {MAX_PROJECT_PAPERS,Workspace,taskSummary,conversationPage,taskPage} from "./workspace.ts";
-import {mutateMemory,type MemoryMutation} from "./memory-mutations.ts";
+import {mutateMemory,purgeProjectMemories,type MemoryMutation} from "./memory-mutations.ts";
 import { IdentityRegistry } from "./identity.ts";
 export { IdentityRegistry };
 import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
@@ -199,7 +199,12 @@ export class PersonalAgent extends DurableObject<Env> {
     );
     for(const e of this.state.cloudMemory.entries)if(e.kind!=="preference"&&!e.projectId&&e.source_session){const projectId=this.state.conversations?.find(c=>c.id===e.source_session)?.projectId;if(projectId)e.projectId=projectId;}
     this.memoryIndex=new MemoryIndex(this.database);
-    this.memoryIndex.sync(this.state.cloudMemory.entries);
+    const deletedProjects=this.workspace.deletedProjectIds(this.state.cloudMemory.entries.flatMap(entry=>entry.projectId?[entry.projectId]:[]));
+    if(deletedProjects.size)this.database.transactionSync(()=>{
+      purgeProjectMemories(this.state,this.workspace,deletedProjects);
+      this.save();
+    });
+    else this.memoryIndex.sync(this.state.cloudMemory.entries);
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
         let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
@@ -1023,7 +1028,8 @@ export class PersonalAgent extends DurableObject<Env> {
       if(r.method==="PATCH"){const b=await this.body(r);const result=this.workspace.once(b.requestId,"project:"+id,b,()=>this.workspace.updateProject(id,b));this.publish();return json(result);}
       if(r.method==="DELETE"){
         const b=await this.body(r);
-        const result=this.workspace.once(b.requestId,"project:delete:"+id,{},()=>{
+        let result:{id:string;deletions:string[]};
+        try{result=this.workspace.once(b.requestId,"project:delete:"+id,{},()=>{
           const conversations=(this.state.conversations??[]).filter(c=>c.projectId===id);
           this.workspace.deleteProject(id);
           for(const plan of this.state.plans.filter(p=>(p.projectId??"default")===id)){this.researchBatches.removePlan(plan.id);this.workspace.forgetEntity(plan.id);}
@@ -1031,8 +1037,11 @@ export class PersonalAgent extends DurableObject<Env> {
 
           const removedImports=this.libraryJobs.removeProject(id);this.state.notices=this.state.notices.filter(n=>!removedImports.some(job=>n.id==="import:"+job));
           for(const c of conversations)this.deletions.request(this.state,c.id);
+          purgeProjectMemories(this.state,this.workspace,new Set([id]));
           this.save();return {id,deletions:conversations.map(c=>c.id)};
-        });
+        });}catch(error){
+          this.state=this.repository.load();this.memoryIndex=new MemoryIndex(this.database);throw error;
+        }
         for(const id of result.deletions){this.cancelReaders(id);const d=this.deletions.get(id);for(const op of this.deletions.operationIds(id))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"cancel",operationId:op});if(d?.session_id)this.ctx.waitUntil(this.harness.abort({session:d.session_id}).catch(()=>{}));}
         this.dispatchImports();await this.maintenance.arm();this.publish();return json(result,202);
       }

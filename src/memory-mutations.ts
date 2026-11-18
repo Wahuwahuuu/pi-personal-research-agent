@@ -1,9 +1,17 @@
 import {Problem,text,type State} from "./domain.ts";
 import type {Workspace} from "./workspace.ts";
-import type {cloudMemory} from "../packages/research/cloud-memory.ts";
+import {type cloudMemory,invalidateMemoryInputs} from "../packages/research/cloud-memory.ts";
 type MemoryService=ReturnType<typeof cloudMemory>;
 export type MemoryMutation={kind:"save";body:Record<string,unknown>}|{kind:"delete";id:string;body:Record<string,unknown>};
 interface Ports {workspace:Workspace;state:State;service:(projectId?:string)=>MemoryService;save:()=>void}
+export function purgeProjectMemories(state:State,workspace:Workspace,deletedProjects:ReadonlySet<string>){
+ const memory=state.cloudMemory;
+ if(!memory||!deletedProjects.size)return;
+ const owned=memory.entries.filter(e=>e.projectId&&deletedProjects.has(e.projectId));
+ if(!owned.length)return;
+ const removed=invalidateMemoryInputs(memory,owned.map(e=>e.id),owned.map(e=>e.source_turn).filter(Boolean));
+ workspace.forgetEntities(removed);
+}
 /** The host must serialize this short in-memory operation and reload its caches on failure.
  * The reused service performs validation without network I/O. SQL commits stay synchronous. */
 export async function mutateMemory(p:Ports,action:MemoryMutation){
@@ -15,7 +23,7 @@ export async function mutateMemory(p:Ports,action:MemoryMutation){
  const before=new Set(p.state.cloudMemory!.entries.map(e=>e.id));
  const commit=()=>{
   const remaining=new Set(p.state.cloudMemory!.entries.map(e=>e.id));
-  for(const id of before)if(!remaining.has(id))p.workspace.forgetEntity(id);
+  p.workspace.forgetEntities([...before].filter(id=>!remaining.has(id)));
   p.save();
  };
  if(action.kind==="delete"){

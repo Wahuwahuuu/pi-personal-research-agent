@@ -10,6 +10,7 @@ import {LibraryJobs} from "./library-jobs.ts";
 import {ResearchBatches} from "./research-batches.ts";
 import {ReaderRequests} from "./reader-requests.ts";
 import {MemoryIndex} from "./memory-index.ts";
+import {purgeProjectMemories} from "./memory-mutations.ts";
 import {RECOVERY_LIMIT} from "./recovery-store.ts";
 const protectedTables=[
  "pra_auth","pra_identity","pra_devices","pra_device_pairs","pra_device_indexes",
@@ -84,6 +85,7 @@ export function applyRecovery(db:StateStorage,guard:RecoveryGuard,id:string,buil
    deletions.cloudDone(row.id);
   }
   // Current corrections and invalidated memory inputs must also dominate old answers.
+  purgeProjectMemories(s,workspace,projectIds);
   const correctedEntries=structuredClone(s.cloudMemory?.entries??[]);
   const invalid=deletionImpact(s,"recovery-invalidated:"+id,{...emptyImpact(),turns:s.cloudMemory?.invalidatedTurns??[]});
   deleteConversationState(s,"recovery-invalidated:"+id,invalid);

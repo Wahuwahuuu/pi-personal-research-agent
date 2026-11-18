@@ -237,7 +237,7 @@ export function Projects({
               onClose={() => setDeleting(false)}
             >
               <p>
-                项目中的会话和关联成果会进入删除流程。论文原文件不会因此从本机删除。
+                项目中的会话、项目记忆及其修订、关联成果都会删除。本机保留论文原文件。
               </p>
               <button
                 className="danger"

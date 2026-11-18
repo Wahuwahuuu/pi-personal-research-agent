@@ -62,7 +62,15 @@ export class Workspace {
   for(const key of ["pinned","archived"] as const)if(input[key]!==undefined){if(typeof input[key]!=="boolean")throw new Problem("INVALID_SETTING");p[key]=input[key];}
   p.updated=Date.now();this.db.sql.exec("UPDATE pra_projects SET title=?,goal=?,papers=?,pinned=?,archived=?,updated=? WHERE id=?",p.title,p.goal,JSON.stringify(p.paperIds),Number(p.pinned),Number(p.archived),p.updated,id);return p;
  }
- forgetEntity(id:string){this.db.sql.exec("UPDATE pra_mutations SET result=? WHERE json_extract(result,'$.id')=?",JSON.stringify({_deleted:true}),id);}
+ forgetEntities(ids:readonly string[]){
+  if(ids.length)this.db.sql.exec("UPDATE pra_mutations SET result=? WHERE json_extract(result,'$.id') IN (SELECT value FROM json_each(?))",JSON.stringify({_deleted:true}),JSON.stringify(ids));
+ }
+ forgetEntity(id:string){this.forgetEntities([id]);}
+ deletedProjectIds(candidates:readonly string[]):Set<string>{
+  if(!candidates.length)return new Set();
+  const rows=this.db.sql.exec<{id:string}>("SELECT id FROM pra_project_tombstones WHERE id IN (SELECT value FROM json_each(?))",JSON.stringify([...new Set(candidates)])).toArray();
+  return new Set(rows.map(row=>row.id));
+ }
  deleteProject(id:string){if(id==="default")throw new Problem("DEFAULT_PROJECT_REQUIRED",409);this.getProject(id);this.db.sql.exec("INSERT OR IGNORE INTO pra_project_tombstones VALUES(?)",id);this.db.sql.exec("DELETE FROM pra_projects WHERE id=?",id);this.db.sql.exec("UPDATE pra_mutations SET result=? WHERE json_extract(result,\'$.id\')=?",JSON.stringify({_deleted:true}),id);}
 }
 export function taskSummary(t:Task){

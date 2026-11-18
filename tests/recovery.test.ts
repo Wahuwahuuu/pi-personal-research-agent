@@ -157,3 +157,25 @@ test("recovery diagnostics expose definitions and a signature without row conten
   assert.notEqual(recoverySchema(f.storage),before);
  }finally{db.close();}
 });
+
+test("restoring a guard from before scoped memory cleanup cannot revive a deleted project's note or dependent answer",()=>{
+ const db=new DatabaseSync(":memory:");
+ try{
+  const f=setup(db),s=f.state,p=f.workspace.createProject({title:"Deleted project"});
+  const task=submit(s,"Keep this independent question","recovery-project-memory","chat");task.conversationId="surviving-conversation";task.status="completed";task.answer="Derived from removed note";
+  s.conversations=[{id:task.conversationId,title:"Surviving conversation",projectId:"default",scope:[],created:0,history:[{turn_id:task.id,user_text:task.input,final_answer:task.answer}]}];
+  const base={kind:"note" as const,paper_ids:[],source_session:"",source_turn:"",created_at:"2026-01-01",updated_at:"2026-01-01",edited:true};
+  s.cloudMemory!.entries=[{...base,id:"removed-memory",slot:"one",content:"Deleted project question",projectId:p.id},
+   {...base,id:"derived-memory",slot:"two",content:"Dependent claim",source_turn:task.id,projectId:"default",edited:false},
+   {...base,id:"independent-memory",slot:"three",content:"Keep this note",projectId:"default"}];
+  s.cloudMemory!.dependencies={[task.id]:{memories:["removed-memory"],turns:[],lineageVersion:1}};
+  f.repository.save(s);f.memory.sync(s.cloudMemory!.entries);f.workspace.deleteProject(p.id);
+  const guard=captureRecovery(f.storage,s,"build");assert.ok(guard.memory?.entries.some(e=>e.id==="removed-memory"));
+  const restored=applyRecovery(f.storage,guard,"legacy-project","build");
+  assert.deepEqual(restored.cloudMemory?.entries.map(e=>e.id),["independent-memory"]);assert.ok(restored.cloudMemory?.deletedSlots.includes(p.id+":one"));
+  assert.equal(restored.tasks[0].answer,undefined);assert.equal(restored.conversations?.[0].history[0].final_answer,"");assert.equal(restored.tasks[0].input,task.input);
+  const kept=new MemoryIndex(f.storage);assert.deepEqual(kept.page().items.map(e=>e.id),["independent-memory"]);
+  assert.deepEqual(db.prepare("SELECT DISTINCT id FROM pra_memory_revisions").all().map(v=>v.id),["independent-memory"]);
+  assert.deepEqual(applyRecovery(f.storage,guard,"legacy-project","build").cloudMemory?.entries.map(e=>e.id),["independent-memory"]);
+ }finally{db.close();}
+});
