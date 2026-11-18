@@ -467,10 +467,10 @@ export class PersonalAgent extends DurableObject<Env> {
       ws.send(JSON.stringify(data));
     } catch {}
   }
-  publish() {
+  publish(readerChanged = false) {
     for (const ws of this.ctx.getWebSockets("ui")) {
       if(!this.validHash(ws.deserializeAttachment()?.hash??"","user")){ws.close(1008,"expired");continue;}
-      this.send(ws,ws.deserializeAttachment()?.view===2?{type:"change",cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      this.send(ws,ws.deserializeAttachment()?.view===2?{type:"change",readerChanged,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     }
   }
   device() {
@@ -493,8 +493,8 @@ export class PersonalAgent extends DurableObject<Env> {
   cancelReaders(conversationId:string){
     for(const id of this.readerRequests.invalidate({conversationId}))for(const ws of this.ctx.getWebSockets("device"))this.send(ws,{type:"reader_cancel",id});
   }
-  readerLabel(ws:WebSocket){
-    return this.database.sql.exec<{label:string}>("SELECT label FROM pra_devices WHERE hash=?",ws.deserializeAttachment().hash).toArray()[0]?.label??"Windows";
+  readerInfo(ws:WebSocket){
+    return this.database.sql.exec<{label:string;expires:number}>("SELECT label,expires FROM pra_devices WHERE hash=?",ws.deserializeAttachment().hash).toArray()[0];
   }
   dispatchReaders(ws:WebSocket){
     const a=ws.deserializeAttachment();
@@ -655,7 +655,9 @@ export class PersonalAgent extends DurableObject<Env> {
       const version=new URL(r.url).searchParams.get("indexVersion")??undefined;
       if(version)text(version,256);
       const ws=this.readerDevice(version);
-      return json({available:!!ws,deviceLabel:ws?this.readerLabel(ws):undefined});
+      const device=ws && this.readerInfo(ws);
+      return json({available:!!ws,deviceLabel:ws ? device?.label ?? "Windows" : undefined,
+        validForMs:device ? Math.max(1,device.expires-Date.now()) : undefined});
     }
     const readerPath=path.match(/^\/api\/reader\/([a-f0-9-]{36})$/i);
     if(readerPath&&r.method==="GET")return json(readerView(this.readerRequests.get(readerPath[1])));
@@ -676,7 +678,7 @@ export class PersonalAgent extends DurableObject<Env> {
       const match=source?.section.match(/^Page ([1-9]\d{0,2}|1000)$/);
       const page=match?Number(match[1]):undefined;
       const ws=this.readerDevice(version);if(!ws)throw new Problem("READER_UNAVAILABLE",409);
-      const result=this.readerRequests.create(text(b.requestId,128),{paperId,indexVersion:version,page,conversationId},ws.deserializeAttachment().hash,this.readerLabel(ws));
+      const result=this.readerRequests.create(text(b.requestId,128),{paperId,indexVersion:version,page,conversationId},ws.deserializeAttachment().hash,this.readerInfo(ws)?.label??"Windows");
       this.dispatchReaders(ws);return json(readerView(result));
     }
     if(path==="/api/devices"&&r.method==="GET")return json(this.ctx.storage.sql.exec("SELECT id,label,created,expires,revoked FROM pra_devices ORDER BY created DESC").toArray());
@@ -699,7 +701,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.readerRequests.invalidate({hash:row.hash});
       }});
       for(const ws of this.ctx.getWebSockets("device"))if(rows.some(row=>row.hash===ws.deserializeAttachment()?.hash))ws.close(1008,"revoked");
-      this.publish();return json({ok:true});
+      this.publish(true);return json({ok:true});
     }
     if(path==="/api/conversations"&&r.method==="GET"){
       const p=new URL(r.url).searchParams;
@@ -1109,7 +1111,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const view=kind==="ui"&&new URL(r.url).searchParams.get("version")==="2"?2:1;
     pair[1].serializeAttachment({ kind, hash, ready: false,view });
     if (kind === "ui")
-      this.send(pair[1],view===2?{type:"change",cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      this.send(pair[1],view===2?{type:"change",readerChanged:false,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
   async webSocketMessage(ws: WebSocket, raw: string | ArrayBuffer) {
@@ -1124,6 +1126,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if (typeof raw !== "string" || raw.length > 1000000)
         throw new Problem("INVALID_FRAME");
       const m = JSON.parse(raw);
+      let readerChanged = false;
       if (m.type === "hello") {
         if (
           m.version !== 1 ||
@@ -1152,6 +1155,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.deviceIndexes.declare(a.hash,a.indexVersion,m.retainedIndexes);
         a.ready = false;
         a.catalogReady = false;
+        readerChanged = a.readerReady === true;
         a.readerReady = false;
         if(a.capabilities.includes("library-v1"))this.libraryJobs.reconnect(a.hash);
         ws.serializeAttachment(a);
@@ -1246,6 +1250,7 @@ export class PersonalAgent extends DurableObject<Env> {
         this.dispatchImports();
       } else if(m.type==="reader_status") {
         if(!a.catalogReady||!a.capabilities?.includes("reader-v1")||typeof m.ready!=="boolean")throw new Problem("READER_CAPABILITY_REQUIRED");
+        readerChanged = Boolean(a.readerReady) !== m.ready;
         a.readerReady=m.ready;ws.serializeAttachment(a);
         if(m.ready)this.dispatchReaders(ws);
       } else if(m.type==="reader_purged"){
@@ -1392,7 +1397,7 @@ export class PersonalAgent extends DurableObject<Env> {
           this.send(ws, { type: "notice", notice: n });
       } else throw new Problem("UNKNOWN_FRAME");
       await this.maintenance.arm();
-      this.publish();
+      this.publish(readerChanged);
     } catch (e) {
       this.send(ws, {
         type: "error",
@@ -1400,10 +1405,10 @@ export class PersonalAgent extends DurableObject<Env> {
       });
     }
   }
-  async webSocketClose() {
+  async webSocketClose(ws: WebSocket) {
     if(this.recoveryBlocked)return;
     await this.maintenance.arm(Date.now() + 60000);
-    this.publish();
+    this.publish(ws.deserializeAttachment()?.kind === "device");
   }
   async webSocketError() {
     if(this.recoveryBlocked)return;

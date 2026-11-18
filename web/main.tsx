@@ -47,11 +47,13 @@ const navigation = [
 type Evidence = { source?: Chunk; task?: Task; paper?: Paper; catalog?: Paper[]; artifactId?:string; savedTitle?:string };
 function SourcePanel({
   accountId,
+  readerUpdates,
   evidence,
   close,
   select,
 }: {
   accountId:string;
+  readerUpdates: { subscribed: boolean; revision: number };
   evidence: Evidence;
   close: () => void;
   select: (s: Chunk) => void;
@@ -172,7 +174,7 @@ function SourcePanel({
         )}
         {paperId && (source?.index_version ?? info?.indexVersion) && <ReaderAction
           key={paperId+":"+(source?.chunk_id??"")+":"+(source?.index_version??info?.indexVersion)}
-          accountId={accountId} paperId={paperId} indexVersion={(source?.index_version??info?.indexVersion)!}
+          accountId={accountId} updates={readerUpdates} paperId={paperId} indexVersion={(source?.index_version??info?.indexVersion)!}
           chunkId={source?.chunk_id} taskId={evidence.task?.id} artifactId={evidence.artifactId}
         />}
         {info?.originalUrl && (
@@ -230,6 +232,7 @@ function Workspace({
     [menu, setMenu] = useState(false),
     [evidence, setEvidence] = useState<Evidence>(),
     [connection, setConnection] = useState("connecting"),
+    [readerUpdates, setReaderUpdates] = useState({subscribed:false, revision:0}),
     [search, setSearch] = useState("");
   const overview = useResource<Overview>("overview", revision),
     cursor = useRef(0),
@@ -281,14 +284,15 @@ function Workspace({
         }, 1000);
     };
     const connect = () => {
-      if (done) return;
+      if (done || ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
       setConnection("connecting");
-      ws = new WebSocket(
+      const socket = ws = new WebSocket(
         location.origin.replace(/^http/, "ws") + "/api/events?version=2",
       );
-      ws.onopen = () => {
-        if (done) return;
+      socket.onopen = () => {
+        if (done || ws !== socket) return;
         delay = 1000;
+        setReaderUpdates(previous => ({subscribed:false, revision:previous.revision+1}));
         setConnection("online");
         // Reload authoritative pages even for resetRequired or an empty delta.
         // A cursor outside the retained event window cannot be replayed safely.
@@ -296,11 +300,23 @@ function Workspace({
           .then(changed)
           .catch(changed);
       };
-      ws.onmessage = () => changed();
-      ws.onerror = () => ws?.close();
-      ws.onclose = () => {
-        if (done) return;
+      socket.onmessage = event => {
+        if (done || ws !== socket) return;
+        try {
+          const change = JSON.parse(event.data);
+          if (change?.type === "change" && typeof change.readerChanged === "boolean") {
+            setReaderUpdates(previous => previous.subscribed && !change.readerChanged ? previous : {
+              subscribed:true, revision:previous.revision + (change.readerChanged ? 1 : 0),
+            });
+          }
+        } catch { /* A full refresh also recovers older or unrecognized event frames. */ }
+        changed();
+      };
+      socket.onerror = () => socket.close();
+      socket.onclose = () => {
+        if (done || ws !== socket) return;
         setConnection("offline");
+        setReaderUpdates(previous => previous.subscribed ? {...previous, subscribed:false} : previous);
         reconnect = setTimeout(connect, delay);
         delay = Math.min(30000, delay * 2);
       };
@@ -551,6 +567,7 @@ function Workspace({
       {evidence && (
         <SourcePanel
           accountId={account.id}
+          readerUpdates={readerUpdates}
           evidence={evidence}
           close={() => setEvidence(undefined)}
           select={(source) => setEvidence((v) => ({ ...v, source }))}

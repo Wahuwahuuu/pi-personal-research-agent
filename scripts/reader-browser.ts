@@ -116,10 +116,78 @@ export async function verifyReaderBrowser(
     checks.push(
       "real DO verifies identity, evidence and retained index; a connected node without an active tray cannot open a paper",
     );
+    const mobile = await context.newPage();
+    try {
+      await mobile.setViewportSize({width:390,height:844});
+      await mobile.goto(base + "/#papers");
+      await mobile.getByRole("button",{name:catalog.papers[0].title,exact:true}).click();
+      await expect(mobile.getByRole("button", {name:"在已连接电脑打开",exact:true})).toBeEnabled();
+      for (const tab of [page,mobile]) assert.equal(await tab.evaluate(() => document.visibilityState), "visible");
+      const idleRequests=[0,0];
+      for (const [i,tab] of [page,mobile].entries()) tab.on("request", r=>{
+        if(new URL(r.url()).pathname==="/api/reader/status") idleRequests[i]++;
+      });
+      await new Promise(resolve=>setTimeout(resolve,11000));
+      assert.deepEqual(idleRequests,[0,0],"idle reader checks across desktop and mobile");
+      checks.push("two visible readers stay idle without repeated availability requests");
+    } finally { await mobile.close(); }
+
+    const statusPath = (url:string)=>new URL(url).pathname==="/api/reader/status";
+    let offlineCaptured=false, release!:()=>void;
+    const deliverOffline=new Promise<void>(done=>release=done);
+    await page.route("**/api/reader/status?*",async route=>{
+      const response=await route.fetch();
+      assert.equal((await response.json()).available,false);
+      offlineCaptured=true;await deliverOffline;await route.fulfill({response});
+    },{times:1});
+    send({type:"reader_status",ready:false});
+    await expect.poll(()=>offlineCaptured,{timeout:10000}).toBe(true);
+    const readyResponse=page.waitForResponse(r=>statusPath(r.url())&&r.ok());
+    send({type:"reader_status",ready:true});
+    const available=await (await readyResponse).json();
+    assert.equal(available.available,true);
+    assert.ok(available.validForMs>0 && available.validForMs<=90*86400000);
+    await expect(open).toBeEnabled();
+    const lateResponse=page.waitForResponse(r=>statusPath(r.url())&&r.ok());
+    release();assert.equal((await (await lateResponse).json()).available,false);
+    await expect(open).toBeEnabled();
+    checks.push("a late offline response cannot override a later tray readiness event");
+
+    const legacy=await context.newPage();
+    try {
+      await legacy.routeWebSocket("**/api/events?*",client=>{
+        const server=client.connectToServer();
+        server.onMessage(bytes=>{
+          const frame=JSON.parse(bytes.toString());
+          delete frame.readerChanged;
+          client.send(JSON.stringify(frame));
+        });
+      });
+      await legacy.clock.install();
+      await legacy.goto(base+"/#papers");
+      await legacy.getByRole("button",{name:catalog.papers[0].title,exact:true}).click();
+      const legacyOpen=legacy.getByRole("button",{name:"在已连接电脑打开",exact:true});
+      await expect(legacyOpen).toBeEnabled();
+      send({type:"reader_status",ready:false});
+      await expect(open).toBeDisabled();
+      await until(async()=>!(await api("reader/status?indexVersion=fixture-v1")).available);
+      const checked=legacy.waitForResponse(r=>statusPath(r.url())&&r.ok());
+      await legacy.clock.fastForward(61000);
+      assert.equal((await (await checked).json()).available,false);
+      await expect(legacyOpen).toBeDisabled();
+      send({type:"reader_status",ready:true});
+      await expect(open).toBeEnabled();
+      checks.push("a browser connected to a legacy event stream still reconciles reader availability");
+    } finally { await legacy.close(); }
+
     await page.route("**/api/reader/status?*",route=>route.abort());
+    send({type:"reader_status",ready:false});
     await expect(page.getByRole("button",{name:"重新检查连接",exact:true})).toBeVisible({timeout:15000});
     await expect(open).toBeDisabled();
     await shot("reader-status-failed-desktop");
+    const failedUpdate = page.waitForEvent("requestfailed", r=>new URL(r.url()).pathname==="/api/reader/status");
+    send({type:"reader_status",ready:true});
+    await failedUpdate;
     await page.unroute("**/api/reader/status?*");
     await page.getByRole("button",{name:"重新检查连接",exact:true}).click();
     await expect(open).toBeEnabled();
