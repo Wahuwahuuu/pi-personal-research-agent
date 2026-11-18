@@ -1,5 +1,6 @@
 import {citationLabels,expandVisibleCitations,type VisibleCitations} from "./visible-citations.ts";
 import {citationIds} from "./internal/agent/p2-r2.ts";
+import type {ClaimAttribution} from "./internal/agent/citation-attribution.ts";
 import {projectToolOutcomes,type ToolOutcomeOperation} from "./tool-outcomes.ts";
 import {projectRecentDialogue,type ContextWindow} from "./context-window.ts";
 import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest} from "./memory.ts";
@@ -26,7 +27,7 @@ export interface ResearchWorkflow extends VisibleCitations {
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
   tracker?:ReturnType<TurnExecutionTracker["snapshot"]>;
   comparison?:ComparisonReport; comparisonRevision?:string; progress?:TaskProgress;
-  citationRepair?:{answer:string;claims:unknown[]};
+  citationRepair?:{answer:string;claims:ClaimAttribution[]};
   answerRepairAttempts?:number;answerRepairPending?:boolean;
   warnings:string[];
 }
@@ -151,13 +152,38 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Results remain complete in durable storage. The model sees each whole source at most once.
   const delivered=(observations as any)?.observations??[];
   const projected=delivered.map((o:any)=>({...o,result:{...o.result,...(o.result?.chunks?{chunks:undefined,chunk_ids:o.result.chunks.map((e:any)=>e.chunk_id)}:{})}}));
-  const payload:any={stage:"agent",instruction:options.systemInstructionProvided?undefined:agentInstruction(w),...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,citation_repair:w.citationRepair,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
+  const payload:any={stage:"agent",instruction:options.systemInstructionProvided?undefined:agentInstruction(w),...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
     ...(c.calls>=5?{final_instruction:w.answerRepairPending?"No allowance remains for tools or a separate completion check. Give the supported answer and actual gaps as plain Markdown; do not add JSON metadata.":"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
   const ordered=m?m.window(30000):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
-  // A repair must be able to recheck its own cited originals. Unknown IDs never create evidence.
-  const repairIds=w.citationRepair?citationIds(normalizeVisibleCitationGroups(w.citationRepair.answer,byId)):[],repair=repairIds.flatMap(id=>byId.has(id)?[byId.get(id)!]:[]),preferred=new Set(repair.map(e=>e.chunk_id));
+  // Present the originals as possible sources. Only the model can select a citation for its claim.
+  const firstCandidates = new Set<string>();
+  const candidates = new Map<string, {values:Set<string>; lists:string[][]}>();
+  const repair = w.citationRepair;
+  const repairClaims = (repair?.claims ?? []).map(check => {
+    const visibleCandidates: Record<string,string[]> = {};
+    for (const value of check.unmatched_values ?? []) {
+      const visibleIds: string[] = [];
+      visibleCandidates[value] = visibleIds;
+      const ids = [...new Set(check.candidate_sources?.[value] ?? [])].filter(id => byId.has(id));
+      if (ids.length) firstCandidates.add(ids[0]);
+      for (const id of ids) {
+        const candidate = candidates.get(id) ?? {values:new Set<string>(), lists:[] as string[][]};
+        candidate.values.add(value);
+        candidate.lists.push(visibleIds);
+        candidates.set(id, candidate);
+      }
+    }
+    return {...check, candidate_sources:visibleCandidates};
+  });
+  if (repair) {
+    payload.citation_repair = {answer:repair.answer, claims:repairClaims,
+      instruction:"The previous answer contains unverified references. Read the visible excerpts tagged values_to_verify, check the paper, metric, unit and experimental conditions, then copy the exact answer_citation or citation from the relevant excerpt. A matching number alone cannot support a claim. State the gap if no excerpt supports it."};
+  }
+  const cited = repair ? citationIds(normalizeVisibleCitationGroups(repair.answer,byId)) : [];
+  const preferred = new Set([...firstCandidates, ...cited.filter(id=>byId.has(id)), ...candidates.keys()]);
+  const repairSources = [...preferred].map(id=>byId.get(id)!);
   // Count the prompt as the JSON string actually nested in the provider request.
   // The remaining 8 KB is reserved for the locked Pi system/tool envelope; the
   // adapter still validates the entire request against its unchanged 48 KB limit.
@@ -168,13 +194,19 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const fits=()=>byteSize(JSON.stringify(payload))<=40000;
   if(!fits())throw Error("CONTEXT_LIMIT"); // Never silently shorten the user's request or corrections.
   let evidenceBytes=2;
-  for(const source of [...repair,...ordered.filter(e=>!preferred.has(e.chunk_id))]){
-    const label = labels.get(source.chunk_id);
-    const projectedSource = label ? {...source, answer_citation:"[cite:"+label+"]"} : source;
+  for(const source of [...repairSources,...ordered.filter(e=>!preferred.has(e.chunk_id))]){
+    const label = labels.get(source.chunk_id), candidate = candidates.get(source.chunk_id);
+    const projectedSource = {...source, ...(label ? {answer_citation:"[cite:"+label+"]"} : {}),
+      ...(candidate ? {values_to_verify:[...candidate.values]} : {})};
     const size=byteSize(projectedSource)+1;if(evidenceBytes+size>22000)continue;
+    const candidateLists = candidate?.lists ?? [];
+    for (const ids of candidateLists) ids.push(source.chunk_id);
     evidence.push(projectedSource);window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;
     if(fits())evidenceBytes+=size;
-    else {evidence.pop();window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;}
+    else {
+      evidence.pop();window.visible=evidence.length;window.omitted=c.evidence.length-evidence.length;
+      for (const ids of candidateLists) ids.pop();
+    }
   }
   w.visibleSourceIds=evidence.map(e=>e.chunk_id);
   w.citationLabels=evidence.some(e=>e.answer_citation) ? w.visibleSourceIds.map(id=>labels.get(id)??"") : undefined;

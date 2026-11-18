@@ -451,3 +451,31 @@ test("two remaining calls can verify a comparison before the final answer even i
   assert.equal(answer.status,"completed");
   assert.equal(workflow.comparison?.cells.filter(cell=>cell.status==="supported").length,2);
 });
+
+test("citation repair shows the original numerical candidate with a copyable marker without attributing the claim",async()=>{
+  const {inspectCitationAttribution}=await import("../packages/research/internal/agent/citation-attribution.ts");
+  const c=setup(),w=newWorkflow();
+  advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));
+  const chunks=Array.from({length:22},(_,i)=>{
+    const text=i===21?"The reported success rate is 31%.":i===20?"The rate is 31%. "+"x".repeat(24000):"unrelated ".repeat(185);
+    return {paper_id:"fixture-paper",paragraph_id:"p",chunk_id:"long-fixed-source-identity-for-repair-"+i,index_version:c.catalog.indexVersion,section:"Results",start:0,end:text.length,text};
+  });
+  c.evidence=chunks;c.calls=5;
+  const claims=inspectCitationAttribution("The reported success rate was 31% [cite:incorrect].",new Map(chunks.map(chunk=>[chunk.chunk_id,chunk]))).checks;
+  assert.deepEqual(claims[0].candidate_sources["31%"],[chunks[20].chunk_id,chunks[21].chunk_id]);
+  // A stale checkpoint may name candidates no longer in this index. They cannot consume the prompt budget.
+  claims[0].candidate_sources["31%"].push(...Array.from({length:700},(_,i)=>("absent-from-current-source-window-").repeat(3)+i));
+  w.citationRepair={answer:"The reported success rate was 31% [cite:incorrect].",claims};
+  const archived=structuredClone(w.citationRepair);
+  const prompt=JSON.parse(workflowPrompt(w,c));
+  const matched=prompt.evidence.filter((chunk:{values_to_verify?:string[]})=>chunk.values_to_verify?.includes("31%"));
+  assert.equal(matched.length,1);
+  assert.equal(matched[0].chunk_id,chunks[21].chunk_id);
+  assert.equal(matched[0].text,chunks[21].text);
+  assert.match(matched[0].answer_citation,/^\[cite:ref-[a-f0-9]{12}\]$/);
+  assert.ok(!JSON.stringify(prompt.citation_repair.claims).includes(chunks[20].chunk_id));
+  assert.deepEqual(w.citationRepair,archived);
+  c.calls=6;
+  const out=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"The reported result was 31% [cite:incorrect]."}));
+  assert.equal(out.status,"waiting_user","a matching candidate cannot silently repair a citation or validate the answer");
+});
