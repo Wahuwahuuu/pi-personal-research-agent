@@ -682,7 +682,17 @@ try {
   await screenshot("task-paused-mobile");
   await page.setViewportSize({ width: 1440, height: 900 });
   await screenshot("task-paused-desktop");
+  const resumeResponse = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    /^\/api\/tasks\/[^/]+\/resume$/.test(new URL(response.url()).pathname),
+  );
   await longRow.getByRole("button", { name: "继续执行", exact: true }).click();
+  const resume = await resumeResponse;
+  assert.equal(resume.status(), 200);
+  const resumed = await resume.json();
+  assert.equal(resumed.input, "请继续检索论文原文");
+  // The amended goal goes through Pi again before the UI can show the new wait.
+  await until(async () => (await api("tasks/" + resumed.id)).status === "waiting_device");
   await expect(
     longRow.getByText("等待你的电脑上线", { exact: true }),
   ).toBeVisible();
