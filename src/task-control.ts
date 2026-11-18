@@ -1,6 +1,6 @@
 import {VALIDATION_LIMITS} from "./validation-limits.ts";
 import {modelOutputLimit} from "./model-limits.ts";
-import {activeTasks} from "./task-queries.ts";
+import {activeTasks,closedTask} from "./task-queries.ts";
 import {
   Problem,
   text,
@@ -192,6 +192,24 @@ export function taskOrder(a: Task, b: Task) {
     a.id.localeCompare(b.id)
   );
 }
+/** A blocked predecessor keeps its Pi conversation in order, including across recovery. */
+export function nextResearchTurn(tasks: readonly Task[], eligible: (task: Task) => boolean): Task | undefined {
+  const heads = new Map<string, Task>();
+  for (const task of tasks) {
+    if (!task.conversationId || closedTask(task) || task.status === "waiting_user") continue;
+    const previous = heads.get(task.conversationId);
+    if (!previous || task.created < previous.created || (task.created === previous.created && task.id < previous.id))
+      heads.set(task.conversationId, task);
+  }
+  let next: Task | undefined;
+  for (const task of tasks) {
+    if (task.engine !== "durable" || task.pauseRequested || (task.status !== "queued" && task.status !== "waiting_device")) continue;
+    if (task.conversationId && heads.get(task.conversationId) !== task) continue;
+    if ((!next || taskOrder(task, next) < 0) && eligible(task)) next = task;
+  }
+  return next;
+}
+
 export function orderedTasks(s: State,activeOnly=false) {
   return (activeOnly?activeTasks(s):[...s.tasks]).sort(taskOrder);
 }

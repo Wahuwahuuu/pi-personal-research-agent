@@ -21,6 +21,7 @@ import {
   amendTask,
   checkpoint,
   orderedTasks,
+  nextResearchTurn,
 } from "../src/task-control.ts";
 import {
   createResearchPorts,
@@ -254,4 +255,27 @@ test("validation output exhaustion respects the active research phase before ope
  handleModelBudget(s,t);
  assert.equal(t.error,"VALIDATION_BUDGET");assert.equal(t.status,"waiting_user");assert.equal(t.goal!.segments.length,1);
  assert.equal(s.usage.output,995000);assert.equal(t.calls,6);
+});
+
+test("only the head of a blocked Pi conversation is eligible to wake the scheduler", () => {
+  const {t} = fixture();
+  const first = {...t, id:"a", conversationId:"one", status:"waiting_device" as const, created:10};
+  const later = {...first, id:"b", status:"queued" as const, priority:2 as const, created:11};
+  const independent = {...later, id:"c", conversationId:"two", created:12};
+  const offline = (task: typeof t) => task.status === "queued";
+  assert.equal(nextResearchTurn([later,first],offline),undefined);
+  assert.equal(nextResearchTurn([later,independent,first],offline)?.id,"c");
+  assert.equal(nextResearchTurn([later,first],()=>true)?.id,"a");
+  for (const status of ["completed","failed","cancelled","waiting_user"] as const)
+    assert.equal(nextResearchTurn([later,{...first,status}],offline)?.id,"b");
+  assert.equal(nextResearchTurn([later,{...first,status:"paused"}],offline),undefined);
+});
+
+test("turns admitted in the same millisecond have a stable head after restoration", () => {
+  const {t} = fixture();
+  const first = {...t, id:"a",conversationId:"shared",status:"queued" as const,created:1};
+  const second = {...first,id:"b",priority:2 as const};
+  assert.equal(nextResearchTurn([second,first],()=>true)?.id,"a");
+  assert.equal(nextResearchTurn(structuredClone([first,second]),()=>true)?.id,"a");
+  assert.equal(nextResearchTurn([first,second],turn=>turn.id!=="a"),undefined);
 });

@@ -19,7 +19,7 @@ import {LibraryJobs} from "./library-jobs.ts";
 import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts";
 import {DeviceIndexes} from "./device-indexes.ts";
 import {PLATFORM_STOPS,applyPlatformWait,type PlatformStatus} from "./platform-resources.ts";
-import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks} from "./task-control.ts";
+import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks,nextResearchTurn} from "./task-control.ts";
 import {taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries} from "../packages/research/memory.ts";
@@ -1394,6 +1394,16 @@ export class PersonalAgent extends DurableObject<Env> {
     if(!conversation) throw new Problem("UNKNOWN_CONVERSATION");
     return {id:t.id,input:currentInstruction(t)+this.proactive.researchRequest(t),calls:segmentUsage(t).calls,goal:t.goal?{segment:t.goal.segments.length,maximum:4,calls:t.calls,tools:t.tools,activeMs:t.activeMs,remaining:t.goal.segments.at(-2)?.checkpoint?.remaining??[]}:undefined,invalidatedMemoryTurns:this.state.cloudMemory?.invalidatedTurns,evidence:t.researchEvidence??[],catalog:this.catalog(t.researchIndex!),conversation,memories:this.state.memories,operations:this.state.operations.filter(o=>o.taskId===t.id)};
   }
+  private nextResearchTask(tasks: readonly import("./domain.ts").Task[], device: {catalogReady?:boolean; capabilities?:string[]} | null | undefined) {
+    return nextResearchTurn(tasks, task =>
+      (task.status === "queued" || !!device?.catalogReady &&
+        (!task.sessionId || task.error === SCOPED_RESEARCH_UPDATE) &&
+        (task.error !== SCOPED_RESEARCH_UPDATE || !!device.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY))) &&
+      task.proactive?.stage !== "imports" && (task.origin !== "schedule" || !this.resources.blocked) &&
+      (!task.conversationId || !this.deletions.blocksConversation(task.conversationId)) && this.proactive.allowed(task)
+    );
+  }
+
   async tickResearch() {
     for(const changed of activeTasks(this.state).filter(t=>this.state.cloudMemory?.invalidatedTurns?.includes(t.id)&&t.error!=="CONTEXT_CHANGED")){
       changed.status="waiting_user";changed.error="CONTEXT_CHANGED";changed.updated=Date.now();
@@ -1569,13 +1579,7 @@ export class PersonalAgent extends DurableObject<Env> {
       )
     )
       return;
-    const t = orderedTasks(this.state,true).filter(t=>!t.conversationId||!this.deletions.blocksConversation(t.conversationId)).find(
-      (t) =>
-        !t.pauseRequested&&this.proactive.allowed(t)&&(t.origin!=="schedule"||!this.resources.blocked)&&t.proactive?.stage!=="imports"&&t.engine === "durable" &&
-        (t.status === "queued" ||
-          (t.status === "waiting_device" && (!t.sessionId||t.error===SCOPED_RESEARCH_UPDATE) && dev && (t.error!==SCOPED_RESEARCH_UPDATE||attachment.capabilities?.includes(SCOPED_RESEARCH_CAPABILITY)))) &&
-        !activeTasks(this.state).some(previous => previous !== t && previous.conversationId === t.conversationId && previous.created <= t.created && !terminal(previous) && previous.status !== "waiting_user"),
-    );
+    const t = this.nextResearchTask(activeTasks(this.state), attachment);
     if (!t) return;
     if(dev&&!requireScopedResearchNode(t,this.state.conversations?.find(c=>c.id===t.conversationId)?.scope??[],attachment.capabilities)){this.save();return;}
     if(!t.researchIndex&&t.workflow?.cloudOnly)t.researchIndex=attachment?.catalogReady?attachment.indexVersion:this.state.conversations?.find(c=>c.id===t.conversationId)?.domain?.index_version??this.state.tasks.findLast(previous=>previous.researchIndex&&previous.researchIndex!=="cloud-only")?.researchIndex??"cloud-only";
@@ -1964,12 +1968,11 @@ export class PersonalAgent extends DurableObject<Env> {
         ...this.state.plans.filter((p) => p.enabled).map((p) => this.resources.blocked?Math.max(Date.now()+60000,p.next):p.next),
         ...(this.state.tasks.some(t=>t.platformWait)?[Date.now()+60000]:[]),
       ];
-      if (
-        activeTasks(this.state,true).some(
-          (t) => t.runOpen || t.status === "running" || (t.status === "queued"&&(t.origin!=="schedule"||!this.resources.blocked)),
-        )
-      )
-        times.push(Date.now() + 1000);
+      const active = activeTasks(this.state,true);
+      const needsTick = active.some(t => t.runOpen || t.status === "running" ||
+        (t.engine !== "durable" && t.status === "queued" && (t.origin !== "schedule" || !this.resources.blocked))) ||
+        this.nextResearchTask(active,dev?.deserializeAttachment());
+      if (needsTick) times.push(Date.now() + 1000);
       return times.length
         ? Math.max(Date.now() + 1000, Math.min(...times))
         : undefined;
