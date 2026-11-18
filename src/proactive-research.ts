@@ -16,6 +16,7 @@ import {
   resumeTask,
   settledForControl,
 } from "./task-control.ts";
+import {recordDialogueTurn} from "../packages/research/context-window.ts";
 import { newWorkflow } from "../packages/research/cloud-workflow.ts";
 import {
   prepareWorkbenchAnswer,
@@ -525,13 +526,7 @@ export class ProactiveResearch {
             .state()
             .conversations?.find((c) => c.id === t.conversationId);
           if (conversation)
-            conversation.history = conversation.history
-              .filter((h) => h.turn_id !== t.id)
-              .concat({
-                turn_id: t.id,
-                user_text: t.input,
-                final_answer: t.answer,
-              });
+            recordDialogueTurn(conversation,{turn_id:t.id, user_text:t.input, final_answer:t.answer});
           return;
         }
         a.stage = "imports";
@@ -720,9 +715,7 @@ export class ProactiveResearch {
       .state()
       .conversations?.find((c) => c.id === t.conversationId);
     if (conversation)
-      conversation.history = conversation.history
-        .filter((h) => h.turn_id !== t.id)
-        .concat({ turn_id: t.id, user_text: t.input, final_answer: content });
+      recordDialogueTurn(conversation,{turn_id:t.id, user_text:t.input, final_answer:content});
 
     t.error = undefined;
     if (artifact && updates.some((u) => u.important)) {

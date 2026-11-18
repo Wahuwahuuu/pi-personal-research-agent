@@ -2,7 +2,7 @@ import {citationLabels,expandVisibleCitations,type VisibleCitations} from "./vis
 import {citationIds} from "./internal/agent/p2-r2.ts";
 import type {ClaimAttribution} from "./internal/agent/citation-attribution.ts";
 import {projectToolOutcomes,type ToolOutcomeOperation} from "./tool-outcomes.ts";
-import {projectRecentDialogue,type ContextWindow} from "./context-window.ts";
+import {projectRecentDialogue,readResearchDialogue,recordDialogueTurn,type ContextWindow,type ResearchDialogue} from "./context-window.ts";
 import {MEMORY_SYNTHESIS_INSTRUCTION,validateMemoryDigest,type MemoryDigest,type ReadingWriteCounts} from "./memory.ts";
 import {stageObject} from "./internal/agent/p2-stages.ts";
 import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "./translation.ts";
@@ -50,7 +50,8 @@ export function workflowInstruction(w:ResearchWorkflow):string{
  return automaticRouting(w)+(w.cloudOnly&&!(w.automatic&&w.phase==="prepare")?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals. For greetings and capabilities, answer briefly without citation markers or made-up source examples.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
 }
 export const newWorkflow=():ResearchWorkflow=>({phase:"prepare",warnings:[]});
-const history=(c:WorkflowContext)=>c.conversation.history.filter(h=>!c.invalidatedMemoryTurns?.includes(h.turn_id));
+export const workflowDialogue = (c: WorkflowContext): ResearchDialogue =>
+  readResearchDialogue(c.conversation, c.invalidatedMemoryTurns);
 const memory=(c:WorkflowContext)=>{
  const d=new DomainMemory(c.catalog.indexVersion,c.conversation.domain),invalid=new Set(c.invalidatedMemoryTurns??[]);
  d.state.user_constraints=d.state.user_constraints.filter(e=>!invalid.has(e.source_turn));
@@ -141,23 +142,24 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const d=memory(c);
   d.revalidate(c.catalog.indexVersion,new Map(c.catalog.evidence.map(e=>[e.chunk_id,e])),new Map(c.evidence.map(e=>[e.chunk_id,e])));
   c.conversation.domain=d.state;
-  const summary=JSON.parse(d.summary(history(c),true));
+  const dialogue=workflowDialogue(c);
+  const summary=JSON.parse(d.summary(dialogue.recent,true));
   const domain=summary.domain_memory;
   domain.conclusion_candidates=[]; // Prior claims are never reintroduced as source evidence.
   domain.reading_notes=(domain.reading_notes??[]).slice(-2).map((n:any)=>({...n,answer_excerpt:Array.from(n.answer_excerpt??"").slice(0,400).join(""),excerpt_truncated:true}));
   domain.user_constraints=boundedItems([...domain.user_constraints.slice(-12)].reverse(),2500).reverse();
   domain.unresolved_questions=boundedItems([...domain.unresolved_questions.slice(-6)].reverse(),1500).reverse();
   domain.pending_inferences=[];
-  const validHistory=history(c),answersIncluded=!d.state.reading_notes;
-  const recent=projectRecentDialogue(validHistory,answersIncluded),memories=boundedItems(c.memories.slice(0,20).map(({kind,content,edited,updated_at})=>({kind,content,user_confirmed:edited===true,updated_at})),4000);
+  const answersIncluded=!d.state.reading_notes;
+  const recent=projectRecentDialogue(dialogue.recent,answersIncluded),memories=boundedItems(c.memories.slice(0,20).map(({kind,content,edited,updated_at})=>({kind,content,user_confirmed:edited===true,updated_at})),4000);
   summary.conversation_only=recent.items;
-  w.contextWindow={version:1,stage:w.phase,stored_turns:c.conversation.history.length,
-    visible_recent_turns:recent.items.map(h=>h.turn_id),omitted_valid_turns:validHistory.length-recent.items.length,
-    invalidated_turns_excluded:c.conversation.history.length-validHistory.length,truncated_recent_turns:recent.truncated,
+  w.contextWindow={version:1,stage:w.phase,stored_turns:dialogue.stored,
+    visible_recent_turns:recent.items.map(h=>h.turn_id),omitted_valid_turns:dialogue.stored-dialogue.excluded-recent.items.length,
+    invalidated_turns_excluded:dialogue.excluded,truncated_recent_turns:recent.truncated,
     history_bytes:recent.bytes,constraints:domain.user_constraints.length,unresolved_questions:domain.unresolved_questions.length,
     reading_notes:domain.reading_notes?.length??0,memories:memories.length,answers_included:answersIncluded};
   summary.context_rule="Only conversation_only is included as recent discussion. Some fields are explicitly truncated. Other archived turns are not visible here; ask for missing context rather than claiming to remember it.";
-  const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{...w.contextWindow,archived_turns:c.conversation.history.length},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:memories,memory_status:c.memoryStatus??"ready",memory_rule:"These are the currently recalled personal records, separate from this conversation history. Empty conversation history does not mean memory is empty. User-confirmed preferences and project constraints describe prior user decisions; apply current corrections first. For questions about those decisions, use the actual memory content and say it comes from saved personal context, without [cite:] markers. Reading notes and conclusions remain fallible and never replace paper evidence. If neither visible dialogue nor memory supports a claimed past agreement, say it cannot be confirmed from available records; never invent one or assert it never existed. A question that presupposes a preference does not establish that preference. Do not print internal field names, counters or diagnostic data. Do not claim persistence before the host confirms it.",remaining_model_requests:6-c.calls};
+  const shared={projection:"pra-context-v1",long_goal:c.goal,project:c.project,research_direction:c.researchDirection,context_manifest:{...w.contextWindow,archived_turns:dialogue.stored},automatic:!!w.automatic,cloud_only:!!w.cloudOnly,request:c.input,conversation:summary,memory:memories,memory_status:c.memoryStatus??"ready",memory_rule:"These are the currently recalled personal records, separate from this conversation history. Empty conversation history does not mean memory is empty. User-confirmed preferences and project constraints describe prior user decisions; apply current corrections first. For questions about those decisions, use the actual memory content and say it comes from saved personal context, without [cite:] markers. Reading notes and conclusions remain fallible and never replace paper evidence. If neither visible dialogue nor memory supports a claimed past agreement, say it cannot be confirmed from available records; never invent one or assert it never existed. A question that presupposes a preference does not establish that preference. Do not print internal field names, counters or diagnostic data. Do not claim persistence before the host confirms it.",remaining_model_requests:6-c.calls};
   const available=readingAvailability(w,c),availableByPaper=new Map(available.map(a=>[a.paper_id,a])),visibleAvailability=boundedItems(available,2500);
   if(w.phase==="prepare")return JSON.stringify({stage:"prepare",instruction:automaticRouting(w)+QUESTION_PREPARATION_INSTRUCTION+" For a comparison, always include comparison_dimensions naming only the dimensions explicitly requested by the user.",...shared,catalog:boundedItems(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>({...availableByPaper.get(p.paper_id),paper_id:p.paper_id,title:p.title})),18000),reading_rule:READING_AVAILABILITY_RULE});
   if(w.phase==="completion")return JSON.stringify({stage:"completion",instruction:COMPLETION_CHECK_INSTRUCTION,...shared,candidate:w.candidate,...projectToolOutcomes(c.operations),visible_source_ids:w.visibleSourceIds??[]});
@@ -258,7 +260,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   }
   if(w.phase==="prepare"){
     const d=memory(c),allowed=new Set(c.catalog.papers.filter(p=>!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id)).map(p=>p.paper_id));
-    const preparationContext={original:c.input,allowed,publicPapers:c.catalog.papers,frameId:c.id,history:history(c).slice(-8),activeConstraints:d.activeConstraints(),priorObjects:{targets:d.state.comparison_order.length?d.state.comparison_order:d.state.current_paper?[d.state.current_paper.paper_id]:[],comparison_dimensions:d.state.comparison_dimensions},personalMemory:true,preferResolvedPaper:true,groundDiscovery:w.automatic===true};
+    const preparationContext={original:c.input,allowed,publicPapers:c.catalog.papers,frameId:c.id,history:workflowDialogue(c).recent,activeConstraints:d.activeConstraints(),priorObjects:{targets:d.state.comparison_order.length?d.state.comparison_order:d.state.current_paper?[d.state.current_paper.paper_id]:[],comparison_dimensions:d.state.comparison_dimensions},personalMemory:true,preferResolvedPaper:true,groundDiscovery:w.automatic===true};
     try{
       w.prepared=parseQuestionPreparation(output,preparationContext);
       if(w.cloudOnly&&!w.automatic){w.prepared.frame.intent="session_control";w.prepared.frame.ordered_targets=[];w.prepared.frame.queries=[];w.prepared.frame.comparison_dimensions=[];}
@@ -331,7 +333,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   const d=memory(c);
   d.rememberAnswer(c.id,c.input,answer.value.answer,targets(w),[...answer.value.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]),answer.value.status,decision.state);
   c.conversation.domain=d.state;
-  c.conversation.history=c.conversation.history.filter(h=>h.turn_id!==c.id).concat({turn_id:c.id,user_text:c.input,final_answer:answer.value.answer});
+  recordDialogueTurn(c.conversation,{turn_id:c.id,user_text:c.input,final_answer:answer.value.answer});
   return {answer:answer.value.answer,status:decision.state==="complete"?"completed":"waiting_user"};
 }
 

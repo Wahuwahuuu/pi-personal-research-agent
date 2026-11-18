@@ -1,3 +1,4 @@
+import {bindDialogueStorage, recentResearchDialogue, RESEARCH_HISTORY_TURNS, type ResearchDialogue} from "../packages/research/context-window.ts";
 import {memoryView} from "./memory-view.ts";
 import {bindTaskQueries,closedTask,matchesTaskPage,taskPageOrder,type TaskPageQuery} from "./task-queries.ts";
 import {entityHeader,isLazyCollection,lazyEntity,type LazyEntity,type LazyCollection} from "./lazy-entity.ts";
@@ -13,7 +14,14 @@ export interface StateStorage { sql: SqlPort; transactionSync<T>(fn: () => T): T
 const collections = ["tasks", "operations", "memories", "notices", "plans", "papers", "conversations", "messages", "memory_entries"] as const;
 export type Collection = (typeof collections)[number];
 type Conversation = NonNullable<State["conversations"]>[number];
-interface HistoryPartition {conversation:Conversation;loaded:boolean;value:Conversation["history"];base:number}
+interface HistoryPartition {
+  conversation: Conversation;
+  loaded: boolean;
+  value: Conversation["history"];
+  base?: number;
+  pending?: Map<string, Conversation["history"][number]>;
+  dialogue?: {excludedKeys: string; window: ResearchDialogue};
+}
 interface Row { id: string; parent: string; position: number; value: string }
 const table = (name: Collection) => "pra_data_" + name;
 const serial = (v: unknown) => JSON.stringify(v);
@@ -141,7 +149,15 @@ export class StateRepository {
       const messages:any[]=[];
       for(const c of state.conversations){
         const partition=this.histories.get(c.id);
-        if(partition?.conversation===c&&!partition.loaded){untouched.add(c.id);continue;}
+        if (partition?.conversation === c && !partition.loaded) {
+          untouched.add(c.id);
+          if (partition.pending?.size) {
+            let position = this.historyCounts.get(c.id) ?? 0;
+            for (const message of partition.pending.values()) messages.push({conversationId:c.id, position:position++, message});
+            counts.set(c.id, position);
+          }
+          continue;
+        }
         // Replacing an unloaded conversation must still remove its old turns.
         if(partition&&!partition.loaded)this.loadHistory(partition);
         counts.set(c.id,c.history.length);
@@ -167,17 +183,73 @@ export class StateRepository {
       partition.base=rows.length?rows[0].position-values[0].position:0;
       partition.value=values.sort((a,b)=>a.position-b.position).map(v=>v.message);
       for(const row of rows){const key="messages:"+row.id;this.cached.set(key,serial(row));this.messageParents.set(key,row.parent);}
+      if (partition.pending) partition.value.push(...partition.pending.values());
+      delete partition.pending;
+      delete partition.dialogue;
       partition.loaded=true;
     }
     return partition.value;
   }
   historyCount(conversation:Conversation){
     const partition=this.histories.get(conversation.id);
-    return partition?.conversation===conversation&&!partition.loaded?this.historyCounts.get(conversation.id)??0:conversation.history.length;
+    return partition?.conversation === conversation && !partition.loaded
+      ? (this.historyCounts.get(conversation.id) ?? 0) + (partition.pending?.size ?? 0)
+      : conversation.history.length;
+  }
+  researchDialogue(conversation: Conversation, invalidated: readonly string[] = []): ResearchDialogue {
+    const partition = this.histories.get(conversation.id);
+    if (!partition || partition.conversation !== conversation || partition.loaded)
+      return recentResearchDialogue(conversation.history, invalidated);
+
+    const ids = Array.from(new Set(invalidated), turn => JSON.stringify([conversation.id, turn]));
+    const excludedKeys = JSON.stringify(ids);
+    if (partition.dialogue?.excludedKeys !== excludedKeys) {
+      const excluded = ids.length ? this.storage.sql.exec<{n:number}>(
+        "SELECT COUNT(*) AS n FROM json_each(?) revoked CROSS JOIN pra_data_messages m WHERE m.id=revoked.value",
+        excludedKeys,
+      ).toArray()[0].n : 0;
+      const filter = excluded ? " AND id NOT IN (SELECT value FROM json_each(?))" : "";
+      const rows = this.storage.sql.exec<{value:string}>(
+        "SELECT value FROM pra_data_messages WHERE parent=?" + filter + " ORDER BY position DESC,id DESC LIMIT ?",
+        conversation.id, ...(excluded ? [excludedKeys] : []), RESEARCH_HISTORY_TURNS,
+      ).toArray();
+      const recent = rows.reverse().map(row => parse<{message:Conversation["history"][number]}>(row.value).message);
+      partition.dialogue = {excludedKeys, window:{stored:this.historyCounts.get(conversation.id) ?? 0, excluded, recent}};
+    }
+    const saved = partition.dialogue.window;
+    if (!partition.pending?.size) return saved;
+    const pending = recentResearchDialogue([...partition.pending.values()], invalidated);
+    return {stored:saved.stored + pending.stored, excluded:saved.excluded + pending.excluded,
+      recent:[...saved.recent, ...pending.recent].slice(-RESEARCH_HISTORY_TURNS)};
+  }
+  /** Stage new turns for the same transaction as task state and change events. */
+  private stageDialogueTurn(partition: HistoryPartition, turn: Conversation["history"][number]) {
+    const id = partition.conversation.id;
+    if (partition.loaded || this.histories.get(id) !== partition) return false;
+    const pending = partition.pending ??= new Map();
+    if (!pending.delete(turn.turn_id)) {
+      const key = JSON.stringify([id, turn.turn_id]);
+      const old = this.storage.sql.exec<{value:string}>("SELECT value FROM pra_data_messages WHERE id=?", key).toArray()[0];
+      if (old) {
+        const saved = parse<{position:number; message:Conversation["history"][number]}>(old.value);
+        // A changed or reordered historical turn keeps the original full-array replacement semantics.
+        return !pending.size && saved.position === (this.historyCounts.get(id) ?? 0) - 1 && serial(saved.message) === serial(turn);
+      }
+    }
+    if (partition.base === undefined) {
+      const first = this.storage.sql.exec<{base:number}>(
+        "SELECT position - json_extract(value,'$.position') AS base FROM pra_data_messages WHERE parent=? ORDER BY position,id LIMIT 1", id,
+      ).toArray()[0];
+      partition.base = first?.base ?? 0;
+    }
+    pending.set(turn.turn_id, turn);
+    return true;
   }
   private attachHistory(conversation:Conversation){
-    const partition:HistoryPartition={conversation,loaded:false,value:[],base:0};
+    const partition:HistoryPartition={conversation,loaded:false,value:[]};
     this.histories.set(conversation.id,partition);
+    bindDialogueStorage(conversation,{read: invalidated => this.researchDialogue(conversation, invalidated),
+      stage: turn => this.stageDialogueTurn(partition, turn)});
     Object.defineProperty(conversation,"history",{enumerable:true,configurable:true,
       get:()=>this.loadHistory(partition),
       set:(value:Conversation["history"])=>{if(!Array.isArray(value))throw new Problem("INVALID_HISTORY");this.loadHistory(partition);partition.value=value;}
@@ -339,7 +411,14 @@ export class StateRepository {
     for (const [name, rows] of split.rows) if (name !== "messages")
       this.positions.set(name, new Map(rows.map(row => [row.id, row.position])));
     for(const id of removed){this.histories.delete(id);this.historyCounts.delete(id);}
-    for(const [id,count] of split.counts)this.historyCounts.set(id,count);
+    for (const [id,count] of split.counts) {
+      this.historyCounts.set(id,count);
+      const partition = this.histories.get(id);
+      if (partition?.pending?.size) {
+        delete partition.pending;
+        delete partition.dialogue;
+      }
+    }
     for(const row of split.rows.get("messages")??[])this.messageParents.set("messages:"+row.id,row.parent);
     for(const key of this.messageParents.keys())if(!next.has(key))this.messageParents.delete(key);
     this.knownConversations=conversationIds;

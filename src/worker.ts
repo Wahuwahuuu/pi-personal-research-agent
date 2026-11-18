@@ -39,7 +39,7 @@ import {awaitsResearchCatalog, holdForMissingPapers, revisitPaperWait} from "./r
 import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
 import {assertModelSubmission} from "./provider-context.ts";
 import {managedRuntimeSettings} from "./runtime-settings.ts";
-import {newWorkflow,workflowPrompt,workflowInstruction,workflowTools,advanceWorkflow,reserveComparisonCheck,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {newWorkflow,workflowPrompt,workflowDialogue,workflowInstruction,workflowTools,advanceWorkflow,reserveComparisonCheck,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
@@ -1704,7 +1704,7 @@ export class PersonalAgent extends DurableObject<Env> {
         const memoryRecall=await this.memoryService(context.conversation.projectId).recall(t.input,context.conversation.scope),recalled=memoryRecall.items;context.memories=recalled;context.memoryStatus=memoryRecall.status;
         const domain=context.conversation.domain;
         recordMemoryInputs(this.state.cloudMemory!,t.id,recalled.map(m=>m.id),[
-          ...context.conversation.history.slice(-8).map(h=>h.turn_id),
+          ...workflowDialogue(context).recent.map(h=>h.turn_id),
           ...(domain?[...domain.user_constraints,...domain.conclusions,...(domain.reading_notes??[]),...domain.unresolved_questions,...domain.pending_inferences].map(e=>e.source_turn):[])
         ].filter(id=>!this.state.cloudMemory!.invalidatedTurns?.includes(id)));
         context.project=this.workspace.getProject(context.conversation.projectId);context.researchDirection=this.workspace.settings().researchDirection;

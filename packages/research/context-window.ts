@@ -1,4 +1,31 @@
 import type { DialogueRecord } from "./internal/agent/domain-memory.ts";
+export const RESEARCH_HISTORY_TURNS = 8;
+export interface ResearchDialogue {
+  stored: number;
+  excluded: number;
+  recent: readonly DialogueRecord[];
+}
+interface DialogueOwner { history: DialogueRecord[] }
+interface DialogueStorage {
+  read(invalidated: readonly string[]): ResearchDialogue;
+  stage(turn: DialogueRecord): boolean;
+}
+const archives = new WeakMap<DialogueOwner, DialogueStorage>();
+export function bindDialogueStorage(owner: DialogueOwner, storage: DialogueStorage) {
+  archives.set(owner, storage);
+}
+export function readResearchDialogue(owner: DialogueOwner, invalidated: readonly string[] = []) {
+  return archives.get(owner)?.read(invalidated) ?? recentResearchDialogue(owner.history, invalidated);
+}
+export function recordDialogueTurn(owner: DialogueOwner, turn: DialogueRecord) {
+  if (!archives.get(owner)?.stage(turn))
+    owner.history = owner.history.filter(h => h.turn_id !== turn.turn_id).concat(turn);
+}
+export function recentResearchDialogue(records: readonly DialogueRecord[], invalidated: readonly string[] = []): ResearchDialogue {
+  if (!invalidated.length) return {stored: records.length, excluded: 0, recent: records.slice(-RESEARCH_HISTORY_TURNS)};
+  const invalid = new Set(invalidated), valid = records.filter(turn => !invalid.has(turn.turn_id));
+  return {stored: records.length, excluded: records.length - valid.length, recent: valid.slice(-RESEARCH_HISTORY_TURNS)};
+}
 export interface ProjectedTurn {
   turn_id: string; user_text: string; final_answer?: string; truncated?: Array<"user_text" | "final_answer">;
 }

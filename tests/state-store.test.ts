@@ -1,3 +1,4 @@
+import {readResearchDialogue, recordDialogueTurn} from "../packages/research/context-window.ts";
 import {activeTasks,taskByRequest} from "../src/task-queries.ts";
 import {ProactiveResearch} from "../src/proactive-research.ts";
 import {orderedTasks} from "../src/task-control.ts";
@@ -87,6 +88,73 @@ function conversations(count:number,turns:number){return Array.from({length:coun
  history:Array.from({length:turns},(_,j)=>({turn_id:"t"+j,user_text:"question "+j,final_answer:"answer "+j}))
 }));}
 const bodyReads=(f:ReturnType<typeof fixture>)=>f.queries.filter(q=>/^SELECT \* FROM pra_data_messages/.test(q.sql)).reduce((sum,q)=>sum+q.rows,0);
+
+test("staged dialogue and its count persist atomically across retried writes and legacy row positions", () => {
+  const f = fixture(), seed = new StateRepository(f.storage), state = seed.load();
+  state.conversations = conversations(2, 40);
+  seed.save(state);
+  f.db.exec("UPDATE pra_data_messages SET position=position+1000 WHERE parent='c0'");
+  const repo = new StateRepository(f.storage), current = repo.load(), c = current.conversations![0];
+  const added = (turn_id:string, final_answer=turn_id) => ({turn_id,user_text:"question",final_answer});
+  f.queries.length = 0;
+  recordDialogueTurn(c, added("a")); recordDialogueTurn(c, added("b")); recordDialogueTurn(c, added("a","revised before save"));
+  assert.equal(repo.historyCount(c), 42);
+  assert.deepEqual(readResearchDialogue(c,["b","t39"]).recent.map(t=>t.turn_id), ["t32","t33","t34","t35","t36","t37","t38","a"]);
+  assert.equal(readResearchDialogue(c,["b","t39"]).excluded, 2);
+  f.setFail(true);assert.throws(()=>repo.save(current),/INJECTED_DISK_FAILURE/);
+  assert.equal((f.db.prepare("SELECT turns FROM pra_history_counts WHERE conversation_id='c0'").get() as any).turns, 40);
+  assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM pra_data_messages WHERE parent='c0'").get() as any).n, 40);
+  f.setFail(false);assert.equal(repo.save(current).writes, 2);
+  assert.equal(repo.historyCount(c), 42);
+  assert.deepEqual(f.db.prepare("SELECT position FROM pra_data_messages WHERE parent='c0' ORDER BY position DESC LIMIT 2").all().map(r=>r.position),[1041,1040]);
+  recordDialogueTurn(c, added("a","revised before save"));
+  assert.equal(repo.save(current).writes, 0);
+  assert.equal(bodyReads(f), 0);
+  recordDialogueTurn(c, added("b","updated old"));
+  repo.save(current);
+  const reopened = new StateRepository(f.storage).load().conversations![0];
+  assert.equal(reopened.history.length, 42);
+  assert.deepEqual(reopened.history.slice(-2).map(t=>[t.turn_id,t.final_answer]),[["a","revised before save"],["b","updated old"]]);
+  f.db.close();
+});
+
+test("full history and deletion see pending append operations in their original conversation", () => {
+  const f = fixture(), seed = new StateRepository(f.storage), state = seed.load();
+  state.conversations = conversations(2, 3); seed.save(state);
+  const repo = new StateRepository(f.storage), current = repo.load(), [first,second] = current.conversations!;
+  for (const c of [first,second]) recordDialogueTurn(c,{turn_id:"new",user_text:c.id,final_answer:"visible"});
+  assert.equal(first.history.at(-1)?.user_text, first.id);
+  current.conversations = [second]; repo.save(current);
+  assert.equal((f.db.prepare("SELECT COUNT(*) AS n FROM pra_data_messages WHERE parent='c0'").get() as any).n,0);
+  const restored = new StateRepository(f.storage).load();
+  assert.deepEqual(restored.conversations!.map(c=>[c.id,c.history.at(-1)?.user_text]), [["c1","c1"]]);
+  f.db.close();
+});
+
+test("cold research reads recent valid turns and exact archive counts without materializing all messages", () => {
+  const f = fixture(), store = new StateRepository(f.storage), state = store.load();
+  state.conversations = conversations(2, 300);
+  store.save(state);
+  f.db.exec("UPDATE pra_data_messages SET position=position+1000 WHERE parent='c0'");
+  const cold = new StateRepository(f.storage), restored = cold.load(), conversation = restored.conversations![0];
+  const revoked = ["t298", "t297", "t100", "t2", "t100", "absent"];
+  const expected = state.conversations[0].history.filter(turn => !revoked.includes(turn.turn_id)).slice(-8);
+  f.queries.length = 0;
+  const window = cold.researchDialogue(conversation, revoked);
+  assert.deepEqual(window, {stored:300, excluded:4, recent:expected});
+  assert.equal(bodyReads(f), 0);
+  assert.equal(f.queries.filter(q => q.sql.startsWith("SELECT value FROM pra_data_messages")).reduce((n,q)=>n+q.rows,0), 8);
+  const queries = f.queries.length;
+  assert.deepEqual(cold.researchDialogue(conversation, [...revoked]), window);
+  assert.equal(f.queries.length, queries);
+  assert.equal(cold.save(restored).writes, 0);
+  assert.deepEqual(cold.researchDialogue(conversation, []).recent, state.conversations[0].history.slice(-8));
+  assert.equal(cold.researchDialogue(restored.conversations![1], ["other"]).excluded, 0);
+  conversation.history.push({turn_id:"fresh", user_text:"新问题", final_answer:"新结果"});
+  assert.equal(cold.researchDialogue(conversation, revoked).recent.at(-1)?.turn_id, "fresh");
+  assert.equal(cold.researchDialogue(conversation, revoked).stored, 301);
+  f.db.close();
+});
 
 test("cold startup, normal saves and conversation lists do not hydrate 10000 archived turns",()=>{
  const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(100,100);store.save(s);

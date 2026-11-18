@@ -1,4 +1,5 @@
 import {taskByRequest} from "./task-queries.ts";
+import {recordDialogueTurn} from "../packages/research/context-window.ts";
 import { cancel, Problem, submit, text, type State, type Task } from "./domain.ts";
 import { pauseTask, resumeTask, settledForControl } from "./task-control.ts";
 export type ControlAction = "pause" | "resume" | "cancel" | "status";
@@ -144,7 +145,7 @@ export function recordConversationControl(s: State, conversationId: string, inpu
     previous.control.outcome = "resolved"; previous.control.resolvedBy = receipt.id;
     previous.status = "completed"; previous.updated = now;
   }
-  c.history.push({ turn_id: receipt.id, user_text: receipt.input, final_answer: receipt.answer! });
+  recordDialogueTurn(c,{ turn_id: receipt.id, user_text: receipt.input, final_answer: receipt.answer! });
   c.updated = now;
   return receipt;
 }
