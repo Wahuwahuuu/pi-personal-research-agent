@@ -9,7 +9,7 @@ import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
 import {parseQuestionPreparation,planPreparedRetrieval,QUESTION_PREPARATION_INSTRUCTION,type PreparedQuestion} from "./internal/agent/question-preparation.ts";
 import {TurnExecutionTracker,executionFromOutput,parseTurnExecution,COMPLETION_CHECK_INSTRUCTION,TURN_EXECUTION_INSTRUCTION,type TurnExecution} from "./internal/agent/turn-execution.ts";
-import {hasWorkbenchAnswer,prepareWorkbenchAnswer,normalizeVisibleCitationGroups,WORKBENCH_ANSWER_INSTRUCTION} from "./internal/agent/workbench-answer.ts";
+import {hasWorkbenchProse,prepareWorkbenchAnswer,normalizeVisibleCitationGroups,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer,type WorkbenchContext} from "./internal/agent/workbench-answer.ts";
 import {MultiPaperComparison,COMPARISON_CHECK_INSTRUCTION,type ComparisonReport} from "./internal/agent/multi-paper.ts";
 import {TaskProgressTracker,GOAL_PROGRESS_INSTRUCTION,type TaskProgress} from "./internal/agent/task-progress.ts";
 import type {Chunk,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
@@ -267,15 +267,33 @@ export function interruptWorkflow(w:ResearchWorkflow,c:WorkflowContext):{status:
     const prior=prepareWorkbenchAnswer(w.candidate,{evidence:new Map(visible.map(s=>[s.chunk_id,s])),
       allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,
       expectedKind:needsSources?"paper_fact":w.prepared?.frame.intent==="session_control"?"session_control":"catalog",execution:decision});
-    if(prior&&!prior.citationIssues.length&&!prior.adaptations.includes("structured_answer_body_preserved")&&
-       !/^\s*(?:```json\s*)?(?:\{\s*"|\[\s*\{\s*")/iu.test(prior.value.answer)&&
+    if(prior&&!prior.citationIssues.length&&hasWorkbenchProse(prior)&&
        (!needsSources||prior.visibleCitationCount>0))answer=prior.value.answer;
   }
   w.execution=decision;
   progress(w,c,decision,answer??"");
   return answer?{status:"waiting_user",answer}:{status:"waiting_user"};
 }
-export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
+interface ResearchOutcome {
+  answer?: string;
+  status?: "completed" | "waiting_user";
+  userWait?: "RESEARCH_CLARIFICATION" | "RESEARCH_REFUSAL";
+}
+function finishReadableTurn(w:ResearchWorkflow,c:WorkflowContext,answer:WorkbenchAnswer,decision:TurnExecution):ResearchOutcome {
+  w.phase="finished";
+  w.execution=decision;
+  const {answer:text,status}=answer.value;
+  progress(w,c,decision,text);
+  const reading=status!=="clarification"&&status!=="refusal";
+  // Keep questions in the dialogue without turning them into paper reading records.
+  const d=memory(c);
+  const sources=reading?[...text.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]):[];
+  d.rememberAnswer(c.id,c.input,text,reading?targets(w):[],sources,status,decision.state);
+  c.conversation.domain=d.state;
+  recordDialogueTurn(c.conversation,{turn_id:c.id,user_text:c.input,final_answer:text});
+  return {answer:text,status:decision.state==="complete"?"completed":"waiting_user"};
+}
+export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):ResearchOutcome{
   if (w.phase === "memory") {
     const memory = w.memory!;
     try {
@@ -328,31 +346,52 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     w.comparison=m.report();w.comparisonRevision=c.evidence.map(e=>e.chunk_id).sort().join(",");
     w.phase="agent";return {};
   }
+  const checkingCompletion=w.phase==="completion";
   let declared:TurnExecution|undefined;
-  if(w.phase==="completion"){
+  if(checkingCompletion){
     try{declared=parseTurnExecution(stageObject(output),"completion_check");}catch{}
     if(!declared){declared={state:"partial",remaining_needs:["完成状态未能确认"],origin:"host"};w.warnings.push("COMPLETION_CHECK_INCOMPLETE");}
     output=w.candidate??"";
   }else{
     output=expandVisibleCitations(output,w);
     declared=executionFromOutput(output);
-    const readable=hasWorkbenchAnswer(output);
-    if(readable){
+  }
+  if(w.cloudOnly&&declared)declared.needs_sources=false;
+  const visible=c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id));
+  const answerContext:WorkbenchContext={evidence:new Map(visible.map(e=>[e.chunk_id,e])),allowAnswer:true,
+    requiredPapers:targets(w),papers:c.catalog.papers,expectedKind:nonFactual(w)?w.prepared?.frame.intent==="session_control"?"session_control":"catalog":"paper_fact"};
+  let answer=prepareWorkbenchAnswer(output,{...answerContext,execution:declared});
+  const disposition=answer?.value.status;
+  const userReply=disposition==="clarification"||disposition==="refusal";
+  if(answer&&userReply){
+    if(!hasWorkbenchProse(answer))return repairAnswerFormat(w,c);
+    if(!answer.citationIssues.length){
+      const asking=disposition==="clarification";
+      const decision:TurnExecution={state:asking?"clarification":"partial",needs_sources:false,
+        remaining_needs:declared?.remaining_needs??[],origin:declared?.origin??"model"};
+      w.answerRepairPending=undefined;
+      w.citationRepair=undefined;
+      return {...finishReadableTurn(w,c,answer,decision),userWait:asking?"RESEARCH_CLARIFICATION":"RESEARCH_REFUSAL"};
+    }
+    declared={state:"working",needs_sources:true,remaining_needs:["核对回复中引用的原文"],origin:"host"};
+  }
+  if(!checkingCompletion){
+    if(answer&&!userReply){
       w.candidate=output;
       w.candidateWindow=w.visibleSourceIds
         ? {taskId:c.id,indexVersion:c.catalog.indexVersion,sourceIds:[...w.visibleSourceIds]}
         : undefined;
     }
-    if(declared?.state!=="working"&&!readable)return repairAnswerFormat(w,c);
+    if(declared?.state!=="working"&&!answer)return repairAnswerFormat(w,c);
     w.answerRepairPending=undefined;
     const m=comparison(w,c),revision=c.evidence.map(e=>e.chunk_id).sort().join(",");
-    if(m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}
+    if(!userReply&&m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}
     if(!declared&&c.calls<6){w.phase="completion";return {};}
-    if(!declared)declared={state:"partial",remaining_needs:["模型额度耗尽，完成状态未确认"],origin:"host"};
   }
-  if(w.cloudOnly)declared.needs_sources=false;
-  const visible=c.evidence.filter(e=>!w.visibleSourceIds||w.visibleSourceIds.includes(e.chunk_id));
-  const answer=prepareWorkbenchAnswer(output,{evidence:new Map(visible.map(e=>[e.chunk_id,e])),allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,expectedKind:nonFactual(w)?w.prepared?.frame.intent==="session_control"?"session_control":"catalog":"paper_fact",execution:declared});
+  if(!declared){
+    declared={state:"partial",remaining_needs:["模型额度耗尽，完成状态未确认"],origin:"host",...(w.cloudOnly?{needs_sources:false}:{})};
+    if(answer)answer=prepareWorkbenchAnswer(output,{...answerContext,execution:declared});
+  }
   if(!answer){
     if(declared.state==="working"){
       const tracker=new TurnExecutionTracker(w.tracker);
@@ -372,12 +411,7 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
   if(decision.state==="complete"&&m&&(m.baselineMissing.length||!w.comparison||!m.complete)){decision.state=c.calls<6?"working":"partial";decision.remaining_needs=["比较范围仍有未确认的论文或维度"];}
   w.tracker=tracker.snapshot();w.execution=decision;
   if(decision.state==="working"){w.phase="agent";w.citationRepair=answer.citationIssues.length?{answer:answer.original,claims:answer.attribution.filter(a=>a.unmatched_values.length).slice(0,12)}:undefined;w.warnings=[...new Set([...w.warnings,...answer.citationIssues])];if(answer.citationIssues.length)w.warnings.push("Attach each numerical claim or original block quote to its own valid citation. A cited source must contain the reported value; revise unsupported claims or state the gap.");return {};}
-  w.phase="finished";progress(w,c,decision,answer.value.answer);
-  const d=memory(c);
-  d.rememberAnswer(c.id,c.input,answer.value.answer,targets(w),[...answer.value.answer.matchAll(/\[cite:([^\]\n]+)\]/g)].map(m=>m[1]),answer.value.status,decision.state);
-  c.conversation.domain=d.state;
-  recordDialogueTurn(c.conversation,{turn_id:c.id,user_text:c.input,final_answer:answer.value.answer});
-  return {answer:answer.value.answer,status:decision.state==="complete"?"completed":"waiting_user"};
+  return finishReadableTurn(w,c,answer,decision);
 }
 
 

@@ -330,7 +330,7 @@ export function Chat({
                     </p>
                   )}
                   {t.error && (
-                    <p className="task-error">
+                    <p className={t.error==="RESEARCH_CLARIFICATION"||t.error==="RESEARCH_REFUSAL" ? "help" : "task-error"}>
                       {errorText(new Error(t.error))}
                     </p>
                   )}

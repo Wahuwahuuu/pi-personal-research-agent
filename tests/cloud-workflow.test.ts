@@ -43,6 +43,43 @@ test("completion guard rejects invented citations and carries no-progress state 
  assert.equal(outcome.status,"waiting_user");assert.equal(restored.execution.stop_reason,"no_execution_progress");
  assert.ok(!outcome.answer?.includes("[cite:made-up]"));
 });
+test("a readable clarification waits for the user before checking completion or comparison",()=>{
+ for(const hasEvidence of [false,true])for(const execution of [undefined,{state:"complete",remaining_needs:[],needs_sources:true},{state:"clarification",remaining_needs:["Choose the comparison dimension"],needs_sources:true}]){
+  const c=setup("Compare the selected papers"),w=newWorkflow();
+  c.catalog={...catalog,papers:[{paper_id:"a",title:"Paper A",abstract:"A"},{paper_id:"b",title:"Paper B",abstract:"B"}]};
+  advanceWorkflow(w,c,JSON.stringify({intent:"compare",targets:["a","b"],rewrite:c.input,queries:[],constraints:[],comparison_dimensions:["method"]}));
+  if(hasEvidence)c.evidence=[{paper_id:"a",chunk_id:"source-a",paragraph_id:"p",section:"Methods",text:"Method A.",start:0,end:9,index_version:catalog.indexVersion,citation:"[cite:source-a]",truncated:false}];
+  c.calls=2;
+  const question="Which comparison dimension should I use?";
+  const out=advanceWorkflow(w,c,JSON.stringify({status:"clarification",answer:question,execution}));
+  assert.deepEqual(out,{status:"waiting_user",userWait:"RESEARCH_CLARIFICATION",answer:question});
+  assert.equal(w.phase,"finished");assert.equal(w.execution?.state,"clarification");assert.equal(w.execution?.needs_sources,false);
+  assert.equal(w.progress?.phase,"clarification");assert.equal(w.comparison,undefined);assert.equal(w.memory,undefined);
+  assert.equal(c.conversation.history.at(-1)?.final_answer,question);
+  const note=c.conversation.domain?.reading_notes?.at(-1);
+  assert.equal(note?.status,"clarification");assert.deepEqual(note?.paper_ids,[]);
+ }
+});
+test("an explicit evidence refusal preserves the reply as an open research task",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));c.calls=2;
+ const message="The available materials do not establish the requested result.";
+ const out=advanceWorkflow(w,c,JSON.stringify({status:"refusal",answer:message,execution:{state:"complete",remaining_needs:[],needs_sources:true}}));
+ assert.deepEqual(out,{status:"waiting_user",userWait:"RESEARCH_REFUSAL",answer:message});
+ assert.equal(w.execution?.state,"partial");assert.equal(w.progress?.phase,"partial");assert.equal(w.memory,undefined);
+ const note=c.conversation.domain?.reading_notes?.at(-1);assert.equal(note?.status,"refusal");assert.deepEqual(note?.paper_ids,[]);
+});
+test("a wait label cannot publish an invalid reference, an unverified metric, or a protocol object",()=>{
+ for(const [status,answer] of [["clarification","Which setting [cite:unknown]?"],["refusal","Accuracy reached 99% [cite:fixture-chunk]."],["clarification",{internal:"system field"}],["refusal",'{"unreadable":["field"]}'],["clarification",'["option","internal field"]'],["clarification","<analysis>private test marker</analysis>"]]){
+  const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));
+  c.evidence=[{paper_id:"fixture-paper",chunk_id:"fixture-chunk",paragraph_id:"p",section:"Method",text:"A method.",start:0,end:9,index_version:catalog.indexVersion,citation:"[cite:fixture-chunk]",truncated:false}];c.calls=2;
+  const out=advanceWorkflow(w,c,JSON.stringify({status,answer,execution:{state:"clarification",remaining_needs:[],needs_sources:false}}));
+  assert.equal(out.status,undefined);assert.equal(w.phase,"agent");assert.equal(c.conversation.history.length,0);
+ }
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());c.calls=2;
+ const out=advanceWorkflow(w,c,JSON.stringify({status:"answer",answer:"The treatment improved results.",execution:{state:"complete",remaining_needs:[],needs_sources:false}}));
+ assert.equal(out.status,undefined);assert.equal(w.execution?.state,"working");assert.equal(w.execution?.needs_sources,true);
+});
+
 test("same conversation carries corrected constraints and original dialogue into a new task",()=>{
  const c=setup("以后请用中文回答"),w=newWorkflow();
  advanceWorkflow(w,c,JSON.stringify({intent:"session_update",targets:[],rewrite:c.input,queries:[],constraints:[{key:"language",value:"Chinese",source_quote:"中文"}]}));

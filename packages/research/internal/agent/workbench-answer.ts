@@ -97,6 +97,17 @@ export function normalizeVisibleCitationGroups(text:string,evidence:{has(id:stri
 /** Use the same complete-body boundary before scheduling a completion check. */
 export function hasWorkbenchAnswer(output:string):boolean{return !!bodyFrom(output,[])?.body.trim();}
 
+/** A user-facing question or saved draft needs prose rather than serialized protocol fields. */
+export function hasWorkbenchProse(answer:WorkbenchAnswer):boolean {
+  if(answer.adaptations.includes('structured_answer_body_preserved')||/<\/?(?:think|thinking|analysis)>/iu.test(answer.original))return false;
+  const body=bodyFrom(answer.original,[])?.body.trim();
+  if(!body)return false;
+  const value=body.replace(/^```(?:json)?\s*/iu,'').replace(/\s*```$/u,'');
+  if(!value.startsWith('{')&&!value.startsWith('['))return true;
+  try{return typeof JSON.parse(value)!=='object';}
+  catch{return !/^(?:\{\s*"|\[\s*\{\s*")/u.test(value);}
+}
+
 export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):WorkbenchAnswer|null{
   const adaptations:string[]=[],notices:string[]=[],citationIssues:string[]=[];
   const parsed=bodyFrom(output,adaptations);if(!parsed||!parsed.body.trim())return null;
@@ -121,7 +132,7 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
     if(/^\[\s*cite\s*:/iu.test(marker)||wide!==undefined){citationIssues.push(id);return '〔引用未定位〕';}
     return marker;
   });
-  const attribution=kind==='paper_fact'&&['answer','partial'].includes(status)?inspectCitationAttribution(body,context.evidence):{answer:body,checks:[],issues:[]};
+  const attribution=kind==='paper_fact'&&(['answer','partial'].includes(status)||citationIds(body).length>0)?inspectCitationAttribution(body,context.evidence):{answer:body,checks:[],issues:[]};
   body=attribution.answer;citationIssues.push(...attribution.issues);
   if(attribution.issues.length){notices.push('部分关键数值尚未在其引用原文中找到对应依据，已在文中标出');adaptations.push('claim_value_source_mismatch_flagged');}
   const ids=citationIds(body),quotes:FinalAnswer['exact_quotes']=[];
@@ -148,7 +159,7 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
     });
     adaptations.push('paper_coverage_derived_from_visible_citations');
     const gaps=coverage.filter(paper=>paper.status==='insufficient');
-    if(gaps.length){if(status==='answer')status='partial';notices.push('以下论文尚未充分覆盖：'+gaps.map(paper=>paper.paper_id).join('、'));}
+    if(gaps.length&&positive){if(status==='answer')status='partial';notices.push('以下论文尚未充分覆盖：'+gaps.map(paper=>paper.paper_id).join('、'));}
   }
   if(execution?.state==='working'||execution?.state==='partial'&&execution.stop_reason){status='partial';notices.push('本轮任务尚未全部完成，已保留当前内容'+(execution.remaining_needs.length?'；待完成：'+execution.remaining_needs.join('；'):''));adaptations.push('execution_incomplete');}
   else if(execution?.state==='partial')status='partial';

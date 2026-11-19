@@ -1632,6 +1632,7 @@ export class PersonalAgent extends DurableObject<Env> {
           : "queued";
       } else if (result.status === "done") {
         try {
+          let userWait: ReturnType<typeof advanceWorkflow>["userWait"];
           if (t.workflow) {
             const outcome = advanceWorkflow(t.workflow,this.workflowContext(t),result.text ?? "");
             if (!outcome.status) {
@@ -1639,7 +1640,8 @@ export class PersonalAgent extends DurableObject<Env> {
               t.status="queued";this.save();continue;
             }
             t.answer=outcome.answer;
-            if(outcome.status==="waiting_user"&&t.goal&&t.workflow.execution?.state!=="clarification"&&t.workflow.execution?.stop_reason!=="no_execution_progress"&&t.workflow.execution?.remaining_needs.length&&(segmentUsage(t).calls>=6||segmentUsage(t).tools>=10||segmentUsage(t).activeMs>=180000)){
+            userWait=outcome.userWait;
+            if(outcome.status==="waiting_user"&&!userWait&&t.goal&&t.workflow.execution?.state!=="clarification"&&t.workflow.execution?.stop_reason!=="no_execution_progress"&&t.workflow.execution?.remaining_needs.length&&(segmentUsage(t).calls>=6||segmentUsage(t).tools>=10||segmentUsage(t).activeMs>=180000)){
               if(nextSegment(t,"segment_budget")){this.save();continue;}
               if(t.status==="paused"){this.save();continue;}
             }
@@ -1652,12 +1654,12 @@ export class PersonalAgent extends DurableObject<Env> {
             t.answer = result.text;
           }
           t.error =
-            t.status === "waiting_user" ? "COMPLETION_UNCONFIRMED" : undefined;
+            t.status === "waiting_user" ? userWait ?? "COMPLETION_UNCONFIRMED" : undefined;
           this.recordResearchResult(t);
           if(t.origin!=="schedule")notice(
             this.state,
             "task:" + t.id,
-            (t.status === "completed" ? "任务完成：" : "研究结果待确认：") +
+            (userWait === "RESEARCH_CLARIFICATION" ? "研究需要你补充：" : userWait === "RESEARCH_REFUSAL" ? "研究条件不足：" : t.status === "completed" ? "任务完成：" : "研究结果待确认：") +
               t.input.slice(0, 100),
           );
         } catch (error) {

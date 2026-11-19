@@ -144,6 +144,8 @@ const messages: Record<string, string> = {
   MODEL_SUBMISSION_MISMATCH: "这一步的上下文已变化，已停止旧请求，原有研究记录保留。",
   MODEL_BUDGET: "本次任务已达到调用上限，可查看已有结果和未完成部分。",
   MODEL_OUTPUT_TRUNCATED: "回答达到输出长度上限，未生成完整结果。已保留检索证据，请缩小问题范围后继续。",
+  RESEARCH_CLARIFICATION: "请在这项任务中补充回答，再继续研究。",
+  RESEARCH_REFUSAL: "可以补充资料或调整要求，再继续这项研究。",
   RESEARCH_INTERRUPTED: "本轮执行中断，研究进度已保存。可以在剩余额度内继续这项任务。",
   EMPTY_RESEARCH_ANSWER: "本次回答未生成完整可读内容，检索证据已保留。",
   SOURCE_MESSAGE_UNAVAILABLE: "在这段讨论中找不到这条来源消息。",
