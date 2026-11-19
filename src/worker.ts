@@ -1,4 +1,5 @@
 import {createHash} from "node:crypto";
+import {INBOX_NOTICE_CAPABILITY, inboxNoticeBatch, type InboxNoticePage} from "./inbox-notices.ts";
 import {catalogTextPages, catalogUploadText} from "./research-catalog.ts";
 import {modelOutputLimit} from "./model-limits.ts";
 import {memoryView} from "./memory-view.ts";
@@ -479,7 +480,31 @@ export class PersonalAgent extends DurableObject<Env> {
   send(ws: WebSocket, data: unknown) {
     try {
       ws.send(JSON.stringify(data));
-    } catch {}
+      return true;
+    } catch { return false; }
+  }
+  private dispatchNotices(sockets = this.ctx.getWebSockets("device")) {
+    if (!sockets.length || !this.state.notices.length || !this.workspace.settings().notifications) return;
+    const unread = this.state.notices.filter(n => !n.read);
+    if (!unread.length) return;
+    let snapshot: ReturnType<typeof inboxNoticeBatch> | undefined;
+    for (const ws of sockets) {
+      const attachment = ws.deserializeAttachment();
+      if (ws.readyState !== WebSocket.OPEN || (!attachment?.catalogReady && !attachment?.ready) ||
+          !this.validHash(attachment.hash, "device")) continue;
+      if (!attachment.capabilities?.includes(INBOX_NOTICE_CAPABILITY)) {
+        for (const notice of unread) this.send(ws, {type: "notice", notice});
+        continue;
+      }
+      if (!attachment.catalogReady) continue;
+      snapshot ??= inboxNoticeBatch(unread.map(n => n.id));
+      if (attachment.lastNoticeBatch === snapshot.batch) continue;
+      const {batch, pages} = snapshot;
+      const sent = pages.every((ids, page) => this.send(ws, {
+        type: "inbox_notices", batch, page, pages: pages.length, ids,
+      } satisfies InboxNoticePage));
+      if (sent) ws.serializeAttachment({...attachment, lastNoticeBatch: batch});
+    }
   }
   publish(readerChanged = false) {
     for (const ws of this.ctx.getWebSockets("ui")) {
@@ -1220,7 +1245,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.capabilities = Array.isArray(m.capabilities)
           ? m.capabilities.filter((v: unknown) =>
-              [SCOPED_RESEARCH_CAPABILITY, "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1", "reader-purge-v1"].includes(
+              [SCOPED_RESEARCH_CAPABILITY, "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1", "reader-purge-v1", INBOX_NOTICE_CAPABILITY].includes(
                 String(v),
               ),
             )
@@ -1478,8 +1503,7 @@ export class PersonalAgent extends DurableObject<Env> {
           if (!terminal(t)&&!t.pauseRequested) t.status = "waiting_device";
         }
         this.save();
-        for (const n of this.workspace.settings().notifications?this.state.notices.filter((n) => !n.read):[])
-          this.send(ws, { type: "notice", notice: n });
+        this.dispatchNotices([ws]);
       } else throw new Problem("UNKNOWN_FRAME");
       await this.maintenance.arm();
       this.publish(readerChanged);
@@ -2153,9 +2177,7 @@ export class PersonalAgent extends DurableObject<Env> {
       this.dispatchImports();
       this.save();
       this.publish();
-      for (const ws of this.ctx.getWebSockets("device"))
-        for (const n of this.workspace.settings().notifications?this.state.notices.filter((n) => !n.read):[])
-          this.send(ws, { type: "notice", notice: n });
+      this.dispatchNotices();
       const importDeadline=this.libraryJobs.nextDeadline();
       const budgetWake=this.proactive.nextBudgetWake();
       const times = [

@@ -17,7 +17,7 @@ export interface ApplicationManifest {
 export interface ApplicationRelease {directory:string;manifest:ApplicationManifest;digest:string}
 export interface ApplicationReleaseControls {projectRoot?:string;run?:RuntimeRunner;npmCli?:string}
 function allowed(path:string) {
-  return /^(?:local\/|src\/|packages\/research\/|packages\/retrieval\/|scripts\/(?:read-secret|write-secret)\.ps1$|package(?:-lock)?\.json$)/.test(path) &&
+  return /^(?:local\/|src\/|packages\/research\/|packages\/retrieval\/|scripts\/(?:read-secret|write-secret|notify)\.ps1$|package(?:-lock)?\.json$)/.test(path) &&
     !/(^|\/)(?:tests?|__pycache__|node_modules|\.local|\.git)(\/|$)/.test(path) &&
     !/(?:^|\/)(?:AGENTS|CLAUDE)\.md$/i.test(path) &&
     !/(?:^|\/)test_[^/]*$|\.(?:test|spec)\.[^/]+$/.test(path) &&
@@ -87,7 +87,7 @@ export async function prepareApplicationRelease(controls:ApplicationReleaseContr
    git(["status","--porcelain","--untracked-files=normal"]).toString().trim())throw Error("COMMITTED_BUILD_REQUIRED");};
  clean();
  const paths=git(["ls-tree","-r","--name-only","-z",build]).toString("utf8").split("\0").filter(p=>p&&allowed(p));
- for(const required of ["local/node.ts","local/application-contract.ts","local/desktop/main.py","local/check-runtime.py","package.json","package-lock.json","packages/research/package.json","packages/research/package-lock.json","packages/retrieval/uv.lock","packages/retrieval/pyproject.toml"])
+ for(const required of ["local/node.ts","local/application-contract.ts","local/desktop/main.py","local/check-runtime.py","scripts/notify.ps1","package.json","package-lock.json","packages/research/package.json","packages/research/package-lock.json","packages/retrieval/uv.lock","packages/retrieval/pyproject.toml"])
   if(!paths.includes(required))throw Error("LOCAL_RELEASE_SOURCE_MISSING");
  const local=join(root,".local");await mkdir(local,{recursive:true});await owned(root,local);
  const parent=join(local,"node-releases");await mkdir(parent,{recursive:true});await owned(local,parent);

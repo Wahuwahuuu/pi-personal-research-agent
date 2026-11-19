@@ -6,6 +6,8 @@ import {timingSafeEqual,randomUUID} from "node:crypto";
 import {LibraryClient,type ImportJob} from "./library-client.ts";
 import {SnapshotManager} from "./snapshots.ts";
 import { bindNodeAccount } from "./account-binding.ts";
+import {DesktopNotices} from "./desktop-notices.ts";
+import {INBOX_NOTICE_CAPABILITY} from "../src/inbox-notices.ts";
 import {catalogRegistrationIssues, persistentRegistrationIssue, reconnectDelay} from "./registration-policy.ts";
 import { createLocalReading } from "../packages/research/local-reading.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
@@ -130,7 +132,7 @@ await new Promise<void>((ok, no) => {
 });
 const db = new DatabaseSync(join(resolve(config.dataDir), "node.sqlite"));
 db.exec(
-  "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,frame TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS notices(id TEXT PRIMARY KEY); CREATE TABLE IF NOT EXISTS deleted_operations(id TEXT PRIMARY KEY);",
+  "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,frame TEXT NOT NULL,acked INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS deleted_operations(id TEXT PRIMARY KEY);",
 );
 const snapshots=config.python&&!config.fixture?new SnapshotManager(config.python,resolve(config.dataDir),config.libraryRoot):undefined;
 if(!snapshots&&!config.fixture)throw Error("PYTHON_CONFIG_REQUIRED");
@@ -195,9 +197,8 @@ function frame(id: string, data: unknown) {
   ).run(id, encoded);
   send(data);
 }
-function desktop(id: string) {
-  if (db.prepare("SELECT id FROM notices WHERE id=?").get(id)) return;
-  db.prepare("INSERT INTO notices VALUES(?)").run(id);
+function desktop(count: number) {
+  if (!count) return;
   if (process.platform === "win32" && !config.fixture) {
     const p = spawn(
       "powershell.exe",
@@ -206,10 +207,12 @@ function desktop(id: string) {
         "-NonInteractive",
         "-File",
         join(dirname(fileURLToPath(import.meta.url)), "../scripts/notify.ps1"),
+        "-Count", String(count),
       ],
       { windowsHide: true, stdio: "ignore" },
     );
-    p.on("error", () => {});
+    p.once("error", () => console.error("DESKTOP_NOTIFICATION_FAILED"));
+    p.once("exit", code => { if (code !== 0) console.error("DESKTOP_NOTIFICATION_FAILED"); });
   }
 }
 async function execute(op: Operation) {
@@ -289,6 +292,7 @@ function reconnectNow() {
 
 function connect() {
   if (stopping || registrationBlocked || socket) return;
+  const desktopNotices = new DesktopNotices(db);
   const endpoint = new URL("/api/device/connect", url);
   endpoint.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   const proxy = config.proxy ?? process.env.HTTPS_PROXY;
@@ -345,7 +349,7 @@ function connect() {
       indexVersion: offeredVersion, catalogDigest: offeredTransfer.digest,
       retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
-      capabilities: ["scoped-search-v1", "reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
+      capabilities: [INBOX_NOTICE_CAPABILITY, "scoped-search-v1", "reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
       readerPort: config.port ?? 48731,
     });
   });
@@ -419,7 +423,13 @@ function connect() {
       else if (m.type === "operation") void execute(m.operation);
       else if (m.type === "cancel" && active && active.id === m.operationId)
         active.abort.abort();
-      else if (m.type === "notice") desktop(m.notice.id);
+      else if (m.type === "notice" || m.type === "inbox_notices") {
+        try { desktop(m.type === "notice" ? desktopNotices.single(m.notice?.id) : desktopNotices.page(m)); }
+        catch {
+          console.error("INBOX_DELIVERY_FAILED");
+          ws.terminate(); // Reconnect to request a complete snapshot after an incomplete or failed receipt.
+        }
+      }
     } catch {
       console.error("INVALID_CLOUD_FRAME");
     }

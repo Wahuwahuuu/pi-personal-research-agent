@@ -20,7 +20,7 @@ async function fixture(t:any){
   "packages/research/internal/web/answer-format.js":"export {};","packages/research/LICENSE":"License",
   "packages/retrieval/uv.lock":"version = 1","packages/retrieval/pyproject.toml":"[project]",
   "local/test_sample.py":"assert True","tests/test.ts":"private test fixture",
-  "docs/specs/development.md":"not a product input","scripts/read-secret.ps1":"# DPAPI reader"
+  "docs/specs/development.md":"not a product input","scripts/read-secret.ps1":"# DPAPI reader","scripts/notify.ps1":"# desktop notice"
  };
  for(const [path,content] of Object.entries(files)){await mkdir(dirname(join(root,path)),{recursive:true});await writeFile(join(root,path),content);}
  const git=(args:string[])=>execFileSync("git",["-C",root,...args],{windowsHide:true,stdio:["ignore","pipe","pipe"]});
@@ -44,6 +44,7 @@ test("application preparation freezes committed product files and installed depe
  assert.ok(release.manifest.files.some(v=>v.path==="node_modules/example/index.js"));
  assert.ok(release.manifest.files.some(v=>v.path==="packages/research/internal/web/answer-format.js"));
  assert.ok(release.manifest.files.some(v=>v.path==="packages/research/LICENSE"));
+ assert.equal(await readFile(join(release.directory,"scripts/notify.ps1"),"utf8"),"# desktop notice");
  assert.ok(!release.manifest.files.some(v=>/private|docs\/|tests\/|test_sample/.test(v.path)));
  assert.ok(f.calls[0].args.includes("--ignore-scripts"));assert.ok(f.calls[0].args.includes("--omit=dev"));
  assert.equal(f.calls[0].env.PIPAPER_API_KEY,undefined);
