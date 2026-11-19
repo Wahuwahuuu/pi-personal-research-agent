@@ -34,8 +34,7 @@ export { IdentityRegistry };
 import { DeletionStore, deletePiConversation, deleteConversationState } from "./deletion.ts";
 import { BudgetLedger, BUDGET_STOPS } from "./budget.ts";
 import { StateRepository, type StateStorage } from "./state-store.ts";
-import {expandVisibleCitations} from "../packages/research/visible-citations.ts";
-import {answerPreview} from "./model-response.ts";
+import {bindResearchPreview} from "./research-preview.ts";
 import {cloudMemory,recordMemoryInputs,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {awaitsResearchCatalog, holdForMissingPapers, revisitPaperWait} from "./research-availability.ts";
 import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
@@ -212,7 +211,8 @@ export class PersonalAgent extends DurableObject<Env> {
     else this.memoryIndex.sync(this.state.cloudMemory.entries);
     this.harness = new PiHarness({
       harness: async ({ storage, context, onWake }) => {
-        let reservedOutput=2048,lastPreview=0,reservationId:string|undefined;
+        let reservedOutput=2048,reservationId:string|undefined;
+        let showPreview: ReturnType<typeof bindResearchPreview>;
         let timingCall: {taskId:string;call:number}|undefined;
         const outputLimit=()=>modelOutputLimit(activeTasks(this.state).find(t=>t.status==="running"&&t.modelOperation));
         const before = async (messages:readonly {role:string;content?:unknown}[]) => {
@@ -251,8 +251,10 @@ export class PersonalAgent extends DurableObject<Env> {
             if(reservationId){this.queueBill(reservationId,{input:0,output:0});await this.flushBills();}
             reservationId=undefined;timingCall=undefined;throw error;
           }
+          showPreview=bindResearchPreview(t,()=>this.state,()=>this.publish());
         };
         const after = async (usage?: { input: number; output: number }, timing?: ModelMeasurement) => {
+          showPreview=undefined;
           const previousUsage={...this.state.usage};
           try {
             this.database.transactionSync(()=>{
@@ -278,12 +280,7 @@ export class PersonalAgent extends DurableObject<Env> {
                   modelId: env.MODEL_ID ?? "",
                   maxOutput:()=>reservedOutput,
                   onFailure:(code,detail)=>{const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running");if(task){task.modelFailure=code;task.modelFailureDetail=detail;}},
-                  onVisible:(text)=>{
-                    const task=activeTasks(this.state).find(t=>t.runOpen&&t.status==="running"&&t.workflow?.phase==="agent");
-                    if(!task?.workflow||Date.now()-lastPreview<1000)return;
-                    const preview=answerPreview(text);if(!preview)return;
-                    task.preview=expandVisibleCitations(preview,task.workflow);lastPreview=Date.now();this.publish();
-                  },
+                  onVisible:text=>showPreview?.(text),
                 },
                 before,
                 after,
