@@ -11,7 +11,7 @@ import { createLocalReading } from "../packages/research/local-reading.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
 import { nodeCatalog, catalogTransfer } from "./catalog.ts";
 import { checkedResult, researchContext } from "../src/research-coordinator.ts";
-import { validatePaperParams } from "../packages/research/core.ts";
+import { toolWireResult, validatePaperParams } from "../packages/research/core.ts";
 import WebSocket from "ws";
 import { HttpsProxyAgent } from "https-proxy-agent";
 import { DatabaseSync } from "node:sqlite";
@@ -252,19 +252,14 @@ async function execute(op: Operation) {
     const {result,sources}=snapshots?await snapshots.execute(op.indexVersion,op.tool,op.params,abort.signal):await reading!.execute(op.tool,op.params,abort.signal);
     if (abort.signal.aborted) throw new Error("CANCELLED");
     validateEvidence(op.tool, result, op.indexVersion);
-    checkedResult(
-      op,
-      result,
-      sources.length
-        ? withReadingSources(scopedCatalog, readingSources(scopedCatalog, op, sources))
-        : scopedCatalog,
-    );
+    const patch = sources.length ? readingSources(scopedCatalog, op, sources) : undefined;
+    const verified = checkedResult(op, result, patch ? withReadingSources(scopedCatalog, patch) : scopedCatalog);
     frame(op.id, {
       type: "result",
       operationId: op.id,
       indexVersion:op.indexVersion,
-      result,
-      sources,
+      result:toolWireResult(verified),
+      sources:patch?.sources ?? [],
       executionMs: Math.ceil(performance.now() - started),
     });
   } catch {

@@ -2,7 +2,7 @@ import {withPaperScope} from "./tool-scope.ts";
 import {ScientificReading} from "./internal/agent/scientific-reading.ts";
 import {PaperPdfCache} from "./internal/agent/paper-pdf.ts";
 import {withAbstractReading} from "./internal/agent/paper-reading.ts";
-import {retrieveOriginal,validatePaperParams,searchResult,type ToolContext,type OriginalReadParams} from "./internal/agent/tools.ts";
+import {retrieveOriginal,validatePaperParams,searchResult,toolWireResult,type ToolContext,type OriginalReadParams} from "./internal/agent/tools.ts";
 import type {WorkerTransport,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
 export {originalPdfUrl} from "./internal/agent/paper-pdf.ts";
 export async function createLocalReading(options:{root:string;indexVersion:string;papers:readonly Paper[];evidence:readonly EvidenceIdentity[];worker:WorkerTransport;fetcher?:typeof fetch}){
@@ -22,8 +22,7 @@ export async function createLocalReading(options:{root:string;indexVersion:strin
     if(missing.length)result.reading_note="Independent abstract metadata is unavailable for: "+JSON.stringify(missing)+". This does not mean the paper body is absent. Use retrieve_chunks with query and paper_ids, omitting section, to inspect indexed original text. Cite only actual returned chunks.";
    }
    const sources=result.chunks.filter(c=>scientific.sources.has(c.chunk_id)).map(c=>({...scientific.sources.get(c.chunk_id)!}));
-   // The wire carries worker-format citations; the cloud validates and formats the display citation.
-   return {result:{...result,chunks:result.chunks.map(c=>({...c,citation:"["+c.chunk_id+"]"}))},sources};
+   return {result:toolWireResult(result),sources};
   },
   pdf:(id:string)=>pdf.get(id)
  };

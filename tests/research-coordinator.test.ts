@@ -104,6 +104,32 @@ test("durable admission replays same operation and keeps fast results waiting un
     /OPERATION_CONFLICT/,
   );
 });
+test("retrieval receipts and restored observations retain only documented evidence and pagination fields", async () => {
+  const {state,t,ports} = setup();
+  const version = catalog.indexVersion, paper = chunk.paper_id;
+  await ports.execute({operationId:"1:page",conversationId:"1",tool:"retrieve_chunks",
+    params:{query:"evidence",paper_ids:[paper],top_k:1},indexVersion:version},new AbortController().signal);
+  const selection = {offset:0,returned:1,total:3,next_offset:1,has_more:true,unavailable_papers:[],incomplete_sources:[paper]};
+  const expected = {backend:"fixture",index_version:version,chunks:[chunk],selection,query:"evidence",
+    effective_query:"evidence in methods",query_normalization:"public_metadata_prefix_v1",reading_note:"Another page is available."};
+  const raw = {...expected,parser_detail:"local-only",chunks:[{...chunk,parser_detail:"local-only"}],
+    selection:{...selection,parser_detail:"local-only"}};
+  const operation=state.operations[0];
+  for(const invalid of [{incomplete_sources:["outside"]},{unavailable_papers:[paper,paper]},{incomplete_sources:"unavailable"}]) {
+    assert.throws(()=>checkedResult(operation,{...raw,selection:{...selection,...invalid}},catalog),/coverage/);
+  }
+  assert.equal(acceptResearchResult(state,operation.id,version,raw,()=>catalog),"accepted");
+  assert.deepEqual(operation.result,expected);
+  assert.equal(acceptResearchResult(state,operation.id,version,raw,()=>catalog),"duplicate");
+  const restored=structuredClone(state);
+  restored.operations[0].result=raw; // Earlier versions persisted the original device response.
+  const resumed=JSON.parse(resumePrompt(restored,restored.tasks[0],()=>catalog).prompt).observations[0].result;
+  assert.deepEqual(resumed,{...expected,chunks:[{...chunk,citation:"[cite:fixture-chunk]"}]});
+  assert.equal(t.tools,1);
+  const emptyPage={offset:512,returned:0,total:3,next_offset:512,has_more:false};
+  const last=checkedResult(operation,{...raw,chunks:[],selection:emptyPage},catalog);
+  assert.ok("selection" in last);assert.deepEqual(last.selection,emptyPage);
+});
 test("source-map verification rejects tampered Unicode spans and versions before persistence", async () => {
   const { state, t, ports } = setup();
   await ports.execute(

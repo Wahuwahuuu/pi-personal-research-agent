@@ -52,6 +52,31 @@ export function searchResult(value: unknown, ctx: ToolContext, limit: number): S
     backend: data.backend as string, index_version: data.index_version as string };
 }
 
+function readingSelection(value: unknown, requested: readonly string[], returned: number): NonNullable<RetrieveResult["selection"]> {
+  const page = object(value);
+  const count = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+  if (!count(page.offset) || !count(page.total) || !count(page.next_offset) || page.returned !== returned || typeof page.has_more !== "boolean")
+    throw new RuntimeFailure("INVALID_RESPONSE", "Invalid reading continuation metadata");
+  const result: NonNullable<RetrieveResult["selection"]> = {
+    offset: page.offset, returned, total: page.total, next_offset: page.next_offset, has_more: page.has_more,
+  };
+  for (const field of ["unavailable_papers", "incomplete_sources"] as const) {
+    const ids = page[field];
+    if (ids === undefined) continue;
+    if (!Array.isArray(ids) || ids.length > requested.length || new Set(ids).size !== ids.length ||
+        ids.some(id => typeof id !== "string" || !requested.includes(id)))
+      throw new RuntimeFailure("INVALID_RESPONSE", "Invalid paper coverage in reading result");
+    result[field] = [...ids];
+  }
+  return result;
+}
+
+/** A device receipt uses source citations. Model-facing citations are reconstructed after verification. */
+export function toolWireResult(result: RetrieveResult | SearchResult): RetrieveResult | SearchResult {
+  if ("papers" in result) return result;
+  return {...result, chunks: result.chunks.map(chunk => ({...chunk, citation: "[" + chunk.chunk_id + "]"}))};
+}
+
 export function retrieveResult(value: unknown, requested: readonly string[], topK: number, ctx: ToolContext, originalQuery: string): RetrieveResult {
   const data = metadata(value);
   if (!Array.isArray(data.chunks) || data.chunks.length > topK) throw new RuntimeFailure("INVALID_RESPONSE", "Invalid chunk result list");
@@ -81,7 +106,7 @@ export function retrieveResult(value: unknown, requested: readonly string[], top
   });
   if (ctx.p2) for (const chunk of chunks) { chunk.citation = `[${["r2", "full-v1"].includes(ctx.p2.executionVersion ?? "") ? "cite:" : ""}${chunk.chunk_id}]`; chunk.index_version = ctx.p2.indexVersion; chunk.truncated = false; }
   const result: RetrieveResult = { chunks, backend: data.backend as string, index_version: data.index_version as string };
-  if(ctx.workbench&&data.selection){const selection=object(data.selection);if(!['offset','returned','total','next_offset'].every(key=>Number.isSafeInteger(selection[key])&&Number(selection[key])>=0)||typeof selection.has_more!=='boolean'||selection.returned!==chunks.length)throw new RuntimeFailure('INVALID_RESPONSE','Invalid reading continuation metadata');result.selection=selection as unknown as NonNullable<RetrieveResult['selection']>;}
+  if (ctx.workbench && data.selection) result.selection = readingSelection(data.selection, requested, chunks.length);
   if(ctx.workbench&&typeof data.reading_note==='string')result.reading_note=data.reading_note;
   if (ctx.p2 && ["query", "effective_query", "query_normalization"].some((key) => Object.hasOwn(data, key))) {
     if (data.query !== originalQuery || typeof data.effective_query !== "string" || !data.effective_query.trim() ||

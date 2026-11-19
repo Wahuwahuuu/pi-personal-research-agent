@@ -9,6 +9,7 @@ import {
 import {
   searchResult,
   retrieveResult,
+  toolWireResult,
   validatePaperParams,
   executionFromOutput,
   withAbstractReading,
@@ -91,7 +92,7 @@ export function acceptResearchResult(
   if (op.state === "done") return "duplicate";
   const scope=s.conversations?.find(c=>c.id===t.conversationId)?.scope;
   const checked = checkedResult(op, raw, catalog(op.indexVersion),scope);
-  const stored = "papers" in checked ? checked : raw;
+  const stored = toolWireResult(checked);
   const result = acceptResult(s, id, version, stored, Date.now(), executionMs);
   if ("chunks" in checked) {
     const evidence = new Map(
