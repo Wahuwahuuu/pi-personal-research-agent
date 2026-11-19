@@ -544,6 +544,47 @@ test("comparison projects each retrieval in rank order and identifies its paper 
  assert.equal(JSON.parse(workflowPrompt(restored,c)).workspace.unique_chunks,c.evidence.length);
 });
 
+test("final comparison gives checked originals from both papers precedence over subsequent retrieval ranks", () => {
+  const c = setup("Compare Paper A and Paper B"), w = newWorkflow();
+  c.catalog = {...catalog, papers: ["a","b"].map(id => ({paper_id:id, title:"Paper "+id.toUpperCase(), abstract:""}))};
+  advanceWorkflow(w, c, JSON.stringify({intent:"compare", targets:["a","b"], rewrite:c.input, comparison_dimensions:["method"]}));
+  const chunk = (paper:string, id:string) => {
+    const text = id + " original passage".repeat(97);
+    return {paper_id:paper, chunk_id:id, paragraph_id:id, section:"Method", text, start:0, end:text.length, index_version:"v", citation:"[cite:"+id+"]", truncated:false};
+  };
+  const checked = ["a","b"].flatMap(id => Array.from({length:3}, (_,i) => chunk(id,id+"-checked-"+i)));
+  const supplement = ["a","b"].flatMap(id => Array.from({length:9}, (_,i) => chunk(id,id+"-later-"+i)));
+  const ops = (name:string, sources:typeof checked) => ["a","b"].map(id => ({tool:"retrieve_chunks", params:{query:name, paper_ids:[id]}, state:"done", result:{chunks:sources.filter(s => s.paper_id===id)}}));
+  c.evidence = checked; c.operations = ops("original",checked); c.calls = 4; w.phase = "comparison";
+  const checking = JSON.parse(workflowPrompt(w,c));
+  assert.equal(checking.evidence.length,checked.length);
+  advanceWorkflow(w,c,JSON.stringify({cells:checking.response_template.cells.map((cell:{paper_id:string}) => ({...cell,status:"supported",summary:"Checked methods",citations:checked.filter(s => s.paper_id===cell.paper_id).map(s=>s.chunk_id)}))}));
+  c.evidence = [...checked,...supplement]; c.operations = [...ops("original",checked),...ops("new passages",supplement)];
+  const supplemental = JSON.parse(workflowPrompt(w,c));
+  assert.deepEqual(supplemental.evidence.slice(0,2).map((s:{chunk_id:string})=>s.chunk_id),["a-later-0","b-later-0"]);
+  c.calls=5;
+  const stored = structuredClone(w.comparison), final = JSON.parse(workflowPrompt(w,c));
+  assert.deepEqual(final.evidence.slice(0,6).map((s:{chunk_id:string})=>s.chunk_id),[0,1,2].flatMap(i=>["a-checked-"+i,"b-checked-"+i]));
+  const allowed = new Set(final.evidence.map((s:{chunk_id:string})=>s.chunk_id));
+  assert.equal(allowed.size,final.evidence.length);
+  assert.ok(final.evidence.every((s:{chunk_id:string;text:string})=>c.evidence.some(e=>e.chunk_id===s.chunk_id&&e.text===s.text)));
+  assert.ok(final.progress.items.every((i:{source_ids:string[]})=>i.source_ids.every(id=>allowed.has(id))));
+  assert.deepEqual(w.comparison,stored);
+  assert.ok(w.progress!.items.some(i=>i.source_ids.some(id=>!allowed.has(id))));
+  // The request and its corrections can leave less space than the earlier coverage check did.
+  const bounded = {...c, input:c.input+" Required context.".repeat(1000)};
+  w.execution = {state:"working",remaining_needs:["explain sources"],goal_updates:[{need_id:"methods",status:"working",source_ids:checked.map(s=>s.chunk_id)}]};
+  const encoded = workflowPrompt(w,bounded), small = JSON.parse(encoded), visible = new Set(small.evidence.map((s:{chunk_id:string})=>s.chunk_id));
+  const rows = JSON.parse(small.comparison.split("\n")[1]).cells;
+  assert.ok(checked.some(s=>!visible.has(s.chunk_id)), "fixture must omit at least one checked original");
+  assert.ok(rows.every((row:{citations:string[]})=>row.citations.every(id=>visible.has(id))));
+  assert.ok(rows.some((row:{status:string})=>row.status!=="supported"));
+  assert.ok(small.execution.goal_updates[0].source_ids.every((id:string)=>visible.has(id)));
+  assert.equal(w.execution?.goal_updates?.[0].source_ids.length,6);
+  assert.deepEqual(w.comparison,stored);
+  assert.ok(Buffer.byteLength(JSON.stringify(encoded))<=40000);
+});
+
 test("a parsed reading digest does not report persistence before the host saves it",()=>{
  const c=setup(), w=newWorkflow();
  w.phase="memory";w.memory={answer:"Retained answer",status:"completed",state:"pending",visibleSourceIds:[]};

@@ -181,7 +181,8 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
     ...(c.calls>=5?{final_instruction:w.answerRepairPending?"No allowance remains for tools or a separate completion check. Give the supported answer and actual gaps as plain Markdown; do not add JSON metadata.":"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
-  const ordered=m?m.window(30000,"retrieval_rank"):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
+  const checkedFinal=m && w.comparison && c.calls>=5 ? m : undefined;
+  const ordered=m?m.window(30000,checkedFinal?"checked_first":"retrieval_rank"):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
   // Present the originals as possible sources. Only the model can select a citation for its claim.
   const firstCandidates = new Set<string>();
   const candidates = new Map<string, {values:Set<string>; lists:string[][]}>();
@@ -216,7 +217,19 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const evidence:(Chunk & {answer_citation?:string})[]=[];
   const window={archived:c.evidence.length,visible:0,omitted:c.evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
   payload.evidence=evidence;payload.evidence_window=window;
-  const fits=()=>byteSize(JSON.stringify(payload))<=40000;
+  // Persist the complete coverage record. Project its references against the same window as the answer.
+  const projectCheckedReferences=()=>{
+    if(!checkedFinal)return;
+    const visible=new Set(evidence.map(source=>source.chunk_id));
+    payload.comparison=checkedFinal.instruction(true,c.catalog.papers,visible);
+    const inWindow=<T extends {source_ids:string[]}>(item:T)=>({...item,source_ids:item.source_ids.filter(id=>visible.has(id))});
+    if(w.progress)payload.progress={...w.progress,items:w.progress.items.map(inWindow)};
+    if(w.execution?.goal_updates)payload.execution={...w.execution,goal_updates:w.execution.goal_updates.map(inWindow)};
+  };
+  const fits=()=>{
+    projectCheckedReferences();
+    return byteSize(JSON.stringify(payload))<=40000;
+  };
   if(!fits())throw Error("CONTEXT_LIMIT"); // Never silently shorten the user's request or corrections.
   let evidenceBytes=2;
   for(const source of [...repairSources,...ordered.filter(e=>!preferred.has(e.chunk_id))]){
@@ -233,6 +246,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
       for (const ids of candidateLists) ids.pop();
     }
   }
+  projectCheckedReferences();
   w.visibleSourceIds=evidence.map(e=>e.chunk_id);
   w.citationLabels=evidence.some(e=>e.answer_citation) ? w.visibleSourceIds.map(id=>labels.get(id)??"") : undefined;
   return JSON.stringify(payload);
