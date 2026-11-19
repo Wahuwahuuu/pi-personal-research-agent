@@ -112,12 +112,42 @@ export function taskSummary(t:Task){
  const {input,id,conversationId,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin}=t;
  return {id,conversationId,input,kind,status,created,updated,calls,tools,activeMs,answer,preview,error,origin,paperWait:t.paperWait,budgetTaskId:t.budgetTaskId,control:t.control,amendments:t.amendments,runOpen:t.runOpen,priority:t.priority,goal:t.goal,pauseRequested:t.pauseRequested,progress:t.workflow?.progress??null};
 }
-export function conversationPage(s:State,options:{q?:string;projectId?:string;archived?:boolean;after?:number;limit?:number}={},reader?:{historyCount:(c:NonNullable<State["conversations"]>[number])=>number}){
- const after=options.after??0,limit=options.limit??30;if(!Number.isInteger(after)||after<0||!Number.isInteger(limit)||limit<1||limit>100)throw new Problem("INVALID_PAGE");
- const q=(options.q??"").toLocaleLowerCase();
- const filtered=(s.conversations??[]).filter(c=>Boolean(c.archived)===Boolean(options.archived)&&(!options.projectId||c.projectId===options.projectId)&&(!q||c.title.toLocaleLowerCase().includes(q)||c.history.some(h=>(h.user_text+" "+h.final_answer).toLocaleLowerCase().includes(q))))
- .sort((a,b)=>Number(b.pinned??false)-Number(a.pinned??false)||(b.updated??b.created)-(a.updated??a.created)||a.id.localeCompare(b.id));
- return {items:filtered.slice(after,after+limit).map(c=>({...(Object.fromEntries(Object.keys(c).filter(k=>k!=="history"&&k!=="domain").map(k=>[k,(c as any)[k]])) as Omit<NonNullable<State["conversations"]>[number],"history"|"domain">),turns:reader?reader.historyCount(c):c.history.length})),nextCursor:filtered.length>after+limit?after+limit:null};
+export function conversationPage(
+  state: State,
+  options: {q?:string; projectId?:string; archived?:boolean; after?:number; limit?:number} = {},
+  reader?: {historyCount:(conversation: NonNullable<State["conversations"]>[number]) => number},
+) {
+  const after = options.after ?? 0, limit = options.limit ?? 30;
+  if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100)
+    throw new Problem("INVALID_PAGE");
+
+  const q = (options.q ?? "").toLocaleLowerCase();
+  const ranked = (state.conversations ?? [])
+    .filter(c => Boolean(c.archived) === Boolean(options.archived) && (!options.projectId || c.projectId === options.projectId))
+    .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false) ||
+      (b.updated ?? b.created) - (a.updated ?? a.created) || a.id.localeCompare(b.id));
+
+  const page: typeof ranked = [];
+  let matched = 0, nextCursor: number | null = null;
+  if (after < ranked.length) {
+    for (const c of ranked) {
+      if (q && !c.title.toLocaleLowerCase().includes(q) &&
+        !c.history.some(h => (h.user_text + " " + h.final_answer).toLocaleLowerCase().includes(q))) continue;
+      // A single further match proves there is a next page. Older histories can stay unloaded.
+      if (page.length === limit) {
+        nextCursor = matched;
+        break;
+      }
+      if (matched >= after) page.push(c);
+      matched++;
+    }
+  }
+  const items = page.map(c => {
+    const fields = Object.keys(c).filter(k => k !== "history" && k !== "domain");
+    const metadata = Object.fromEntries(fields.map(k => [k, (c as any)[k]])) as Omit<typeof c, "history" | "domain">;
+    return {...metadata, turns:reader ? reader.historyCount(c) : c.history.length};
+  });
+  return {items, nextCursor};
 }
 
 export {queryTaskPage as taskPage} from "./task-queries.ts";

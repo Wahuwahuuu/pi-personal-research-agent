@@ -200,6 +200,35 @@ test("schema one history counts migrate atomically without rewriting legacy mess
  assert.deepEqual(f.db.prepare("SELECT position FROM pra_data_messages WHERE parent='c1' ORDER BY position").all().map(r=>r.position),[1000,1001,1002,1003]);f.db.close();
 });
 
+test("conversation search reads only the ranked prefix needed for a page and keeps older body matches", () => {
+  const f = fixture(), repo = new StateRepository(f.storage), state = repo.load();
+  state.conversations = conversations(24, 12);
+  const list = state.conversations;
+  for (const c of list.slice(18)) c.title = "主题 " + c.id;
+  list[21].pinned = true;
+  list[22].projectId = "other";
+  list[23].archived = true;
+  list[19].created = list[18].created;
+  list[9].history[1] = {turn_id:"t1", user_text:"ÄBC", final_answer:"主题"};
+  repo.save(state);
+  const cold = new StateRepository(f.storage), loaded = cold.load();
+  f.queries.length = 0;
+  const lookup = (after: number) => conversationPage(loaded, {q:"主题", projectId:"p", limit:2, after}, cold);
+  const first = lookup(0);
+  assert.deepEqual(first.items.map(c => c.id), ["c21", "c20"]);
+  assert.equal(first.nextCursor, 2);
+  assert.equal(bodyReads(f), 0);
+  const second = lookup(2), last = lookup(4);
+  assert.deepEqual(second.items.map(c => c.id), ["c18", "c19"]);
+  assert.equal(second.nextCursor, 4);
+  assert.deepEqual(last.items.map(c => c.id), ["c9"]);
+  assert.equal(last.nextCursor, null);
+  assert.deepEqual(lookup(5), {items:[], nextCursor:null});
+  assert.deepEqual(conversationPage(loaded, {q:"äbc 主题"}, cold).items.map(c => c.id), ["c9"]);
+  assert.deepEqual(conversationPage(loaded, {q:"主题", archived:true}, cold).items.map(c => c.id), ["c23"]);
+  f.db.close();
+});
+
 test("explicit body search and legacy JSON export still include complete histories",()=>{
  const f=fixture(),store=new StateRepository(f.storage),s=store.load();s.conversations=conversations(2,5);s.conversations[1].history[0].user_text="中文特征及 ÄBC";store.save(s);
  const cold=new StateRepository(f.storage),loaded=cold.load();
