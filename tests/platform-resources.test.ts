@@ -19,7 +19,7 @@ function report(at=now,value=10){
 test("first fresh report enables shared guard; server thresholds override client suggestions and fake limits",()=>{
  const f=fixture();try{
   assert.equal(f.guard.status(now).enabled,false);
-  const r=report();r.project.sqliteRowsRead.value=4900000;(r.project.sqliteRowsRead as any).projectTarget=999999999;
+  const r=report();r.project.sqliteRowsRead.value=4500000;(r.project.sqliteRowsRead as any).projectTarget=999999999;
   const result=f.guard.record("r",r,"research",now);
   assert.equal(result.blocked,true);assert.equal(result.reason,"PLATFORM_RESOURCE_LIMIT");
   assert.equal(result.automaticPauseApplied,true);
@@ -98,12 +98,12 @@ test("active model/tool steps settle before holding, and other human decisions a
  t.error="CONTEXT_CHANGED";applyPlatformWait(s,{enabled:true,blocked:false,nextCheck:now+60000});assert.equal(t.status,"waiting_user");assert.equal(t.error,"CONTEXT_CHANGED");
 });
 
-test("daily SQLite read warning starts at 4.9 million for shared and project usage",()=>{
+test("daily SQLite read warning starts at 4.5 million for shared and project usage",()=>{
  for(const scope of ["account","project"] as const){
   const f=fixture();try{
-   for(const [i,value] of [500000,4000000,4899999,4900000].entries()){
+   for(const [i,value] of [500000,4000000,4499999,4500000].entries()){
     const at=now+i,r=report(at);r[scope].sqliteRowsRead.value=value;
-    assert.equal(f.guard.record(String(i),r,"research",at).blocked,value>=4900000);
+    assert.equal(f.guard.record(String(i),r,"research",at).blocked,value>=4500000);
    }
   }finally{f.db.close();}
  }

@@ -4,7 +4,7 @@ import {Problem,text,type State,type Task} from "./domain.ts";
 import type {StateStorage} from "./state-store.ts";
 export const PLATFORM_LIMITS={
  workerRequests:[100000,10000],doRequestUpperEstimate:[100000,10000],doDuration:[13000,6500],
- sqliteRowsRead:[5000000,4900000],sqliteRowsWritten:[100000,50000],sqliteStoredBytes:[5000000000,500000000]
+ sqliteRowsRead:[5000000,4500000],sqliteRowsWritten:[100000,50000],sqliteStoredBytes:[5000000000,500000000]
 } as const;
 export const PLATFORM_STOPS=new Set(["PLATFORM_RESOURCE_LIMIT","PLATFORM_METRICS_STALE","PLATFORM_METRICS_UNAVAILABLE"]);
 export interface PlatformStatus {enabled:boolean;blocked:boolean;reason?:string;nextCheck:number;observedAt?:number}

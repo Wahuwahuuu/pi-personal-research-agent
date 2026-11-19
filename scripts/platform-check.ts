@@ -31,7 +31,7 @@ const options=convertV4MiniflareOptions({name:"platform-check",scriptPath:resolv
   const rows:Record<string,any[]>={
    workersInvocationsAdaptive:[{dimensions:{scriptName:"platform-check"},sum:{requests:10}}],
    durableObjectsInvocationsAdaptiveGroups:[{dimensions:{namespaceId:"fixture",type:"http"},sum:{requests:10}}],
-   durableObjectsPeriodicGroups:[{dimensions:{namespaceId:"fixture"},sum:{duration:10,rowsRead:high?4900000:10,rowsWritten:10,inboundWebsocketMsgCount:0}}],
+   durableObjectsPeriodicGroups:[{dimensions:{namespaceId:"fixture"},sum:{duration:10,rowsRead:high?4500000:10,rowsWritten:10,inboundWebsocketMsgCount:0}}],
    durableObjectsSqlStorageGroups:[{dimensions:{namespaceId:"fixture"},max:{storedBytes:1024}}]
   };assert.ok(rows[name]);return Response.json({data:{viewer:{accounts:[{rows:rows[name]}]}}});
  },log:new Log(LogLevel.ERROR)});
@@ -54,8 +54,8 @@ try{
  assert.equal(reads,beforeCron+5);assert.equal(blocked.reason,"PLATFORM_RESOURCE_LIMIT");
  const heldView=await api("/api/platform?view=status");assert.equal(heldView.reason,blocked.reason);assert.equal(heldView.blocked,true);assert.equal(heldView.snapshot,undefined);
  const cachedReads=reads,ownerBudget=await api("/api/platform?view=budget");
- assert.equal(ownerBudget.blocked,true);assert.equal(ownerBudget.snapshot.project.sqliteRowsRead,4900000);
- assert.equal(ownerBudget.snapshot.account.workerRequests,10);assert.deepEqual(ownerBudget.limits.sqliteRowsRead,[5000000,4900000]);
+ assert.equal(ownerBudget.blocked,true);assert.equal(ownerBudget.snapshot.project.sqliteRowsRead,4500000);
+ assert.equal(ownerBudget.snapshot.account.workerRequests,10);assert.deepEqual(ownerBudget.limits.sqliteRowsRead,[5000000,4500000]);
  assert.deepEqual(Object.keys(ownerBudget.snapshot).sort(),["account","day","project"]);assert.equal(reads,cachedReads);
  assert.equal((await api("/__fixture/discovery")).ok,false);
  assert.equal((await api("/__fixture/background-budget")).error,"PLATFORM_RESOURCE_LIMIT");
