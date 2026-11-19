@@ -197,6 +197,17 @@ function frame(id: string, data: unknown) {
   ).run(id, encoded);
   send(data);
 }
+function replayToolResult(row: { id: string; frame: string }): boolean {
+  const cached = JSON.parse(row.frame);
+  // Previous nodes also cached shutdowns and elapsed deadlines as CANCELLED.
+  // The cloud already owns genuine cancellations and can redeliver unfinished reads.
+  if (cached.type === "operation_error" && cached.code === "CANCELLED" && cached.requestedBy !== "cloud") {
+    db.prepare("DELETE FROM outbox WHERE id=?").run(row.id);
+    return false;
+  }
+  send(cached);
+  return true;
+}
 function desktop(count: number) {
   if (!count) return;
   if (process.platform === "win32" && !config.fixture) {
@@ -217,12 +228,9 @@ function desktop(count: number) {
 }
 async function execute(op: Operation) {
   if(op&&db.prepare("SELECT id FROM deleted_operations WHERE id=?").get(op.id))return;
-  const old = db.prepare("SELECT frame FROM outbox WHERE id=?").get(op.id) as
-    { frame: string } | undefined;
-  if (old) {
-    send(JSON.parse(old.frame));
-    return;
-  }
+  const old = db.prepare("SELECT id,frame FROM outbox WHERE id=?").get(op.id) as
+    { id: string; frame: string } | undefined;
+  if (old && replayToolResult(old)) return;
   if (active?.id === op.id) return;
   if (active||building||paused) {
     announcedReady=false;
@@ -243,10 +251,11 @@ async function execute(op: Operation) {
     return;
   }
   const started = performance.now();
+  const dispatchSocket = socket;
   const abort = new AbortController();
   active = { id: op.id, abort };
   const timeout = setTimeout(
-    () => abort.abort(),
+    () => abort.abort("tool_deadline"),
     Math.max(1, Math.min(180000, op.deadline - Date.now())),
   );
   try {
@@ -266,12 +275,18 @@ async function execute(op: Operation) {
       executionMs: Math.ceil(performance.now() - started),
     });
   } catch {
-    // Cancellation stops the Python process; ready must wait for its replacement.
-    if (abort.signal.aborted && snapshots) unavailable("loading");
+    if (stopping) return;
+    // Aborting a read stops Python. Re-register after a missed deadline so the
+    // cloud can dispatch the original operation within its remaining retry budget.
+    if (abort.signal.aborted && snapshots && catalogAcknowledged) unavailable("loading");
+    if (abort.signal.reason === "tool_deadline") {
+      if (dispatchSocket === socket && dispatchSocket?.readyState === WebSocket.OPEN) dispatchSocket.terminate();
+      return;
+    }
     frame(op.id, {
       type: "operation_error",
       operationId: op.id,
-      code: abort.signal.aborted ? "CANCELLED" : "RETRIEVER_FAILED",
+      ...(abort.signal.aborted ? {code: "CANCELLED", requestedBy: "cloud"} : {code: "RETRIEVER_FAILED"}),
     });
   } finally {
     clearTimeout(timeout);
@@ -392,9 +407,9 @@ function connect() {
         clearTimeout(deadline);
         readerReadySent=false;flushReaders();
         for (const r of db
-          .prepare("SELECT frame FROM outbox WHERE acked=0")
-          .all() as { frame: string }[])
-          send(JSON.parse(r.frame));
+          .prepare("SELECT id,frame FROM outbox WHERE acked=0")
+          .all() as { id: string; frame: string }[])
+          replayToolResult(r);
         void announceReady();void flushImports(true);
       } else if (!catalogAcknowledged && !(acceptedHello && ["reader_purge", "purge_operations"].includes(m.type))) {
         return;
