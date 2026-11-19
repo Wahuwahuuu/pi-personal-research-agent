@@ -381,17 +381,17 @@ export function Projects({
   );
 }
 export function Library({
+  papers,
   projectId,
   data,
   revision,
   run,
   refresh,
   onPaper,
-}: Props & { projectId?: string; onPaper: (p: Paper) => void }) {
+}: Props & { papers: ReturnType<typeof useResource<Paper[]>>; projectId?: string; onPaper: (p: Paper) => void }) {
   const device = deviceView(data);
   const syncingCatalog = data.deviceState?.phase === "syncing_catalog";
-  const papers = useResource<Paper[]>("papers", revision),
-    project = useResource<Project>(
+  const project = useResource<Project>(
       projectId ? "projects/" + encodeURIComponent(projectId) + "?view=summary" : undefined,
       revision,
     );

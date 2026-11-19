@@ -49,20 +49,24 @@ function SourcePanel({
   accountId,
   readerUpdates,
   evidence,
+  libraryPapers,
   close,
   select,
 }: {
   accountId:string;
   readerUpdates: { subscribed: boolean; revision: number };
   evidence: Evidence;
+  libraryPapers?: Paper[];
   close: () => void;
   select: (s: Chunk) => void;
 }) {
   const source = evidence.source,
     index = source?.index_version ?? evidence.task?.researchIndex,
-    paper = evidence.paper,
+    selectedPaper = evidence.paper,
+    paper = selectedPaper && libraryPapers ? libraryPapers.find(p => p.paper_id === selectedPaper.paper_id) : selectedPaper,
+    removedFromLibrary = !!selectedPaper && !!libraryPapers && !paper,
     pinnedCatalog = index && evidence.catalog?.[0]?.indexVersion === index ? evidence.catalog : undefined,
-    paperId = source?.paper_id ?? paper?.paper_id;
+    paperId = source?.paper_id ?? selectedPaper?.paper_id;
   const panel = useRef<HTMLElement>(null),
     closeRef = useRef(close);
   closeRef.current = close;
@@ -136,7 +140,7 @@ function SourcePanel({
         </button>
       </header>
       <div className="evidence-scroll">
-        <h3>{evidence.savedTitle ?? info?.title ?? paperId}</h3>
+        <h3>{evidence.savedTitle ?? info?.title ?? selectedPaper?.title ?? paperId}</h3>
         {source ? (
           <>
             <p className="source-location">
@@ -169,6 +173,8 @@ function SourcePanel({
               </dl>
             </details>
           </>
+        ) : removedFromLibrary ? (
+          <p role="status">这篇论文已从当前目录移除。</p>
         ) : (
           <p className="abstract">{info?.abstract || "尚无摘要记录。"}</p>
         )}
@@ -238,6 +244,7 @@ function Workspace({
     cursor = useRef(0),
     refresh = useCallback(() => setRevision((n) => n + 1), []);
   const data = overview.value;
+  const library = useResource<Paper[]>(data?.settings.onboarded && route.page === "papers" ? "papers" : undefined, revision);
   const conversations = useResource<{
     items: Overview["conversations"]["items"];
   }>(
@@ -466,6 +473,7 @@ function Workspace({
     <Projects key={route.id ?? "list"} id={route.id} {...props!} />
   ) : route.page === "papers" ? (
     <Library
+      papers={library}
       projectId={route.id}
       {...props!}
       onPaper={(paper) => setEvidence({ paper })}
@@ -570,6 +578,7 @@ function Workspace({
           accountId={account.id}
           readerUpdates={readerUpdates}
           evidence={evidence}
+          libraryPapers={evidence.paper ? library.value : undefined}
           close={() => setEvidence(undefined)}
           select={(source) => setEvidence((v) => ({ ...v, source }))}
         />

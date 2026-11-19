@@ -1,3 +1,4 @@
+import {verifyLibraryReaderVersion} from "./library-reader-version-browser.ts";
 import {verifyResourceBudget} from "./resource-budget-browser.ts";
 import {verifyArtifactEdits} from "./artifact-edits-browser.ts";
 import {verifyProjectScope} from "./project-scope-browser.ts";
@@ -235,7 +236,11 @@ try {
     const r = await fetch(base);
     return r.ok;
   }, 60000);
-  if(process.env.PRA_BROWSER_SCOPE==="resource-budget"){
+  if(process.env.PRA_BROWSER_SCOPE==="reader-version"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    checks.push(await verifyLibraryReaderVersion(base,page,context,api));
+  }else if(process.env.PRA_BROWSER_SCOPE==="resource-budget"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...await verifyResourceBudget(base,page,api,screenshot,config.vars.RESOURCE_WORKER_NAME));
@@ -733,14 +738,14 @@ try {
     kind: "local-browser-product-flows",
     timestamp: new Date().toISOString(),
     checks,
-    deviceFixture:["records","reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??""),nativeWindowObserved:false,
-    browser: ["resource-budget","records","projects","retention","changes","context","controls","imports","reader","deletions","recovery"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
+    deviceFixture:["reader-version","records","reader","deletions"].includes(process.env.PRA_BROWSER_SCOPE??""),nativeWindowObserved:false,
+    browser: ["reader-version","resource-budget","records","projects","retention","changes","context","controls","imports","reader","deletions","recovery"].includes(process.env.PRA_BROWSER_SCOPE??"")?"installed Microsoft Edge, isolated bootstrap authentication":"installed Microsoft Edge, virtual WebAuthn authenticator",
     viewports: ["1440x900", "390x844"],
     paidCalls: 0,
     cloudDeployment: false,
   };
   await writeFile(
-    process.env.PRA_BROWSER_SCOPE==="resource-budget"?"docs/validation/browser-resource-budget.json":process.env.PRA_BROWSER_SCOPE==="records"?"docs/validation/browser-project-records.json":process.env.PRA_BROWSER_SCOPE==="projects"?"docs/validation/browser-projects.json":process.env.PRA_BROWSER_SCOPE==="retention"?"docs/validation/browser-retention.json":process.env.PRA_BROWSER_SCOPE==="changes"?"docs/validation/browser-changes.json":process.env.PRA_BROWSER_SCOPE==="context"?"docs/validation/browser-context.json":process.env.PRA_BROWSER_SCOPE==="controls"?"docs/validation/browser-controls.json":process.env.PRA_BROWSER_SCOPE==="recovery"?"docs/validation/browser-recovery.json":process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
+    process.env.PRA_BROWSER_SCOPE==="reader-version"?"docs/validation/browser-reader-version.json":process.env.PRA_BROWSER_SCOPE==="resource-budget"?"docs/validation/browser-resource-budget.json":process.env.PRA_BROWSER_SCOPE==="records"?"docs/validation/browser-project-records.json":process.env.PRA_BROWSER_SCOPE==="projects"?"docs/validation/browser-projects.json":process.env.PRA_BROWSER_SCOPE==="retention"?"docs/validation/browser-retention.json":process.env.PRA_BROWSER_SCOPE==="changes"?"docs/validation/browser-changes.json":process.env.PRA_BROWSER_SCOPE==="context"?"docs/validation/browser-context.json":process.env.PRA_BROWSER_SCOPE==="controls"?"docs/validation/browser-controls.json":process.env.PRA_BROWSER_SCOPE==="recovery"?"docs/validation/browser-recovery.json":process.env.PRA_BROWSER_SCOPE==="deletions"?"docs/validation/browser-deletions.json":process.env.PRA_BROWSER_SCOPE==="reader"?"docs/validation/browser-reader.json":process.env.PRA_BROWSER_SCOPE==="imports"?"docs/validation/browser-imports.json":"docs/validation/browser-product.json",
     JSON.stringify(report, null, 2),
   );
   console.log(JSON.stringify(report, null, 2));
