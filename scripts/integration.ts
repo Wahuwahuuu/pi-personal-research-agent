@@ -434,6 +434,18 @@ try {
     (t: any) => t.id === inFlight.id,
   );
   assert.equal(suspended.calls, 2);
+  for (let i = 0; i < 5; i++) {
+    controlled!.send(JSON.stringify({type: "ready"}));
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  const held = (await api("state")).operations.find((op:any) => op.id === first.id);
+  assert.equal(held.state, "sent");
+  assert.equal(held.attempts, first.attempts);
+  assert.equal(held.deadline, first.deadline);
+  assert.equal(frames.filter(frame => frame.type === "operation" && frame.operation.id === first.id).length, 1);
+  assert.equal((await api("tasks/" + inFlight.id)).calls, suspended.calls);
+  checks.push("repeated readiness on one connected device preserves the current tool dispatch, deadline and retry budget");
   await stopChild(server);
   controlled!.terminate();
   server = await startServer();

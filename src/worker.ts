@@ -1187,7 +1187,7 @@ export class PersonalAgent extends DurableObject<Env> {
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [kind]);
     const view=kind==="ui"&&new URL(r.url).searchParams.get("version")==="2"?2:1;
-    pair[1].serializeAttachment({ kind, hash, ready: false,view });
+    pair[1].serializeAttachment({kind, hash, ready: false, view, recoverOperations: kind === "device"});
     if (kind === "ui")
       this.send(pair[1],view===2?{type:"change",readerChanged:false,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     return new Response(null, { status: 101, webSocket: pair[0] });
@@ -1493,16 +1493,28 @@ export class PersonalAgent extends DurableObject<Env> {
         if (!a.indexVersion) throw new Problem("HELLO_REQUIRED");
         if (this.env.RESEARCH_ENGINE === "durable" && !a.catalogReady)
           throw new Problem("CATALOG_REQUIRED");
+        // A new connection reclaims operations after its saved results arrive. A readiness
+        // update on the same socket must leave its current dispatch and retry budget intact.
+        if (a.recoverOperations) {
+          const sent = this.state.operations.filter(op => op.state === "sent");
+          if (sent.length) {
+            try {
+              for (const op of sent) {
+                op.state = "pending";
+                const task = getTask(this.state, op.taskId);
+                if (!terminal(task) && !task.pauseRequested) task.status = "waiting_device";
+              }
+              this.save();
+            } catch {
+              this.state = this.repository.load();
+              ws.close(1011, "retry recovery");
+              return;
+            }
+          }
+          delete a.recoverOperations;
+        }
         a.ready = true;if(m.phase==="empty")a.phase="empty";else delete a.phase;
         ws.serializeAttachment(a);
-        for (const op of this.state.operations.filter(
-          (o) => o.state === "sent",
-        )) {
-          op.state = "pending";
-          const t = getTask(this.state, op.taskId);
-          if (!terminal(t)&&!t.pauseRequested) t.status = "waiting_device";
-        }
-        this.save();
         this.dispatchNotices([ws]);
       } else throw new Problem("UNKNOWN_FRAME");
       await this.maintenance.arm();
