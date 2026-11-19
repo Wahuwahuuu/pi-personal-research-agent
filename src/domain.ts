@@ -294,15 +294,18 @@ export function validateEvidence(tool: Tool, value: unknown, version: string) {
       throw new Problem("INVALID_CITATION_RANGE");
   }
 }
-export function expire(s: State, now = Date.now()) {
+export function expire(s: State, now = Date.now()): Operation[] {
+  const expired: Operation[] = [];
   for (const op of s.operations) {
     if (op.state === "sent" && op.deadline <= now) {
+      expired.push(op);
       op.state = "pending";
       const t = getTask(s, op.taskId);
       if (!["cancelled", "failed", "completed", "paused"].includes(t.status))
         t.status = "waiting_device";
     }
   }
+  return expired;
 }
 export function taskAllowance(t:Task){
  const segment=t.goal?.segments.at(-1),count=t.goal?4:1;

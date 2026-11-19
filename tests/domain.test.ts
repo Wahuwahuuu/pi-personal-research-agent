@@ -73,7 +73,10 @@ test("30 offline expiries and cancelled late results", () => {
     o.state = "sent";
     o.deadline = 50;
     t.status = "running";
-    expire(s, 51);
+    assert.deepEqual(expire(s, 49), []);
+    assert.deepEqual(expire(s, 50).map(op => op.id), [o.id]);
+    assert.deepEqual(expire(s, 51), []);
+    assert.equal(o.state, "pending");
     assert.equal(t.status, "waiting_device");
     assert.equal(t.calls, 0);
     cancel(s, t.id);

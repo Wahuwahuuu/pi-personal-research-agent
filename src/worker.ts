@@ -515,7 +515,7 @@ export class PersonalAgent extends DurableObject<Env> {
   device() {
     return this.ctx.getWebSockets("device").find((ws) => {
       const a = ws.deserializeAttachment();
-      return a?.ready && this.validHash(a.hash, "device");
+      return ws.readyState === WebSocket.OPEN && a?.ready && this.validHash(a.hash, "device");
     });
   }
   connectedDevice(capability?:string) {
@@ -547,7 +547,7 @@ export class PersonalAgent extends DurableObject<Env> {
   deviceState(){
     for (const ws of this.ctx.getWebSockets("device")) {
       const a = ws.deserializeAttachment();
-      if (ws.readyState !== WebSocket.OPEN || a?.version !== 1 || !this.validHash(a.hash, "device")) continue;
+      if (ws.readyState !== WebSocket.OPEN || a?.version !== 1 || a.toolTimedOut || !this.validHash(a.hash, "device")) continue;
       if (!a.catalogReady) return {connected: true, ready: false, phase: "syncing_catalog", canImport: false};
       const phase = a.ready ? (a.phase === "empty" ? "empty" : "ready") : (a.phase ?? "loading");
       return {connected: true, ready: !!a.ready, phase, canImport: !!a.capabilities?.includes("library-v1")};
@@ -1226,7 +1226,7 @@ export class PersonalAgent extends DurableObject<Env> {
       ws.close(1008, "expired");
       return;
     }
-    if (a.kind !== "device") return;
+    if (a.kind !== "device" || a.toolTimedOut || ws.readyState !== WebSocket.OPEN) return;
     try {
       if (typeof raw !== "string" || raw.length > 1000000)
         throw new Problem("INVALID_FRAME");
@@ -1977,7 +1977,18 @@ export class PersonalAgent extends DurableObject<Env> {
     if (this.recoveryBlocked||this.busy) return Date.now() + 1000;
     this.busy = true;
     try {
-      expire(this.state);
+      const expired = expire(this.state);
+      if (expired.length) {
+        this.save();
+        for (const ws of this.ctx.getWebSockets("device")) {
+          const a = ws.deserializeAttachment();
+          // A replacement socket can be replaying saved results before its first ready.
+          if (ws.readyState !== WebSocket.OPEN || !a || a.recoverOperations || !a.catalogReady && !a.ready) continue;
+          if (!expired.some(op => op.deliveryVersion !== 1 || this.deletions.custody.has(op.id, a.hash))) continue;
+          ws.serializeAttachment({...a, ready: false, catalogReady: false, toolTimedOut: true});
+          ws.close(4001, "tool deadline");
+        }
+      }
       await this.refreshResources();
       if(!this.resources.blocked)this.proactiveStep(()=>this.proactive.tick());
       this.libraryJobs.expire();this.dispatchImports();
