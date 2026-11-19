@@ -25,6 +25,7 @@ export interface ResearchWorkflow extends VisibleCitations {
   cloudOnly?:boolean; automatic?:boolean; preparedIndex?:string;
   translation?:{sources:TranslationSource[];items?:TranslationSource[]};
   prepared?:PreparedQuestion; candidate?:string; execution?:TurnExecution;
+  candidateWindow?:{taskId:string;indexVersion:string;sourceIds:string[]};
   tracker?:ReturnType<TurnExecutionTracker["snapshot"]>;
   comparison?:ComparisonReport; comparisonRevision?:string; progress?:TaskProgress;
   citationRepair?:{answer:string;claims:ClaimAttribution[]};
@@ -252,6 +253,28 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   return JSON.stringify(payload);
 }
 export function workflowTools(w:ResearchWorkflow,calls:number){return !w.cloudOnly&&w.phase==="agent"&&calls<5?["search_papers","retrieve_chunks"]:[];}
+/** Keep an earlier complete response when Pi interrupts a later step. A streamed preview is never a candidate. */
+export function interruptWorkflow(w:ResearchWorkflow,c:WorkflowContext):{status:"waiting_user";answer?:string}{
+  const needsSources=!nonFactual(w);
+  const remaining=[...new Set([...(w.execution?.remaining_needs??[]),"完成中断的步骤并核对本轮要求"])];
+  const decision:TurnExecution={state:"partial",remaining_needs:remaining,needs_sources:needsSources,origin:"host",stop_reason:"model_interrupted"};
+  const scope=w.candidateWindow;
+  let answer:string|undefined;
+  if(w.candidate&&scope?.taskId===c.id&&scope.indexVersion===c.catalog.indexVersion&&
+      !c.invalidatedMemoryTurns?.includes(c.id)&&!/<\/?(?:think|thinking|analysis)>/i.test(w.candidate)){
+    const ids=new Set(scope.sourceIds);
+    const visible=c.evidence.filter(s=>ids.has(s.chunk_id)&&s.index_version===scope.indexVersion);
+    const prior=prepareWorkbenchAnswer(w.candidate,{evidence:new Map(visible.map(s=>[s.chunk_id,s])),
+      allowAnswer:true,requiredPapers:targets(w),papers:c.catalog.papers,
+      expectedKind:needsSources?"paper_fact":w.prepared?.frame.intent==="session_control"?"session_control":"catalog",execution:decision});
+    if(prior&&!prior.citationIssues.length&&!prior.adaptations.includes("structured_answer_body_preserved")&&
+       !/^\s*(?:```json\s*)?(?:\{\s*"|\[\s*\{\s*")/iu.test(prior.value.answer)&&
+       (!needsSources||prior.visibleCitationCount>0))answer=prior.value.answer;
+  }
+  w.execution=decision;
+  progress(w,c,decision,answer??"");
+  return answer?{status:"waiting_user",answer}:{status:"waiting_user"};
+}
 export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:string):{answer?:string;status?:"completed"|"waiting_user"}{
   if (w.phase === "memory") {
     const memory = w.memory!;
@@ -312,9 +335,15 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     output=w.candidate??"";
   }else{
     output=expandVisibleCitations(output,w);
-    w.candidate=output;
     declared=executionFromOutput(output);
-    if(declared?.state!=="working"&&!hasWorkbenchAnswer(output))return repairAnswerFormat(w,c);
+    const readable=hasWorkbenchAnswer(output);
+    if(readable){
+      w.candidate=output;
+      w.candidateWindow=w.visibleSourceIds
+        ? {taskId:c.id,indexVersion:c.catalog.indexVersion,sourceIds:[...w.visibleSourceIds]}
+        : undefined;
+    }
+    if(declared?.state!=="working"&&!readable)return repairAnswerFormat(w,c);
     w.answerRepairPending=undefined;
     const m=comparison(w,c),revision=c.evidence.map(e=>e.chunk_id).sort().join(",");
     if(m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}

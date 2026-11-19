@@ -1,7 +1,7 @@
 import {test} from "node:test";
 import assert from "node:assert/strict";
 import {nodeCatalog} from "../local/catalog.ts";
-import {newWorkflow,advanceWorkflow,reserveComparisonCheck,workflowPrompt,workflowInstruction,workflowTools,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {newWorkflow,advanceWorkflow,interruptWorkflow,reserveComparisonCheck,workflowPrompt,workflowInstruction,workflowTools,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 const catalog=await nodeCatalog(undefined,true);
 function setup(input="Explain the method"):WorkflowContext{return {id:"turn1",input,calls:1,evidence:[],catalog,conversation:{id:"c",title:"research",projectId:"p",scope:[],created:0,history:[]},memories:[],operations:[]};}
 const prepared=(intent="answer",targets:string[]=[])=>JSON.stringify({intent,targets,rewrite:"Explain the method",queries:[],constraints:[]});
@@ -52,6 +52,43 @@ test("same conversation carries corrected constraints and original dialogue into
  advanceWorkflow(nw,next,JSON.stringify({intent:"session_update",targets:[],rewrite:next.input,queries:[],constraints:[{key:"language",value:"English",source_quote:"英文"}]}));
  const constraints=next.conversation.domain!.user_constraints;
  assert.equal(constraints.filter(x=>!x.superseded_by).length,1);assert.equal(constraints.at(-1)?.value,"English");
+});
+
+test("a later model interruption retains a readable answer against its own saved generation window", () => {
+  const c=setup(), w=newWorkflow();
+  advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));
+  const evidence=(id:string)=>({paper_id:"fixture-paper",chunk_id:id,paragraph_id:"p1",section:"Method",
+    text:"Evidence.",start:0,end:9,index_version:c.catalog.indexVersion,citation:"[cite:"+id+"]",truncated:false});
+  const first=evidence("first"), later=evidence("later");c.evidence=[first,later];
+  w.visibleSourceIds=[first.chunk_id];c.calls=3;
+  const candidate="The passage says Evidence. [cite:first]";
+  assert.deepEqual(advanceWorkflow(w,c,candidate),{});
+  assert.equal(w.phase,"completion");
+  const checkpoint=structuredClone(w);
+  assert.deepEqual(checkpoint.candidateWindow,{taskId:c.id,indexVersion:c.catalog.indexVersion,sourceIds:["first"]});
+  checkpoint.visibleSourceIds=["later"];
+  const result=interruptWorkflow(checkpoint,c);
+  assert.equal(result.status,"waiting_user");assert.ok(result.answer?.startsWith(candidate));assert.equal(checkpoint.phase,"completion");
+  assert.equal(checkpoint.execution?.state,"partial");assert.equal(checkpoint.progress?.phase,"partial");
+  assert.equal(c.conversation.history.length,0);assert.equal(checkpoint.memory,undefined);assert.equal(c.calls,3);
+  for(const change of [
+    {candidateWindow:undefined},
+    {candidateWindow:{...w.candidateWindow!,taskId:"different"}},
+    {candidateWindow:{...w.candidateWindow!,indexVersion:"different"}},
+    {candidate:"Another passage [cite:later]"},
+    {candidate:'{"answer":{"source":"[cite:first]"}}'},
+    {candidate:'{"internal_note":"[cite:first]"}'},
+    {candidate:"<analysis>private fixture marker</analysis> [cite:first]"},
+  ]) {
+    const out=interruptWorkflow({...structuredClone(w),...change,visibleSourceIds:["later"]},c);
+    assert.deepEqual(out,{status:"waiting_user"});
+  }
+  assert.equal(interruptWorkflow(structuredClone(w),{...c,evidence:[{...first,index_version:"next"}]}).answer,undefined);
+  assert.equal(interruptWorkflow(structuredClone(w),{...c,invalidatedMemoryTurns:[c.id]}).answer,undefined);
+  // An empty working declaration must not replace the earlier readable response.
+  const retry=structuredClone(w);retry.phase="agent";
+  advanceWorkflow(retry,c,JSON.stringify({execution:{state:"working",remaining_needs:["more evidence"]},answer:""}));
+  assert.equal(retry.candidate,candidate);assert.deepEqual(retry.candidateWindow,w.candidateWindow);
 });
 
 test("comparison validates paper-by-dimension source coverage rather than counting returned chunks",()=>{

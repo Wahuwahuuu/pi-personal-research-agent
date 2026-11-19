@@ -41,7 +41,7 @@ import {awaitsResearchCatalog, holdForMissingPapers, revisitPaperWait} from "./r
 import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPDATE} from "./research-device.ts";
 import {assertModelSubmission} from "./provider-context.ts";
 import {managedRuntimeSettings} from "./runtime-settings.ts";
-import {newWorkflow,workflowPrompt,workflowDialogue,workflowInstruction,workflowTools,advanceWorkflow,reserveComparisonCheck,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {newWorkflow,workflowPrompt,workflowDialogue,workflowInstruction,workflowTools,advanceWorkflow,interruptWorkflow,reserveComparisonCheck,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
@@ -1639,6 +1639,13 @@ export class PersonalAgent extends DurableObject<Env> {
       } else if(t.modelFailure&&BUDGET_STOPS.has(t.modelFailure)) {
         t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();this.proactive.budgetWait(t);
         if(t.origin!=="schedule")notice(this.state,"budget:"+t.id,"任务已因预算或费率检查暂停，已完成的研究仍保留。");
+      } else if(!t.modelFailure&&result.reason==="interrupted"&&t.workflow&&
+                ["prepare","agent","comparison","completion"].includes(t.workflow.phase)&&!this.proactive.control(t)){
+        const partial=interruptWorkflow(t.workflow,this.workflowContext(t));
+        if(partial.answer)t.answer=partial.answer;
+        t.status=partial.status;t.error="RESEARCH_INTERRUPTED";t.updated=Date.now();
+        checkpoint(t,"model_interrupted");
+        if(t.origin!=="schedule")notice(this.state,"interrupted:"+t.id,"本轮研究中断，已保存进度："+t.input.slice(0,100));
       } else failResearch(this.state, t, t.modelFailure ?? result.reason ?? "MODEL_FAILED");
       this.save();
     }
