@@ -178,6 +178,14 @@ try {
   assert.equal(cloudFollow.workflow.contextWindow.stored_turns,1);
   assert.deepEqual(cloudFollow.workflow.contextWindow.visible_recent_turns,[done.id]);
   assert.equal(cloudFollow.workflow.contextWindow.invalidated_turns_excluded,0);
+  const threadActivity = async () => (await api("conversations?limit=20")).items.find((c:any) => c.id === followChat.conversationId).updated;
+  const finishedActivity = await threadActivity();
+  assert.ok(cloudFollow.updated >= cloudFollow.modelStarted);
+  assert.ok(finishedActivity >= cloudFollow.updated);
+  const replayedTurn = await api("tasks", "POST", {input:"continue cloud conversation",kind:"chat",conversationId:done.conversationId,requestId:"chat-follow"});
+  assert.equal(replayedTurn.id, cloudFollow.id);
+  assert.equal(await threadActivity(), finishedActivity);
+  checks.push("completed research activity updates its discussion and retrying the same message preserves the time");
   checks.push("continuous Pi conversation persists the actual projected history window separately from its stored archive");
   checks.push("cloud-only turns reuse one Pi conversation before any device or corpus exists");
   checks.push(

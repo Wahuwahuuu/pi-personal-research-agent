@@ -64,6 +64,7 @@ import {
 import { Harness, type ConversationId } from "@earendil-works/pi-durable";
 import {
   initialState,
+  recordTaskActivity,
   submit,
   cancel,
   getTask,
@@ -805,8 +806,13 @@ export class PersonalAgent extends DurableObject<Env> {
       if (b.conversationId && !conversation) throw new Problem("UNKNOWN_CONVERSATION",404);
       if (prior && prior.conversationId !== conversationId) throw new Problem("REQUEST_CONFLICT",409);
       const project=this.workspace.getProject(conversation?.projectId??(typeof b.projectId==="string"?text(b.projectId,128):"default"));
-      if(prior?.control){submit(this.state,b.input,b.requestId,b.kind);return json(prior,202);}
-      let selected=!prior&&b.kind==="auto"?resolveConversationControl(this.state,conversationId,text(b.input)):undefined;
+      if (prior) {
+        const existing = submit(this.state, b.input, b.requestId, b.kind);
+        // Rearm unfinished work if the first response was lost after saving it.
+        if (!prior.control && (!terminal(prior) || prior.runOpen)) await this.maintenance.arm();
+        return json(existing, 202);
+      }
+      let selected=b.kind==="auto"?resolveConversationControl(this.state,conversationId,text(b.input)):undefined;
       if(selected){
         let resumeBlocked:string|undefined;
         if(selected.action==="resume"&&this.state.tasks.find(t=>t.id===selected?.targetId)?.origin==="schedule"){
@@ -839,7 +845,7 @@ export class PersonalAgent extends DurableObject<Env> {
         await this.maintenance.arm();this.publish();return json(receipt,202);
       }
       const t = submit(this.state, b.input, b.requestId, b.kind);
-      if(!prior)configureTask(t,b.mode,b.priority);
+      configureTask(t,b.mode,b.priority);
       if (!conversation) {
         conversation = {id:conversationId,title:t.input.slice(0,100),projectId:project.id,scope:[...project.paperIds],created:Date.now(),history:[]};
         this.state.conversations.push(conversation);
@@ -1422,6 +1428,7 @@ export class PersonalAgent extends DurableObject<Env> {
           const t = getTask(this.state, op.taskId);
           t.status = "failed";
           t.error = "LOCAL_TOOL_FAILED";
+          recordTaskActivity(this.state, t);
           op.state = "cancelled";
           this.save();
         }
@@ -1575,7 +1582,7 @@ export class PersonalAgent extends DurableObject<Env> {
         if(t.budgetTaskId)getTask(this.state,t.budgetTaskId).activeMs+=elapsed;
         await this.harness.abort({ session: t.sessionId });t.runOpen=false;t.modelPrompt=undefined;
         const retained=t.workflow&&skipMemory(t.workflow,"budget_exhausted");
-        if(retained){Object.assign(t,retained);this.finishProactiveReading(t);if(t.origin!=="schedule")notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮时间上限。");}
+        if(retained){Object.assign(t,retained);this.recordResearchResult(t);if(t.origin!=="schedule")notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮时间上限。");}
         else if(!t.goal||!nextSegment(t,"segment_deadline")&&t.status!=="paused")failResearch(this.state,t,"ACTIVE_DEADLINE");
         this.save();continue;
       }
@@ -1603,12 +1610,16 @@ export class PersonalAgent extends DurableObject<Env> {
       if (terminal(t)) continue;
       if(this.state.cloudMemory?.invalidatedTurns?.includes(t.id)){t.status="waiting_user";t.error="CONTEXT_CHANGED";this.save();continue;}
       if(this.proactive.control(t)&&result.status==="done"&&!t.researchWaiting){
-        this.proactiveStep(()=>this.proactive.finishControl(t,result.text??""));continue;
+        this.proactiveStep(() => {
+          this.proactive.finishControl(t, result.text ?? "");
+          recordTaskActivity(this.state, t);
+        });
+        continue;
       }
       if(t.pauseRequested){
         if(result.status==="done"&&!t.researchWaiting&&t.workflow){
           try{const outcome=advanceWorkflow(t.workflow,this.workflowContext(t),result.text??"");if(outcome.answer)t.answer=outcome.answer;
-          if(outcome.status==="completed"){t.status="completed";if(!t.proactive)t.pauseRequested=false;checkpoint(t,"completed");await this.recordResearchMemory(t);this.finishProactiveReading(t);this.save();continue;}}catch(error){if(error instanceof Problem&&error.code==="PROACTIVE_PERSIST_RETRY")throw error;}
+          if(outcome.status==="completed"){t.status="completed";if(!t.proactive)t.pauseRequested=false;checkpoint(t,"completed");await this.recordResearchMemory(t);this.recordResearchResult(t);this.save();continue;}}catch(error){if(error instanceof Problem&&error.code==="PROACTIVE_PERSIST_RETRY")throw error;}
         }
         t.status="paused";checkpoint(t,"user_pause");this.save();continue;
       }
@@ -1642,7 +1653,7 @@ export class PersonalAgent extends DurableObject<Env> {
           }
           t.error =
             t.status === "waiting_user" ? "COMPLETION_UNCONFIRMED" : undefined;
-          this.finishProactiveReading(t);
+          this.recordResearchResult(t);
           if(t.origin!=="schedule")notice(
             this.state,
             "task:" + t.id,
@@ -1657,7 +1668,7 @@ export class PersonalAgent extends DurableObject<Env> {
         t.platformWait="queued";t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();
       } else if(t.workflow?.phase==="memory"&&t.workflow.memory){
         t.answer=t.workflow.memory.answer;t.status=t.workflow.memory.status;t.workflow.memory.state="failed";t.workflow.memory.failure="model";t.workflow.phase="finished";t.workflow.warnings.push("MEMORY_SYNTHESIS_FAILED");
-        this.finishProactiveReading(t);
+        this.recordResearchResult(t);
         if(t.origin!=="schedule")notice(this.state,"task:"+t.id,"研究回答已保留，本轮记忆整理未完成。");
       } else if(t.modelFailure==="MODEL_BUDGET") {
         handleModelBudget(this.state,t);
@@ -1668,7 +1679,7 @@ export class PersonalAgent extends DurableObject<Env> {
                 ["prepare","agent","comparison","completion"].includes(t.workflow.phase)&&!this.proactive.control(t)){
         const partial=interruptWorkflow(t.workflow,this.workflowContext(t));
         if(partial.answer)t.answer=partial.answer;
-        t.status=partial.status;t.error="RESEARCH_INTERRUPTED";t.updated=Date.now();
+        t.status=partial.status;t.error="RESEARCH_INTERRUPTED";recordTaskActivity(this.state,t);
         checkpoint(t,"model_interrupted");
         if(t.origin!=="schedule")notice(this.state,"interrupted:"+t.id,"本轮研究中断，已保存进度："+t.input.slice(0,100));
         if(this.env.MODEL_MODE!=="mock"){
@@ -1769,7 +1780,7 @@ export class PersonalAgent extends DurableObject<Env> {
       if(!t.workflow?.memory&&t.goal&&nextSegment(t,"segment_budget")){this.save();return;}
       if(t.status==="paused"){this.save();return;}
       const retained=t.workflow&&skipMemory(t.workflow,"budget_exhausted");
-      if(retained){Object.assign(t,retained);this.finishProactiveReading(t);if(t.origin!=="schedule")notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮预算上限。");this.save();}else failResearch(this.state, t, "MODEL_BUDGET");
+      if(retained){Object.assign(t,retained);this.recordResearchResult(t);if(t.origin!=="schedule")notice(this.state,"task:"+t.id,"研究回答已保留，记忆整理达到本轮预算上限。");this.save();}else failResearch(this.state, t, "MODEL_BUDGET");
       return;
     }
     try {
@@ -1893,7 +1904,8 @@ export class PersonalAgent extends DurableObject<Env> {
     this.publish();
     return true;
   }
-  finishProactiveReading(t:Task){
+  private recordResearchResult(t: Task) {
+    recordTaskActivity(this.state, t);
     if(t.proactive?.stage!=="research"||t.status!=="completed")return;
     try{this.proactiveStep(()=>this.proactive.afterReading(t));}
     catch{throw new Problem("PROACTIVE_PERSIST_RETRY",503);}
@@ -1932,6 +1944,7 @@ export class PersonalAgent extends DurableObject<Env> {
           running.activeMs += Date.now() - (running.modelStarted ?? Date.now());
           running.status = "failed";
           running.error = "ACTIVE_DEADLINE";
+          recordTaskActivity(this.state, running);
           this.ctx.waitUntil(
             this.harness.abort({ session: running.sessionId }).catch(() => {}),
           );
@@ -1960,6 +1973,7 @@ export class PersonalAgent extends DurableObject<Env> {
               running.status =
                 result.status === "done" ? "completed" : "failed";
               running.answer = result.text;
+              recordTaskActivity(this.state, running);
               running.error = result.reason;
               running.modelPrompt = undefined;
               if (result.status === "done")
@@ -1992,6 +2006,7 @@ export class PersonalAgent extends DurableObject<Env> {
             if (!result.papers.length) {
               t.status = "completed";
               t.answer = "本地论文库没有找到匹配论文。";
+              recordTaskActivity(this.state, t);
             } else {
               t.operationId = undefined;
               t.evidence = undefined;
@@ -2021,6 +2036,7 @@ export class PersonalAgent extends DurableObject<Env> {
               if (!this.deviceIndexes.supports(a.hash,op.indexVersion,a.indexVersion)) {
                 t.status = "failed";
                 t.error = "INDEX_CHANGED";
+                recordTaskActivity(this.state, t);
               } else if (op.state === "pending") {
                 this.deletions.custody.dispatch(op,a.hash);
                 markToolDispatch(op);
@@ -2068,6 +2084,7 @@ export class PersonalAgent extends DurableObject<Env> {
           if (new TextEncoder().encode(prompt).length > 45000) {
             t.status = "failed";
             t.error = "CONTEXT_LIMIT";
+            recordTaskActivity(this.state, t);
           } else {
             t.status = "running";
             t.modelOperation = t.id + ":" + t.calls;

@@ -185,11 +185,17 @@ export function submit(
   s.tasks.push(t);
   return t;
 }
+/** Keep the task and its discussion ordered by visible activity, including delayed results. */
+export function recordTaskActivity(s: State, task: Task, now = Date.now()) {
+  task.updated = Math.max(task.updated ?? task.created, now);
+  const conversation = task.conversationId && s.conversations?.find(c => c.id === task.conversationId);
+  if (conversation) conversation.updated = Math.max(conversation.updated ?? conversation.created, task.updated);
+}
 export function cancel(s: State, id: string, now = Date.now()) {
   const t = getTask(s, id);
   if (["completed", "failed", "cancelled"].includes(t.status)) return;
   t.status = "cancelled";
-  t.updated = now;
+  recordTaskActivity(s, t, now);
   for (const op of s.operations.filter(
     (o) => o.taskId === id && o.state !== "done",
   ))

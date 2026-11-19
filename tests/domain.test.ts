@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   initialState,
   submit,
+  recordTaskActivity,
   cancel,
   operation,
   acceptResult,
@@ -45,6 +46,25 @@ test("100 serialized state roundtrips preserve submission idempotency (not crash
     assert.throws(() => submit(restored, "other", "r", "chat"));
   }
 });
+test("result activity follows its discussion and an older event or duplicate cancellation cannot move it", () => {
+  const s = initialState();
+  s.conversations = ["first", "second"].map(id => ({id, title:id, projectId:"p", scope:[], created:100, history:[]}));
+  const task = submit(s, "question", "activity", "research", 120);
+  task.conversationId = "first";
+  const [first, second] = s.conversations;
+  first.updated = 400;
+  recordTaskActivity(s, task, 300);
+  assert.equal(task.updated, 300);
+  assert.equal(first.updated, 400);
+  recordTaskActivity(s, task, 200);
+  assert.equal(task.updated, 300);
+  cancel(s, task.id, 500);
+  cancel(s, task.id, 600);
+  assert.equal(task.updated, 500);
+  assert.equal(first.updated, 500);
+  assert.equal(second.updated, undefined);
+});
+
 test("30 offline expiries and cancelled late results", () => {
   const s = initialState();
   for (let i = 0; i < 30; i++) {

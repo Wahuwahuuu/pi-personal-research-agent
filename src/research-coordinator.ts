@@ -1,6 +1,7 @@
 import {
   Problem,taskAllowance,
   acceptResult,
+  recordTaskActivity,
   type State,
   type Task,
   type Operation,
@@ -22,7 +23,7 @@ export const terminal = (t: Task) =>
 export function failResearch(s: State, t: Task, code: string) {
   t.status = "failed";
   t.error = code;
-  t.updated = Date.now();
+  recordTaskActivity(s, t);
   for (const op of s.operations.filter(
     (o) => o.taskId === t.id && o.state !== "done",
   ))
