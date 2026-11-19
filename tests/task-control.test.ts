@@ -20,6 +20,8 @@ import {
   pauseTask,
   resumeTask,
   amendTask,
+  answerResearchQuestion,
+  currentInstruction,
   checkpoint,
   orderedTasks,
   nextResearchTurn,
@@ -303,6 +305,39 @@ test("waiting amendments reject exhausted, in-flight or invalidated turns before
   const previous=structuredClone(t);
   assert.throws(()=>amendTask(s,t,"Narrow the task"),reason==="requests"||reason==="time"?/MODEL_BUDGET/:reason==="invalidated"?/NEW_TASK_REQUIRED/:/PAUSE_REQUIRED/);
   assert.deepEqual(t,previous);
+ }
+});
+
+test("a reply belongs to the displayed question and continues the same task with its original counters",()=>{
+ const {s,t}=fixture();t.goal=undefined;t.status="waiting_user";t.error="RESEARCH_CLARIFICATION";t.calls=2;t.tools=1;t.activeMs=1600;
+ t.answer="Which comparison dimension?";t.workflow={phase:"finished",warnings:[],execution:{state:"clarification",remaining_needs:[]}};
+ t.amendments=[{text:"Keep the original units",at:1}];
+ const session=t.sessionId,id=t.id;
+ answerResearchQuestion(s,t,{questionCall:2,input:"Methods",resume:true});
+ assert.equal(t.status,"queued");assert.equal(t.workflow.phase,"prepare");assert.equal(t.id,id);assert.equal(t.sessionId,session);
+ assert.equal(t.calls,2);assert.equal(t.tools,1);assert.equal(t.activeMs,1600);assert.equal(s.tasks.length,1);
+ assert.deepEqual(t.amendments[1].replyTo,{call:2,question:"Which comparison dimension?"});
+ const instruction=currentInstruction(t);assert.ok(instruction.includes("Keep the original units"));assert.ok(instruction.includes("Which comparison dimension?"));assert.ok(instruction.includes("Methods"));
+ const after=structuredClone(t);
+ assert.throws(()=>answerResearchQuestion(s,t,{questionCall:2,input:"Another answer",resume:true}),/RESEARCH_QUESTION_CHANGED/);assert.deepEqual(t,after);
+});
+test("saving a reply for later preserves the question and older waiting records remain compatible",()=>{
+ const {s,t}=fixture();t.goal=undefined;t.status="waiting_user";t.calls=3;t.answer="Which source?";t.error="COMPLETION_UNCONFIRMED";
+ t.workflow={phase:"finished",warnings:[],execution:{state:"clarification",remaining_needs:["source"]}};
+ answerResearchQuestion(s,t,{questionCall:3,input:"The second paper",resume:false});
+ assert.equal(t.status,"paused");assert.equal(t.amendmentPending,true);assert.equal(t.calls,3);
+ const restored=structuredClone(s),again=restored.tasks[0];resumeTask(restored,again);assert.ok(currentInstruction(again).includes("Which source?"));
+ assert.equal(again.sessionId,t.sessionId);assert.equal(again.calls,3);
+});
+test("stale, out-of-budget and non-question replies leave the original record intact",()=>{
+ for(const mode of ["differentCall","missingCall","missingIntent","wrongStatus","otherWait","exhausted","invalidated","empty"]){
+  const {s,t}=fixture();t.goal=undefined;t.status=mode==="wrongStatus"?"paused":"waiting_user";t.calls=mode==="exhausted"?6:3;
+  t.error=mode==="otherWait"?"RESEARCH_REFUSAL":"RESEARCH_CLARIFICATION";t.answer="Which source?";
+  t.workflow={phase:"finished",warnings:[],execution:{state:"clarification",remaining_needs:[]}};
+  if(mode==="invalidated")s.cloudMemory={invalidatedTurns:[t.id]} as any;
+  const original=structuredClone(t);
+  assert.throws(()=>answerResearchQuestion(s,t,{questionCall:mode==="differentCall"?2:mode==="missingCall"?undefined:t.calls,input:mode==="empty"?" ":"Methods",resume:mode==="missingIntent"?undefined:true}));
+  assert.deepEqual(t,original);
  }
 });
 

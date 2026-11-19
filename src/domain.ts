@@ -38,7 +38,7 @@ export interface Task {
   conversationId?: string;
   workflow?: ResearchWorkflow;
   budgetTaskId?: string;
-  goal?:LongGoal;priority?:0|1|2;pauseRequested?:boolean;pausedFrom?:Status;amendmentPending?:boolean;amendments?:{text:string;at:number}[];
+  goal?:LongGoal;priority?:0|1|2;pauseRequested?:boolean;pausedFrom?:Status;amendmentPending?:boolean;amendments?:{text:string;at:number;replyTo?:{call:number;question:string}}[];
   translationKey?: string;
   researchIndex?: string;
   paperWait?: "library" | "scope";
@@ -310,6 +310,12 @@ export function taskAllowance(t:Task){
 }
 export function hasNextGoalSegment(t:Task){
  return !!t.goal && t.goal.segments.length<4 && t.calls<24 && t.tools<40 && t.activeMs<720000;
+}
+export function hasResearchQuestion(t: Pick<Task,"status"|"control"|"budgetTaskId"|"answer"|"error"|"workflow">): boolean {
+  if (t.status !== "waiting_user" || t.control || t.budgetTaskId || !t.answer?.trim()) return false;
+  // Older durable workflows recorded an explicit clarification with a generic wait reason.
+  return t.error === "RESEARCH_CLARIFICATION" ||
+    ((!t.error || t.error === "COMPLETION_UNCONFIRMED") && t.workflow?.execution?.state === "clarification");
 }
 export function hasContinuationBudget(t:Task){
  const remaining=taskAllowance(t);

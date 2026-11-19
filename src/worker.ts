@@ -21,7 +21,7 @@ import {LibraryJobs} from "./library-jobs.ts";
 import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts";
 import {DeviceIndexes} from "./device-indexes.ts";
 import {PLATFORM_STOPS,applyPlatformWait,type PlatformStatus} from "./platform-resources.ts";
-import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks,nextResearchTurn} from "./task-control.ts";
+import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,answerResearchQuestion,orderedTasks,nextResearchTurn} from "./task-control.ts";
 import {hasContinuationBudget,taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries,storeReadingEntries} from "../packages/research/memory.ts";
@@ -884,22 +884,35 @@ export class PersonalAgent extends DurableObject<Env> {
       t.workflow??={phase:"translation",warnings:[],translation:{sources:sources.map(e=>({chunk_id:e!.chunk_id,text:e!.text}))}};
       this.save();await this.maintenance.arm();return json(t,202);
     }
-    const control=path.match(/^\/api\/tasks\/([^/]+)\/(pause|resume|amend|priority)$/);
+    const control=path.match(/^\/api\/tasks\/([^/]+)\/(pause|resume|amend|reply|priority)$/);
     if(control&&r.method==="POST"){
-      const t=getTask(this.state,control[1]),b=await this.body(r);
+      const b=await this.body(r), id=control[1], action=control[2], t=getTask(this.state,id);
       if(t.control)throw new Problem("CONTROL_REQUIRES_MESSAGE",409);
-      if((control[2]==="resume"||control[2]==="amend")&&["RESEARCH_INTERRUPTED","BILLING_UNAVAILABLE"].includes(t.error??"")){
+      const key=b.requestId??(action==="reply"?undefined:crypto.randomUUID()), operation="task:"+id+":"+action;
+      if((action==="resume"||action==="amend")&&["RESEARCH_INTERRUPTED","BILLING_UNAVAILABLE"].includes(t.error??"")){
         try{await this.recoverTaskCalls(t);}catch{throw new Problem("BILLING_UNAVAILABLE",503);}
       }
-      if(control[2]==="resume"&&t.origin==="schedule"){const status=await this.identityRegistry().platformStatus();if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);}
-      const value=this.workspace.once(b.requestId??crypto.randomUUID(),"task:"+control[1]+":"+control[2],b,()=>{
-        if(control[2]==="pause"){pauseTask(t);if(t.proactive)t.proactive.planPaused=false;}
-        if(control[2]==="resume")resumeTask(this.state,t);
-        if(control[2]==="amend")amendTask(this.state,t,b.input);
-        if(control[2]==="priority"){if(![0,1,2].includes(b.priority as number))throw new Problem("INVALID_PRIORITY");t.priority=b.priority as 0|1|2;}
-        this.save();return {id:t.id,accepted:true};
-      });
-      await this.maintenance.arm();this.publish();return json(t);
+      const startsWork=action==="resume"||(action==="reply"&&b.resume===true);
+      if(startsWork&&t.origin==="schedule"&&!this.workspace.replay(key,operation,b)){
+        const status=await this.identityRegistry().platformStatus();
+        if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);
+      }
+      let changed=false;
+      try {
+        this.workspace.once(key,operation,b,()=>{
+          const task=getTask(this.state,id);
+          if(action==="pause"){pauseTask(task);if(task.proactive)task.proactive.planPaused=false;}
+          if(action==="resume")resumeTask(this.state,task);
+          if(action==="amend")amendTask(this.state,task,b.input);
+          if(action==="reply")answerResearchQuestion(this.state,task,b);
+          if(action==="priority"){if(![0,1,2].includes(b.priority as number))throw new Problem("INVALID_PRIORITY");task.priority=b.priority as 0|1|2;}
+          changed=true;this.save();return {id,accepted:true};
+        });
+      } catch(error) {
+        if(changed||!(error instanceof Problem))this.state=this.repository.load();
+        throw error;
+      }
+      await this.maintenance.arm();this.publish();return json(getTask(this.state,id));
     }
     const match = path.match(/^\/api\/tasks\/([^/]+)\/(cancel|continue)$/);
     if (match && r.method === "POST") {

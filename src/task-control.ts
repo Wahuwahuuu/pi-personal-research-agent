@@ -4,7 +4,7 @@ import {activeTasks,closedTask} from "./task-queries.ts";
 import {
   Problem,
   text,
-  taskAllowance, hasNextGoalSegment, hasContinuationBudget,
+  taskAllowance, hasNextGoalSegment, hasContinuationBudget, hasResearchQuestion,
   type State,
   type Task,
   type Status,
@@ -38,12 +38,21 @@ export const segmentUsage = (t: Task) => {
     activeMs: t.activeMs - (s?.activeMs ?? 0),
   };
 };
-export const currentInstruction = (t: Task) =>
-  t.input +
-  (t.amendments?.length
-    ? "\n\nUser amendments (latest takes precedence):\n" +
-      t.amendments.map((a) => a.text).join("\n")
-    : "");
+export function currentInstruction(t: Task) {
+  if (!t.amendments?.length) return t.input;
+  const lines = t.amendments.map(a => a.text);
+  // Retain every user amendment. Bound the additional assistant quotations in the model request.
+  let available = 1800;
+  for (let i = lines.length - 1; i >= 0 && available > 0; i--) {
+    const reply = t.amendments[i].replyTo;
+    if (!reply) continue;
+    const chars = Array.from(reply.question);
+    const quote = chars.length > available ? chars.slice(0, available - 1).join("") + "…" : reply.question;
+    available -= Math.min(available, chars.length);
+    lines[i] = "Assistant question: " + JSON.stringify(quote) + "\nUser reply: " + lines[i];
+  }
+  return t.input + "\n\nUser amendments (latest takes precedence):\n" + lines.join("\n");
+}
 export function configureTask(t: Task, mode: unknown, priority: unknown) {
   if (mode !== undefined && mode !== "normal" && mode !== "long")
     throw new Problem("INVALID_TASK_MODE");
@@ -189,6 +198,19 @@ export function amendTask(s: State, t: Task, value: unknown) {
   // Keep the previous answer and its coverage available while the user is deciding when to resume.
   t.amendmentPending = true;
   t.updated = Date.now();
+}
+export function answerResearchQuestion(s: State, t: Task, reply: {questionCall?: unknown; input?: unknown; resume?: unknown}) {
+  if (!hasResearchQuestion(t) || !Number.isSafeInteger(reply.questionCall) || reply.questionCall !== t.calls)
+    throw new Problem("RESEARCH_QUESTION_CHANGED", 409);
+  if (typeof reply.resume !== "boolean") throw new Problem("INVALID_REPLY_ACTION");
+  const question = t.answer!;
+  amendTask(s, t, reply.input);
+  const chars = Array.from(question);
+  t.amendments!.at(-1)!.replyTo = {
+    call: t.calls,
+    question: chars.length > 500 ? chars.slice(0, 499).join("") + "…" : question,
+  };
+  if (reply.resume) resumeTask(s, t);
 }
 export function taskOrder(a: Task, b: Task) {
   return (

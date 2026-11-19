@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { hasContinuationBudget } from "../src/domain.ts";
+import { hasContinuationBudget, hasResearchQuestion } from "../src/domain.ts";
 import type { Task } from "./types.ts";
 import {navigate, type Run} from "./hooks.ts";
 import { mutate } from "./api.ts";
@@ -15,7 +15,7 @@ export function TaskControls({
   refresh: () => void;
   projectId?: string;
 }) {
-  const [editing, setEditing] = useState(false),
+  const [editor, setEditor] = useState<{title:string;question?:{call:number;text:string}} | null>(null),
     [saving, setSaving] = useState(false),
     [direction, setDirection] = useState("");
   if(t.control)return null;
@@ -23,6 +23,27 @@ export function TaskControls({
     paused = t.status === "paused", waiting = t.status === "waiting_user",
     stopped = paused || waiting, hasBudget = hasContinuationBudget(t),
     canAmend = !t.budgetTaskId && hasBudget && t.error !== "CONTEXT_CHANGED";
+  const question = hasResearchQuestion(t);
+  function openEditor() {
+    setEditor({
+      title: question ? "回答这个问题" : waiting ? "补充这项任务" : "调整任务方向",
+      ...(question ? {question: {call:t.calls, text:t.answer!}} : {}),
+    });
+  }
+  function submitDirection(resume: boolean) {
+    if (!editor || saving || !direction.trim()) return;
+    const target = editor.question;
+    setSaving(true);
+    void run(async () => {
+      try {
+        const path = "tasks/" + t.id + (target ? "/reply" : "/amend");
+        await mutate(path, "POST", {input:direction, ...(target ? {questionCall:target.call, resume} : {})});
+        setEditor(null);
+        setDirection("");
+        refresh();
+      } finally { setSaving(false); }
+    });
+  }
   const control = (action: string, body: Record<string, unknown> = {}) =>
     run(async () => {
       await mutate("tasks/" + t.id + "/" + action, "POST", body);
@@ -38,7 +59,7 @@ export function TaskControls({
               <button className="text-button" onClick={() => void control("pause")}>暂停自动继续</button>
             </>
           )}
-          {stopped && !(waiting && t.paperWait) ? (
+          {stopped && !question && !(waiting && t.paperWait) ? (
             <button
               className="text-button"
               disabled={t.runOpen || !hasBudget || t.error === "CONTEXT_CHANGED" || !!(waiting && t.budgetTaskId)}
@@ -58,9 +79,9 @@ export function TaskControls({
             <button
               className="text-button"
               disabled={t.runOpen}
-              onClick={() => setEditing(true)}
+              onClick={openEditor}
             >
-              {waiting ? "补充这项任务" : "调整方向"}
+              {question ? "回答这个问题" : waiting ? "补充这项任务" : "调整方向"}
             </button>
           )}
           <label className="task-priority">
@@ -122,35 +143,20 @@ export function TaskControls({
         <details>
           <summary>已补充的要求</summary>
           {t.amendments.map((a, i) => (
-            <p key={i}>{a.text}</p>
+            <div key={i}>
+              {a.replyTo && <blockquote>{a.replyTo.question}</blockquote>}
+              <p>{a.text}</p>
+            </div>
           ))}
         </details>
       ) : null}
-      {editing && (
-        <Dialog
-          open={editing}
-          onClose={() => setEditing(false)}
-          title={waiting ? "补充这项任务" : "调整任务方向"}
-        >
-          <p>
-            补充要求会保留已有证据和累计用量。保存后保持暂停，由你决定何时继续。
-          </p>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (saving || !direction.trim()) return;
-              setSaving(true);
-              void run(async () => {
-                try {
-                  await mutate("tasks/" + t.id + "/amend", "POST", { input: direction });
-                  setEditing(false);
-                  setDirection("");
-                  refresh();
-                } finally { setSaving(false); }
-              });
-            }}
-          >
-            <Field label="补充当前要求">
+      {editor && (
+        <Dialog open onClose={() => setEditor(null)} title={editor.title}>
+          {editor.question ? <blockquote>{editor.question.text}</blockquote> : (
+            <p>补充要求会保留已有证据和累计用量。保存后保持暂停，由你决定何时继续。</p>
+          )}
+          <form onSubmit={(e) => { e.preventDefault(); submitDirection(true); }}>
+            <Field label={editor.question ? "你的回答" : "补充当前要求"}>
               <textarea
                 rows={4}
                 value={direction}
@@ -160,9 +166,13 @@ export function TaskControls({
                 autoFocus
               />
             </Field>
-            <button className="primary" disabled={saving || !direction.trim()}>
-              {saving ? "正在保存…" : waiting ? "保存补充要求" : "保存调整"}
-            </button>
+            <div className="button-row">
+              <button className="primary" type="submit" disabled={saving || !direction.trim()}>
+                {saving ? "正在提交…" : editor.question ? "发送回答并继续" : waiting ? "保存补充要求" : "保存调整"}
+              </button>
+              {editor.question && <button type="button" disabled={saving || !direction.trim()}
+                onClick={() => submitDirection(false)}>只保存回答</button>}
+            </div>
           </form>
         </Dialog>
       )}
