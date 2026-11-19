@@ -485,7 +485,7 @@ export function Chat({
               onChange={(e) => setTitle(e.target.value)}
               maxLength={100}
               required
-              autoFocus
+              data-dialog-autofocus
             />
           </Field>
           <button className="primary">保存</button>

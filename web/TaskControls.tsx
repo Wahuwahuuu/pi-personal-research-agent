@@ -163,7 +163,7 @@ export function TaskControls({
                 onChange={(e) => setDirection(e.target.value)}
                 maxLength={2000}
                 required
-                autoFocus
+                data-dialog-autofocus
               />
             </Field>
             <div className="button-row">

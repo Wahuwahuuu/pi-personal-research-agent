@@ -431,6 +431,7 @@ try {
     } else await route.continue();
   });
   const rename = page.getByRole("dialog", { name: "重命名会话", exact: true });
+  await expect(rename.getByLabel("会话名称")).toBeFocused();
   await rename.getByLabel("会话名称").fill("可恢复的讨论");
   await rename.getByRole("button", { name: "保存", exact: true }).click();
   await expect(rename.getByRole("alert")).toBeVisible();
@@ -678,6 +679,7 @@ try {
   await longRow.getByRole("button", { name: "暂停任务", exact: true }).click();
   await expect(longRow.getByText("已暂停", { exact: true })).toBeVisible();
   await longRow.getByRole("button", { name: "调整方向", exact: true }).click();
+  await expect(page.getByLabel("补充当前要求", { exact: true })).toBeFocused();
   await page
     .getByLabel("补充当前要求", { exact: true })
     .fill("只比较研究方法，暂不讨论实验结果。");

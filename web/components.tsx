@@ -174,7 +174,12 @@ export function Dialog({
   useEffect(() => setFailure(""), [open]);
   useEffect(() => {
     const el = ref.current!;
-    if (open && !el.open) el.showModal();
+    if (open && !el.open) {
+      // Let showModal focus this field after it becomes interactive, including on reopen.
+      const field = el.querySelector<HTMLElement>("[data-dialog-autofocus]");
+      if (field) field.autofocus = true;
+      el.showModal();
+    }
     if (!open && el.open) el.close();
   }, [open]);
   return (
