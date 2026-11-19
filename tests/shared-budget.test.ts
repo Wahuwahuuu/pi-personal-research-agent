@@ -10,6 +10,40 @@ const now=Date.parse("2026-11-11T12:00:00+08:00");
 function storage(){const db=new DatabaseSync(":memory:");let depth=0;const port:StateStorage={sql:{exec<T>(q:string,...b:any[]){const s=db.prepare(q),v=(s.columns().length?s.all(...b):(s.run(...b),[])) as T[];return{toArray:()=>v};}},transactionSync<T>(fn:()=>T){if(depth)return fn();db.exec("BEGIN");depth++;try{const v=fn();db.exec("COMMIT");return v;}catch(e){db.exec("ROLLBACK");throw e;}finally{depth--;}}};return {db,port};}
 function setup(){const {db,port}=storage();const shared=new SharedBudget(port);for(const owner of ["a","b"])shared.validation.import(owner,{requests:0,input:0,output:0});return{db,port,shared};}
 const request=(id:string,input=1000000,output=1000000)=>({id,taskId:"task-"+id,input,output,model:QWEN_PRICE.model,baseUrl:QWEN_PRICE.baseUrl});
+test("shared task admission counts an unacknowledged reservation and does not charge a seventh",()=>{
+ const {db,port,shared}=setup();
+ const call=(id:string,used=0,limit=6)=>({...request(id,10,5),taskId:"root",taskBudget:{used,limit}});
+ for(let i=0;i<5;i++){const r=shared.reserve("a",call("a"+i,i),now);assert.ok(r.ok);shared.settle("a",r.id,{input:2,output:1});}
+ const missing=shared.reserve("a",call("unacknowledged",5),now);assert.ok(missing.ok);assert.equal(missing.taskCalls,6);
+ const reopened=new SharedBudget(port),repeat=reopened.reserve("a",call("unacknowledged",5),now);
+ assert.ok(repeat.ok);assert.equal(repeat.taskCalls,6);assert.equal(reopened.validation.snapshot().requests,6);
+ const denied=reopened.reserve("a",call("retry",5),now+181000);assert.deepEqual(denied,{ok:false,error:"MODEL_BUDGET",taskCalls:6});
+ assert.equal(reopened.taskCalls("a","root"),6);assert.equal(reopened.validation.snapshot().requests,6);
+ assert.equal(reopened.calls("a").items.find(r=>r.id==="unacknowledged").status,"unknown");
+ const other=reopened.reserve("b",call("another-owner"),now+181000);assert.ok(other.ok);assert.equal(other.taskCalls,1);
+ assert.equal(reopened.taskCalls("a","root"),6);assert.equal(reopened.taskCalls("b","root"),1);db.close();
+});
+
+test("legacy task counts, imported receipts, translation and later segments keep a single cumulative allowance",()=>{
+ const {db,port,shared}=setup();
+ // The import source is a distinct historical ledger.
+ const source=storage(),old=new BudgetLedger(source.port);
+ const first={...request("historical",10,2),taskId:"goal"};old.reserve(first,now);old.settle(first.id,{input:4,output:1});
+ shared.import("a",source.port.sql.exec("SELECT * FROM pra_model_calls").toArray());source.db.close();
+ const bill=(id:string,used:number,limit:number)=>({...request(id,10,2),taskId:"goal",taskBudget:{used,limit}});
+ const r=shared.reserve("a",bill("translation",4,6),now);assert.ok(r.ok);assert.equal(r.taskCalls,5);shared.settle("a",r.id,{input:3,output:1});
+ const nextMonth=Date.parse("2026-12-01T02:00:00+08:00"),reopened=new SharedBudget(port);
+ const last=reopened.reserve("a",bill("after-month",4,6),nextMonth);assert.ok(last.ok);assert.equal(last.taskCalls,6);reopened.settle("a",last.id,{input:3,output:1});
+ assert.deepEqual(reopened.reserve("a",bill("more-than-segment",4,6),nextMonth),{ok:false,error:"MODEL_BUDGET",taskCalls:6});
+ for(let n=6;n<24;n++){
+  const admitted=reopened.reserve("a",bill("later-"+n,n,Math.min(24,(Math.floor(n/6)+1)*6)),nextMonth);
+  assert.ok(admitted.ok);assert.equal(admitted.taskCalls,n+1);reopened.settle("a",admitted.id,{input:2,output:1});
+ }
+ assert.deepEqual(reopened.reserve("a",bill("beyond-goal",20,24),nextMonth),{ok:false,error:"MODEL_BUDGET",taskCalls:24});
+ assert.throws(()=>reopened.reserve("a",bill("invalid",20,25),nextMonth),/INVALID_TASK_BUDGET/);
+ assert.equal(reopened.snapshot(nextMonth).reserved,0);assert.equal(reopened.taskCalls("a","goal"),24);db.close();
+});
+
 test("two accounts share one application ceiling instead of receiving separate 50 CNY allowances",()=>{
  const {db,shared:s}=setup();let admitted=0;
  db.prepare("INSERT INTO pra_budget_months(month,spent) VALUES(?,?)").run("2026-11",49998000);

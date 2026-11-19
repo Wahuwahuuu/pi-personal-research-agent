@@ -5,8 +5,8 @@ import {PlatformResources,type PlatformStatus,type PlatformMonitoring} from "./p
 import {collectPlatformMetrics} from "./platform-analytics.ts";
 import {RecoveryStore,type RecoveryCheckpoint} from "./recovery-store.ts";
 import { DiscoveryGate } from "./discovery-gate.ts";
-import {SharedBudget} from "./shared-budget.ts";
-import type {ModelUsage,BudgetLedger} from "./budget.ts";
+import {SharedBudget,type SharedReservation} from "./shared-budget.ts";
+import type {ModelUsage} from "./budget.ts";
 import { DurableObject } from "cloudflare:workers";
 import { generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse } from "@simplewebauthn/server";
 import { IdentityStore, type Account } from "./identity-store.ts";
@@ -84,7 +84,15 @@ export class IdentityRegistry extends DurableObject<Env> {
   }
   return !this.store.db.sql.exec("SELECT id FROM identity_accounts WHERE id NOT IN (SELECT owner FROM pra_validation_imports) LIMIT 1").toArray().length;
  }
- async reserveBudget(owner:string,request:Parameters<BudgetLedger["reserve"]>[0]){
+ async taskCallCount(owner:string,task:string){
+  if(!this.store.account(owner))throw new Problem("UNKNOWN_ACCOUNT",404);
+  if(!this.budget.validation.imported(owner)){
+   await this.prepareBudgets();
+   if(!this.budget.validation.imported(owner))throw new Problem("VALIDATION_MIGRATION_REQUIRED",503);
+  }
+  return this.budget.taskCalls(owner,task);
+ }
+ async reserveBudget(owner:string,request:SharedReservation){
   if(!this.store.account(owner))throw Error("UNKNOWN_ACCOUNT");
   try{if(this.configureBudget().frozen)return{ok:false as const,error:"BUDGET_FROZEN"};}catch(error){if(error instanceof Problem&&BUDGET_STOPS.has(error.code))return{ok:false as const,error:error.code};throw error;}
   if(request.background){const resources=await this.platformStatus();if(resources.blocked)return{ok:false as const,error:resources.reason!};}

@@ -3,12 +3,17 @@ import {ValidationBudget} from "./validation-budget.ts";
 import {BudgetLedger,BUDGET_STOPS,type ModelUsage} from "./budget.ts";
 import {Problem} from "./domain.ts";
 import type {StateStorage} from "./state-store.ts";
+export type SharedReservation = Parameters<BudgetLedger["reserve"]>[0] & {
+ taskBudget?: {used: number; limit: number};
+};
 export class SharedBudget {
  readonly ledger:BudgetLedger;readonly db:StateStorage;readonly validation:ValidationBudget;readonly transfer:BudgetTransfer;
  constructor(db:StateStorage){
   this.db=db;this.ledger=new BudgetLedger(db);this.validation=new ValidationBudget(db);this.transfer=new BudgetTransfer(db,this.validation);
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_budget_imports(owner TEXT PRIMARY KEY)");
   db.sql.exec("CREATE TABLE IF NOT EXISTS pra_budget_owners(id TEXT PRIMARY KEY,owner TEXT NOT NULL)");
+  db.sql.exec("CREATE INDEX IF NOT EXISTS pra_shared_call_task ON pra_model_calls(task_id,id)");
+  db.sql.exec("CREATE TABLE IF NOT EXISTS pra_task_call_baselines(owner TEXT NOT NULL,task TEXT NOT NULL,extra INTEGER NOT NULL,PRIMARY KEY(owner,task))");
  }
  import(owner:string,rows:any[]){
   if(this.db.sql.exec("SELECT owner FROM pra_budget_imports WHERE owner=?",owner).toArray().length)return;
@@ -24,7 +29,14 @@ export class SharedBudget {
    this.db.sql.exec("INSERT INTO pra_budget_imports VALUES(?)",owner);
   });
  }
- reserve(owner:string,request:Parameters<BudgetLedger["reserve"]>[0],now=Date.now()){
+ /** Historical imports may have a local count with no individual receipts in this ledger. */
+ taskCalls(owner: string, task: string): number {
+  return this.db.sql.exec<{calls: number}>(
+   "SELECT (SELECT COUNT(*) FROM pra_model_calls c JOIN pra_budget_owners o ON o.id=c.id WHERE c.task_id=? AND o.owner=?)" +
+   " + COALESCE((SELECT extra FROM pra_task_call_baselines WHERE owner=? AND task=?),0) AS calls", task,owner,owner,task,
+  ).toArray()[0].calls;
+ }
+ reserve(owner:string,request:SharedReservation,now=Date.now()){
   if(this.transfer.view().sealed)return{ok:false as const,error:"BUDGET_TRANSFER_SEALED"};
   // A model HTTP attempt has a 90-second timeout. Stale reservations stay charged,
   // rather than becoming free when the coordinating object is restarted.
@@ -32,9 +44,18 @@ export class SharedBudget {
   try{return this.db.transactionSync(()=>{
    const existing=this.db.sql.exec<{owner:string}>("SELECT owner FROM pra_budget_owners WHERE id=?",request.id).toArray()[0];
    if(existing&&existing.owner!==owner)throw new Problem("RESERVATION_CONFLICT",409);
+   const {used,limit}=request.taskBudget??{used:0,limit:6};
+   if(!Number.isSafeInteger(used)||used<0||!Number.isSafeInteger(limit)||limit<1||limit>24)throw new Problem("INVALID_TASK_BUDGET",400);
+   let calls=this.taskCalls(owner,request.taskId);
+   if(!existing&&used>calls){
+    // Store only the uncovered difference. Receipts from older runtimes continue to count.
+    this.db.sql.exec("INSERT INTO pra_task_call_baselines VALUES(?,?,?) ON CONFLICT(owner,task) DO UPDATE SET extra=extra+excluded.extra",owner,request.taskId,used-calls);
+    calls=used;
+   }
+   if(!existing&&calls>=limit)return {ok:false as const,error:"MODEL_BUDGET",taskCalls:calls};
    this.validation.reserve(owner,request,now);
    const id=this.ledger.reserve(request,now);this.db.sql.exec("INSERT OR IGNORE INTO pra_budget_owners VALUES(?,?)",id,owner);
-   return{ok:true as const,id,budget:this.snapshot(now)};
+   return{ok:true as const,id,budget:this.snapshot(now),taskCalls:existing?calls:calls+1};
   });}catch(e){if(e instanceof Problem&&BUDGET_STOPS.has(e.code))return{ok:false as const,error:e.code};throw e;}
  }
  settle(owner:string,id:string,usage?:ModelUsage){

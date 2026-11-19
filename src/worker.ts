@@ -22,7 +22,7 @@ import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts"
 import {DeviceIndexes} from "./device-indexes.ts";
 import {PLATFORM_STOPS,applyPlatformWait,type PlatformStatus} from "./platform-resources.ts";
 import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,orderedTasks,nextResearchTurn} from "./task-control.ts";
-import {taskAllowance} from "./domain.ts";
+import {hasContinuationBudget,taskAllowance} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries,storeReadingEntries} from "../packages/research/memory.ts";
 import {canSaveTaskAnswer,ARTIFACT_REVISION_BODY_LIMIT, ARTIFACT_TITLE_LIMIT} from "./artifact-contract.ts";
@@ -225,13 +225,25 @@ export class PersonalAgent extends DurableObject<Env> {
           if(t.origin==="schedule"){const status=await this.identityRegistry().platformStatus();if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);}
           if(t.proactive&&!this.proactive.allowed(t)){t.pauseRequested=true;t.proactive.planPaused=true;throw new Problem("PLAN_PAUSED");}
           const budget=t.budgetTaskId?getTask(this.state,t.budgetTaskId):t;
+          const allowance=taskAllowance(budget);
+          if(allowance.calls<=0||allowance.activeMs<=0)throw new Problem("MODEL_BUDGET",429);
           reservedOutput=outputLimit();
           reservationId=env.MODEL_MODE!=="mock"?crypto.randomUUID():undefined;
-          const request={id:reservationId!,taskId:budget.id,input:52000,output:reservedOutput,background:t.origin==="schedule",model:env.MODEL_ID??"",baseUrl:env.MODEL_BASE_URL??""};
+          let knownCalls=budget.calls;
+          const request={id:reservationId!,taskId:budget.id,taskBudget:{used:knownCalls,limit:knownCalls+allowance.calls},input:52000,output:reservedOutput,background:t.origin==="schedule",model:env.MODEL_ID??"",baseUrl:env.MODEL_BASE_URL??""};
           if(reservationId){
             let admission:Awaited<ReturnType<IdentityRegistry["reserveBudget"]>>;
             try{admission=await this.identityRegistry().reserveBudget(this.ownerId,request);}catch{reservationId=undefined;throw new Error("BILLING_UNAVAILABLE");}
-            if(!admission.ok){reservationId=undefined;throw new Problem(admission.error,429);}
+            if(!admission.ok){
+              reservationId=undefined;
+              if("taskCalls" in admission && typeof admission.taskCalls==="number")this.observeTaskCalls(budget,admission.taskCalls);
+              throw new Problem(admission.error,429);
+            }
+            if(!Number.isSafeInteger(admission.taskCalls)||admission.taskCalls<1){
+              this.queueBill(reservationId,{input:0,output:0});reservationId=undefined;
+              await this.flushBills();throw new Problem("BILLING_UNAVAILABLE",503);
+            }
+            knownCalls=Math.max(knownCalls,admission.taskCalls-1);
             this.sharedBudgetSnapshot=admission.budget;
           }
           const previousUsage={...this.state.usage},previousCalls=budget.calls,previousChildCalls=t.calls;
@@ -240,6 +252,7 @@ export class PersonalAgent extends DurableObject<Env> {
             assertModelSubmission(messages,t.modelPrompt);
             if(this.state.cloudMemory?.invalidatedTurns?.includes(t.id))throw new Error("CONTEXT_CHANGED");
             this.database.transactionSync(()=>{
+              budget.calls=Math.max(budget.calls,knownCalls);
               reserve(this.state,budget,52000,reservedOutput);
               if(budget!==t)t.calls++;
               timingCall={taskId:t.id,call:beginModelTiming(t,env.MODEL_MODE==="mock"?"mock":"live")};
@@ -548,6 +561,18 @@ export class PersonalAgent extends DurableObject<Env> {
     return !!token && this.validHash(await digest(token), kind);
   }
   identityRegistry(){return this.env.IDENTITIES.getByName("accounts:"+this.env.OWNER_ID);}
+  private observeTaskCalls(budget:Task,calls:number){
+    if(!Number.isSafeInteger(calls)||calls<0)throw new Problem("BILLING_UNAVAILABLE",503);
+    if(calls>budget.calls&&this.state.tasks.includes(budget)){budget.calls=calls;this.save();}
+  }
+  private async recoverTaskCalls(task:Task){
+    const budget=task.budgetTaskId?getTask(this.state,task.budgetTaskId):task;
+    if(this.env.MODEL_MODE!=="mock"){
+      const count=await this.identityRegistry().taskCallCount(this.ownerId,budget.id);
+      this.observeTaskCalls(budget,count);
+    }
+    return budget;
+  }
   queueBill(id:string,usage?:{input:number;output:number}){this.ctx.storage.sql.exec("INSERT INTO pra_billing_outbox VALUES(?,?) ON CONFLICT(id) DO UPDATE SET usage=excluded.usage",id,JSON.stringify(usage??null));}
   async flushBills(){
     const rows=this.ctx.storage.sql.exec<{id:string;usage:string}>("SELECT id,usage FROM pra_billing_outbox LIMIT 100").toArray();
@@ -857,6 +882,9 @@ export class PersonalAgent extends DurableObject<Env> {
     if(control&&r.method==="POST"){
       const t=getTask(this.state,control[1]),b=await this.body(r);
       if(t.control)throw new Problem("CONTROL_REQUIRES_MESSAGE",409);
+      if((control[2]==="resume"||control[2]==="amend")&&["RESEARCH_INTERRUPTED","BILLING_UNAVAILABLE"].includes(t.error??"")){
+        try{await this.recoverTaskCalls(t);}catch{throw new Problem("BILLING_UNAVAILABLE",503);}
+      }
       if(control[2]==="resume"&&t.origin==="schedule"){const status=await this.identityRegistry().platformStatus();if(status.blocked)throw new Problem(status.reason??"PLATFORM_METRICS_UNAVAILABLE",429);}
       const value=this.workspace.once(b.requestId??crypto.randomUUID(),"task:"+control[1]+":"+control[2],b,()=>{
         if(control[2]==="pause"){pauseTask(t);if(t.proactive)t.proactive.planPaused=false;}
@@ -1643,6 +1671,13 @@ export class PersonalAgent extends DurableObject<Env> {
         t.status=partial.status;t.error="RESEARCH_INTERRUPTED";t.updated=Date.now();
         checkpoint(t,"model_interrupted");
         if(t.origin!=="schedule")notice(this.state,"interrupted:"+t.id,"本轮研究中断，已保存进度："+t.input.slice(0,100));
+        if(this.env.MODEL_MODE!=="mock"){
+          this.save(); // The retained answer survives a failed call to the shared ledger.
+          try{
+            const budget=await this.recoverTaskCalls(t);
+            if(t.status==="waiting_user"&&t.error==="RESEARCH_INTERRUPTED"&&!hasContinuationBudget(budget))t.error=budget.goal?"GOAL_BUDGET":"MODEL_BUDGET";
+          }catch{if(t.status==="waiting_user"&&t.error==="RESEARCH_INTERRUPTED")t.error="BILLING_UNAVAILABLE";}
+        }
       } else failResearch(this.state, t, t.modelFailure ?? result.reason ?? "MODEL_FAILED");
       this.save();
     }
