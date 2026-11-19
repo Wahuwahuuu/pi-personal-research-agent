@@ -311,7 +311,11 @@ export class StateRepository {
     const state = this.read(true);
     this.knownConversations=new Set((state.conversations??[]).map(c=>c.id));
     this.cached = this.fingerprints(this.split(state));
-    bindTaskQueries(state,{recentOverview:limit=>this.recentOverviewRows(state,limit),page:query=>this.taskPageRows(state,query),active:includeOpen=>this.activeTaskRows(state,includeOpen),byRequest:requestId=>this.taskRequest(state,requestId)});
+    const persistedActive = new Map<boolean, Set<string>>();
+    bindTaskQueries(state,{
+      recentOverview:limit=>this.recentOverviewRows(state,limit), page:query=>this.taskPageRows(state,query),
+      active:includeOpen=>this.activeTaskRows(state,includeOpen,persistedActive), byRequest:requestId=>this.taskRequest(state,requestId),
+    });
     return state;
   }
   /** Loaded/new values are authoritative until save; SQL is only used for untouched entities. */
@@ -391,16 +395,31 @@ export class StateRepository {
     }else selected.push(...this.storedTaskPage(saved,query));
     return selected.sort(taskPageOrder).slice(0,query.limit+1);
   }
-  private activeTaskRows(state:State,includeOpen:boolean):Task[]{
-    const {saved,overlay}=this.taskOverlay(state),selected:Task[]=[],predicate="json_extract(header,'$.status') NOT IN ('completed','failed','cancelled')"+(includeOpen?" OR json_extract(header,'$.runOpen')=1":"");
-    let after="";
-    while(saved.size){
-      const rows=this.storage.sql.exec<{id:string}>("SELECT id FROM pra_data_tasks WHERE ("+predicate+") AND id>? ORDER BY id LIMIT 200",after).toArray();
-      for(const row of rows){const task=saved.get(row.id);if(task)selected.push(task);}
-      if(rows.length<200)break;after=rows.at(-1)!.id;
+  private persistedActiveIds(includeOpen: boolean): Set<string> {
+    const predicate = "json_extract(header,'$.status') NOT IN ('completed','failed','cancelled')" +
+      (includeOpen ? " OR json_extract(header,'$.runOpen')=1" : "");
+    const ids = new Set<string>();
+    let after = "";
+    for (;;) {
+      const rows = this.storage.sql.exec<{id: string}>(
+        "SELECT id FROM pra_data_tasks WHERE ("+predicate+") AND id>? ORDER BY id LIMIT 200", after,
+      ).toArray();
+      for (const row of rows) ids.add(row.id);
+      if (rows.length < 200) return ids;
+      after = rows[rows.length - 1].id;
     }
-    const ids=new Set([...selected,...overlay.filter(t=>!closedTask(t)||(includeOpen&&t.runOpen))].map(t=>t.id));
-    return state.tasks.filter(t=>ids.has(t.id));
+  }
+  private activeTaskRows(state: State, includeOpen: boolean, persisted: Map<boolean, Set<string>>): Task[] {
+    let ids = persisted.get(includeOpen);
+    return state.tasks.filter(task => {
+      // A write hydrates its entity. New and edited tasks always use their current state.
+      if (this.entities.get(task)?.loaded !== false) return !closedTask(task) || (includeOpen && task.runOpen);
+      if (!ids) {
+        ids = this.persistedActiveIds(includeOpen);
+        persisted.set(includeOpen, ids);
+      }
+      return ids.has(task.id);
+    });
   }
   private fingerprints(split: ReturnType<StateRepository["split"]>) {
     const cache = new Map<string, string>();

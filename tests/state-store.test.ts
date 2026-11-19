@@ -400,6 +400,28 @@ test("SQL candidates cross 200-row boundaries and pagination fills gaps left by 
  const active=activeTasks(loaded);assert.equal(active.length,503);assert.equal(active.at(-1)!.id,"t0502");
  const page=taskPage(loaded,{status:"queued",limit:10});assert.deepEqual(page.items.map(t=>t.id),Array.from({length:10},(_,i)=>"t"+String(502-i).padStart(4,"0")));assert.equal(page.nextCursor,"493:t0493");assert.equal(cold.save(loaded).writes,107);f.db.close();
 });
+test("repeated scheduling reuses persisted candidates and still sees edits, deletions and recovery",()=>{
+ const f=fixture(),writer=new StateRepository(f.storage),s=writer.load(),base=submit(s,"stored","base","chat");
+ s.tasks=Array.from({length:225},(_,i)=>({...base,id:"old"+String(i).padStart(3,"0"),requestId:"r"+i,
+   status:i<205?"waiting_device":"completed",runOpen:i===224}));
+ writer.save(s);
+ const store=new StateRepository(f.storage);let state=store.load();f.queries.length=0;
+ const active=()=>activeTasks(state).map(t=>t.id),allOpen=()=>activeTasks(state,true).map(t=>t.id);
+ const selects=()=>f.queries.filter(q=>q.sql.startsWith("SELECT id FROM pra_data_tasks WHERE (json_extract")).length;
+ const cold=active(),open=allOpen();assert.equal(cold.length,205);assert.equal(open.length,206);
+ const coldQueries=selects();assert.equal(coldQueries,4);
+ for(let i=0;i<12;i++){assert.deepEqual(active(),cold);assert.deepEqual(allOpen(),open);}
+ assert.equal(selects(),coldQueries);assert.equal(payloadReads(f,"tasks"),0);
+ const old=state.tasks.find(t=>t.id==="old000")!,resumed=state.tasks.find(t=>t.id==="old208")!;
+ old.status="completed";resumed.status="queued";state.tasks.find(t=>t.id==="old224")!.runOpen=false;
+ state.tasks=state.tasks.filter(t=>t.id!=="old001");const fresh=submit(state,"new","new","research");
+ const expected=[...cold.slice(2),resumed.id,fresh.id];assert.deepEqual(active(),expected);assert.deepEqual(allOpen(),expected);
+ f.setFail(true);assert.throws(()=>store.save(state),/INJECTED/);f.setFail(false);assert.deepEqual(active(),expected);assert.equal(selects(),coldQueries);
+ store.save(state);assert.deepEqual(allOpen(),expected);assert.equal(selects(),coldQueries);
+ state=store.load();assert.deepEqual(active(),expected);assert.deepEqual(allOpen(),expected);assert.equal(selects(),coldQueries+4);
+ f.db.close();
+});
+
 test("task SQL views use expression and partial indexes rather than temporary whole-history sorting",()=>{
  const f=fixture();new StateRepository(f.storage);
  const queries=[
