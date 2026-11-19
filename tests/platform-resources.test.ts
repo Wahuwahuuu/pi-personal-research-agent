@@ -38,6 +38,24 @@ test("unknown statistics stop background admission, while stale and cross-day re
   assert.equal(f.guard.status(midnight).reason,"PLATFORM_METRICS_STALE");
  }finally{f.db.close();}
 });
+test("budget views retain a measured zero, missing and aged data while limiting shared-account totals to the owner",()=>{
+ const {db,guard}=fixture();
+ try{
+  assert.equal(guard.budgetView(true,"automatic",now).snapshot,null);
+  const unconfigured=guard.budgetView(true,"unconfigured",now);assert.equal(unconfigured.monitoring,"unconfigured");
+  const raw=report(now,0);raw.project.sqliteRowsRead={status:"no_data",value:0};raw.account.sqliteRowsRead.value=17;
+  guard.record("cached",raw,"research",now);
+  const owner=guard.budgetView(true,"automatic",now);
+  assert.equal(owner.snapshot?.project.workerRequests,0);assert.equal(owner.snapshot?.project.sqliteRowsRead,null);
+  assert.equal(owner.snapshot?.account.sqliteRowsRead,17);assert.equal(owner.limits,PLATFORM_LIMITS);
+  const member=guard.budgetView(false,"automatic",now);
+  assert.equal(member.snapshot,undefined);assert.equal(member.limits,undefined);assert.equal(member.reason,owner.reason);
+  assert.equal(guard.budgetView(true,"automatic",now+76*60000).reason,"PLATFORM_METRICS_STALE");
+  assert.ok(!JSON.stringify(owner).includes(raw.accountScope));assert.ok(!JSON.stringify(owner).includes(raw.scriptName));
+  guard.record("clear",report(now+1), "research",now+1);
+  assert.equal(guard.budgetView(true,"incomplete",now+1).reason,"PLATFORM_METRICS_UNAVAILABLE");
+ }finally{db.close();}
+});
 test("idempotent imports, account binding and timestamp ordering prevent old low usage from reopening work",()=>{
  const f=fixture();try{
   const r=report();f.guard.record("once",r,"research",now);

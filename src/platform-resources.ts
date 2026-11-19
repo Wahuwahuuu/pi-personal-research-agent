@@ -22,6 +22,12 @@ function counts(raw:any):Counts{
  }
  return result;
 }
+export type PlatformMonitoring = "automatic" | "unconfigured" | "incomplete";
+export interface PlatformBudgetView extends PlatformStatus {
+ monitoring: PlatformMonitoring;
+ snapshot?: Pick<Snapshot,"day" | "account" | "project"> | null;
+ limits?: typeof PLATFORM_LIMITS;
+}
 export class PlatformResources{
  readonly db:StateStorage;
  constructor(db:StateStorage){this.db=db;
@@ -49,15 +55,26 @@ export class PlatformResources{
    return this.view(now);
   });
  }
- status(now=Date.now()):PlatformStatus{
-  const s=this.snapshot(),nextCheck=now+60000;
+ status(now=Date.now()):PlatformStatus{return this.statusFor(this.snapshot(),now);}
+ private statusFor(s:Snapshot|undefined,now:number):PlatformStatus{
+  const nextCheck=now+60000;
   if(!s)return{enabled:false,blocked:false,nextCheck};
   if(s.day!==day(now)||now-s.observedAt>75*60000)return{enabled:true,blocked:true,reason:"PLATFORM_METRICS_STALE",nextCheck,observedAt:s.observedAt};
   const all=[...Object.values(s.account),...Object.values(s.project)];
   const limit=(Object.keys(PLATFORM_LIMITS) as (keyof Counts)[]).some(k=>(s.account[k]!==null&&s.account[k]!>=PLATFORM_LIMITS[k][0]*0.8)||(s.project[k]!==null&&s.project[k]!>=PLATFORM_LIMITS[k][1]));
   return{enabled:true,blocked:limit||all.includes(null),reason:limit?"PLATFORM_RESOURCE_LIMIT":all.includes(null)?"PLATFORM_METRICS_UNAVAILABLE":undefined,nextCheck,observedAt:s.observedAt};
  }
- view(now=Date.now()){const s=this.snapshot();return{...this.status(now),snapshot:s?{...s,accountScope:undefined}:null,automaticPauseApplied:this.status(now).blocked};}
+ /** Display the last stored observation without performing a provider refresh. */
+ budgetView(owner:boolean,monitoring:PlatformMonitoring,now=Date.now()):PlatformBudgetView{
+  const s=this.snapshot(),status=this.statusFor(s,now);
+  if(monitoring==="incomplete")Object.assign(status,{enabled:true,blocked:true,reason:"PLATFORM_METRICS_UNAVAILABLE"});
+  if(!owner)return {...status,monitoring};
+  return {...status,monitoring,limits:PLATFORM_LIMITS,snapshot:s?{day:s.day,account:s.account,project:s.project}:null};
+ }
+ view(now=Date.now()){
+  const s=this.snapshot(),status=this.statusFor(s,now);
+  return{...status,snapshot:s?{...s,accountScope:undefined}:null,automaticPauseApplied:status.blocked};
+ }
 }
 export function applyPlatformWait(s:State,status:PlatformStatus){
  let changed=false;

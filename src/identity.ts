@@ -1,7 +1,7 @@
 import {IdentityMutations} from "./identity-mutations.ts";
 import {readBudgetDeployment,type BudgetDeployment} from "./budget-transfer.ts";
 import {BUDGET_STOPS} from "./budget.ts";
-import {PlatformResources,type PlatformStatus} from "./platform-resources.ts";
+import {PlatformResources,type PlatformStatus,type PlatformMonitoring} from "./platform-resources.ts";
 import {collectPlatformMetrics} from "./platform-analytics.ts";
 import {RecoveryStore,type RecoveryCheckpoint} from "./recovery-store.ts";
 import { DiscoveryGate } from "./discovery-gate.ts";
@@ -52,8 +52,12 @@ export class IdentityRegistry extends DurableObject<Env> {
   this.platformRefresh=pending;
   try{return await pending;}finally{this.platformRefresh=undefined;}
  }
+ private platformMonitoring():PlatformMonitoring{
+  if(!this.env.CLOUDFLARE_METRICS_TOKEN)return "unconfigured";
+  return this.env.CLOUDFLARE_ACCOUNT_ID&&this.env.RESOURCE_WORKER_NAME?"automatic":"incomplete";
+ }
  async platformStatus():Promise<PlatformStatus>{
-  if(this.env.CLOUDFLARE_METRICS_TOKEN&&(!this.env.CLOUDFLARE_ACCOUNT_ID||!this.env.RESOURCE_WORKER_NAME))return{enabled:true,blocked:true,reason:"PLATFORM_METRICS_UNAVAILABLE",nextCheck:Date.now()+60000};
+  if(this.platformMonitoring()==="incomplete")return{enabled:true,blocked:true,reason:"PLATFORM_METRICS_UNAVAILABLE",nextCheck:Date.now()+60000};
   if(this.env.CLOUDFLARE_METRICS_TOKEN&&!this.platform.snapshot())return this.refreshPlatform();
   return this.platform.status();
  }
@@ -125,9 +129,12 @@ export class IdentityRegistry extends DurableObject<Env> {
   if(path==="/api/platform"||path==="/api/platform/refresh"){
    if(!identity)throw new Problem("UNAUTHORIZED",401);
    if(path==="/api/platform"&&r.method==="GET"){
+    const monitoring=this.platformMonitoring(),ownerView=identity.role==="owner";
+    if(url.searchParams.get("view")==="budget")return json(this.platform.budgetView(ownerView,monitoring));
     const status=await this.platformStatus();
     if(url.searchParams.get("view")==="status")return json(status);
-    return json({...this.platform.view(),...status,workerName:this.env.RESOURCE_WORKER_NAME,cloudMonitoringConfigured:!!(this.env.CLOUDFLARE_METRICS_TOKEN&&this.env.CLOUDFLARE_ACCOUNT_ID&&this.env.RESOURCE_WORKER_NAME)});
+    if(!ownerView)return json({...status,snapshot:null,automaticPauseApplied:status.blocked,cloudMonitoringConfigured:monitoring==="automatic"});
+    return json({...this.platform.view(),...status,workerName:this.env.RESOURCE_WORKER_NAME,cloudMonitoringConfigured:monitoring==="automatic"});
    }
    if(r.method==="POST"){
     if(identity.role!=="owner")throw new Problem("FORBIDDEN",403);

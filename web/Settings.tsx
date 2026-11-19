@@ -1,3 +1,4 @@
+import {CloudResources} from "./CloudResources.tsx";
 import {DataRetention} from "./DataRetention.tsx";
 import {RecoveryCheckpoints} from "./RecoveryCheckpoints.tsx";
 import {DeletionRecords} from "./DeletionRecords.tsx";
@@ -496,6 +497,7 @@ export function SettingsView({
               </a>
             </>
           )}
+          <CloudResources />
         </div>
       )}
       {section === "data" && (

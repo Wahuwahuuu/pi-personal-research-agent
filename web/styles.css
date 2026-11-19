@@ -1963,6 +1963,19 @@ input,
 textarea {
   caret-color: var(--accent);
 }
+
+.cloud-resources { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
+.cloud-resources .row-between { flex-wrap: wrap; gap: 8px; }
+.cloud-resource-table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13px; font-variant-numeric: tabular-nums; }
+.cloud-resource-table caption { text-align: left; color: var(--muted); padding-bottom: 10px; }
+.cloud-resource-table th, .cloud-resource-table td { text-align: left; padding: 10px 6px; border-bottom: 1px solid var(--line); }
+.cloud-resource-table th:first-child { padding-left: 0; }
+.cloud-resource-table small { display: block; color: var(--muted); margin-top: 2px; }
+@media (max-width: 600px) {
+  .cloud-resource-table { font-size: 12px; }
+  .cloud-resource-table th, .cloud-resource-table td { padding: 8px 3px; }
+}
+
 .budget-summary,
 .key-values dd,
 .pager {
