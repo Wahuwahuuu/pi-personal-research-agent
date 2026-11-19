@@ -9,23 +9,14 @@ import { nodeCatalog, catalogPages } from "../local/catalog.ts";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, writeFile, readFile, readdir,cp } from "node:fs/promises";
 import { resolve } from "node:path";
+import { createServer, type AddressInfo } from "node:net";
 import assert from "node:assert/strict";
+let port = 0, base = "";
 const root = process.cwd(),
-  port = 8797,
-  base = `http://127.0.0.1:${port}`,
   directory = resolve(".local/integration", "run-"+crypto.randomUUID());
 await mkdir(directory, { recursive: true });
 await mkdir("docs/validation", { recursive: true });
 const admin = crypto.randomUUID() + crypto.randomUUID();
-const existing = await readFile(".dev.vars", "utf8").catch(() => undefined);
-if (existing)
-  throw new Error(
-    "Refusing to replace existing .dev.vars; use a clean validation checkout.",
-  );
-await writeFile(
-  ".dev.vars",
-  `ADMIN_TOKEN="${admin}"\nOWNER_ID="validation-${crypto.randomUUID()}"\n`,
-);
 const isolated=JSON.parse((await readFile("wrangler.jsonc","utf8")).replace(/,\s*([}\]])/g,"$1"));
 isolated.main=resolve("src/worker.ts");isolated.assets.directory=resolve(directory,"assets");
 isolated.vars={...isolated.vars,ADMIN_TOKEN:admin,OWNER_ID:"validation-"+crypto.randomUUID(),MODEL_MODE:"mock"};
@@ -49,12 +40,12 @@ async function stopChild(p: ChildProcess) {
     });
   } else p.kill();
 }
-function child(args: string[], env: NodeJS.ProcessEnv = process.env) {
+function child(args: string[], env: NodeJS.ProcessEnv = process.env, worker = false) {
   const p = spawn(process.execPath, args, {
-    cwd: root,
-    env: { ...env, WRANGLER_SEND_METRICS: "false" },
+    cwd: worker ? directory : root,
+    env: { ...env, WRANGLER_SEND_METRICS: "false", CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV: "false" },
     windowsHide: true,
-    stdio: "pipe",
+    stdio: worker ? ["pipe", "pipe", "pipe", "ipc"] : "pipe",
   });
   children.push(p);
   p.stdout?.on("data", (d) => {
@@ -88,28 +79,41 @@ async function api(path: string, method = "GET", body?: unknown, expected?:numbe
   if(expected!==undefined)assert.equal(r.status,expected,JSON.stringify(value));else assert.ok(r.ok, JSON.stringify(value));
   return value;
 }
+async function startServer() {
+  const p = child([resolve(root, "node_modules/wrangler/bin/wrangler.js"), "dev", "--config", isolatedConfig,
+    "--local", "--ip", "127.0.0.1", "--port", String(port), "--var", "RESEARCH_ENGINE:durable",
+    "--persist-to", directory], process.env, true);
+  // Only accept the address reported by this child, including after a restart.
+  const bound = await new Promise<number>((ok, no) => {
+    const timer = setTimeout(() => no(Error("WORKER_START_TIMEOUT")), 60000);
+    p.once("exit", code => { clearTimeout(timer); no(Error("WORKER_EXITED_" + code)); });
+    p.once("error", err => { clearTimeout(timer); no(err); });
+    p.on("message", payload => {
+      if (typeof payload !== "string") return;
+      const message = JSON.parse(payload);
+      if (message.event === "DEV_SERVER_READY" && message.ip === "127.0.0.1" && Number.isInteger(message.port) && message.port > 0) {
+        clearTimeout(timer);
+        ok(message.port);
+      }
+    });
+  });
+  if (port) assert.equal(bound, port, "the same node and origin must reconnect after a restart");
+  port = bound;
+  base = "http://127.0.0.1:" + bound;
+  await until(async () => (await fetch(base)).ok, 60000);
+  return p;
+}
+async function availableNodePort() {
+  const probe = createServer();
+  await new Promise<void>((ok, no) => { probe.once("error", no); probe.listen(0, "127.0.0.1", ok); });
+  const selected = (probe.address() as AddressInfo).port;
+  await new Promise<void>((ok, no) => probe.close(err => err ? no(err) : ok()));
+  return selected;
+}
 const checks: string[] = [];
 const start = Date.now();
 try {
-  const serverArgs = [
-    "node_modules/wrangler/bin/wrangler.js",
-    "dev",
-    "--config",isolatedConfig,
-    "--local",
-    "--ip",
-    "127.0.0.1",
-    "--port",
-    String(port),
-    "--var",
-    "RESEARCH_ENGINE:durable",
-    "--persist-to",
-    directory,
-  ];
-  let server = child(serverArgs);
-  await until(async () => {
-    const r = await fetch(base);
-    return r.ok;
-  }, 60000);
+  let server = await startServer();
   assert.equal((await fetch(base + "/api/state")).status, 401);
   checks.push("unauthenticated API rejected");
   const login = await fetch(base + "/api/login", {
@@ -209,13 +213,13 @@ try {
   checks.push("offline retrieval paused without new model calls");
   checks.push(...await verifyConversationControls(api));
   const pair = await api("device/pair", "POST", {});
-  const config = resolve(directory, "node.json");
+  const config = resolve(directory, "node.json"), nodePort = await availableNodePort();
   await writeFile(
     config,
     JSON.stringify({
       endpoint: base,
       dataDir: resolve(directory, "node"),
-      port: 48739,
+      port: nodePort,
       fixture: true,
     }),
   );
@@ -259,7 +263,7 @@ try {
   assert.deepEqual(researchDone.workflow.memory.written,{conclusions:1,progress:0,questions:0});
   assert.equal(researchDone.workflow.memory.digest,undefined);
   checks.push("real workerd FTS5 finds source-bound reading conclusions; consolidation is charged to the original task");
-  const localBase="http://127.0.0.1:48739";
+  const localBase="http://127.0.0.1:"+nodePort;
   assert.equal((await fetch(localBase+"/local/status")).status,401);
   const localRequest=async(action:string)=>{const r=await fetch(localBase+"/local/control",{method:"POST",headers:{Authorization:"Bearer "+localControl,"Content-Type":"application/json"},body:JSON.stringify({action})});assert.equal(r.status,200);};
   await localRequest("pause");await until(async()=>!(await api("state")).deviceOnline);
@@ -343,11 +347,7 @@ try {
   await api("memories","POST",replayInput,410);
   checks.push("concurrent memory writes deduplicate, stale edits cannot undo corrections, deleted content cannot replay");
   await stopChild(server);
-  server = child(serverArgs);
-  await until(async () => {
-    const r = await fetch(base);
-    return r.ok;
-  }, 60000);
+  server = await startServer();
   await api("memories/"+replayId,"DELETE",memoryRemoval);
   await api("memories","POST",replayInput,410);
   checks.push("memory deletion receipts and non-resurrection survive an actual workerd restart");
@@ -436,11 +436,7 @@ try {
   assert.equal(suspended.calls, 2);
   await stopChild(server);
   controlled!.terminate();
-  server = child(serverArgs);
-  await until(async () => {
-    const r = await fetch(base);
-    return r.ok;
-  }, 60000);
+  server = await startServer();
   await connectControlled("fixture-v2",["fixture-v1","fixture-v2"]);
   const replayed = await until(
     async () =>
@@ -722,7 +718,7 @@ try {
   await api("tasks/"+long.id+"/cancel","POST",{});
   checks.push("long-goal pause/amend/priority are idempotent through real DO; another conversation completes, offline resume keeps task identity and allowance");
   checks.push(...await verifyLibraryQueue(base,api));
-  const authReport=await verifyIdentity(base,cookie,admin,async()=>{await stopChild(server);server=child(serverArgs);await until(async()=>(await fetch(base)).ok,60000);});checks.push(...authReport.checks);
+  const authReport=await verifyIdentity(base,cookie,admin,async()=>{await stopChild(server);server=await startServer();});checks.push(...authReport.checks);
   // Close our runtime before raw-file inspection; live SQLite files can be locked on Windows.
   for (const p of [...children].reverse()) await stopChild(p);
   let scanned = 0;
@@ -772,6 +768,7 @@ try {
     paidCalls: 0,
     cloudDeployment: false,
   };
+  await writeFile(resolve(directory, "report.json"), JSON.stringify(report, null, 2));
   await writeFile(
     "docs/validation/local-integration.json",
     JSON.stringify(report, null, 2),
@@ -785,6 +782,4 @@ try {
   process.exitCode = 1;
 } finally {
   for (const p of children.reverse()) await stopChild(p);
-  const { unlink } = await import("node:fs/promises");
-  await unlink(".dev.vars");
 }
