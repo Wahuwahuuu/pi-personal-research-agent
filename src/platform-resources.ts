@@ -4,7 +4,7 @@ import {Problem,text,type State,type Task} from "./domain.ts";
 import type {StateStorage} from "./state-store.ts";
 export const PLATFORM_LIMITS={
  workerRequests:[100000,10000],doRequestUpperEstimate:[100000,10000],doDuration:[13000,6500],
- sqliteRowsRead:[5000000,500000],sqliteRowsWritten:[100000,50000],sqliteStoredBytes:[5000000000,500000000]
+ sqliteRowsRead:[5000000,4900000],sqliteRowsWritten:[100000,50000],sqliteStoredBytes:[5000000000,500000000]
 } as const;
 export const PLATFORM_STOPS=new Set(["PLATFORM_RESOURCE_LIMIT","PLATFORM_METRICS_STALE","PLATFORM_METRICS_UNAVAILABLE"]);
 export interface PlatformStatus {enabled:boolean;blocked:boolean;reason?:string;nextCheck:number;observedAt?:number}
@@ -61,7 +61,7 @@ export class PlatformResources{
   if(!s)return{enabled:false,blocked:false,nextCheck};
   if(s.day!==day(now)||now-s.observedAt>75*60000)return{enabled:true,blocked:true,reason:"PLATFORM_METRICS_STALE",nextCheck,observedAt:s.observedAt};
   const all=[...Object.values(s.account),...Object.values(s.project)];
-  const limit=(Object.keys(PLATFORM_LIMITS) as (keyof Counts)[]).some(k=>(s.account[k]!==null&&s.account[k]!>=PLATFORM_LIMITS[k][0]*0.8)||(s.project[k]!==null&&s.project[k]!>=PLATFORM_LIMITS[k][1]));
+  const limit=(Object.keys(PLATFORM_LIMITS) as (keyof Counts)[]).some(k=>(s.account[k]!==null&&s.account[k]!>=(k==="sqliteRowsRead"?PLATFORM_LIMITS[k][1]:PLATFORM_LIMITS[k][0]*0.8))||(s.project[k]!==null&&s.project[k]!>=PLATFORM_LIMITS[k][1]));
   return{enabled:true,blocked:limit||all.includes(null),reason:limit?"PLATFORM_RESOURCE_LIMIT":all.includes(null)?"PLATFORM_METRICS_UNAVAILABLE":undefined,nextCheck,observedAt:s.observedAt};
  }
  /** Display the last stored observation without performing a provider refresh. */

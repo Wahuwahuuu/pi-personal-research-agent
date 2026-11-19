@@ -82,7 +82,7 @@ function scope(data:Record<keyof typeof datasets,Dataset>,namespaces:Namespace[]
   workerRequests:measurement(sum(data.workers,"requests"),"requests","platform adaptive estimate; not an invoice",100000,10000,account),
   doRequestUpperEstimate:measurement(requestUpper,"requests","raw invocations plus periodic inbound messages, no 20:1 discount; conservative estimate may double count hibernation messages",100000,10000,account),
   doDuration:measurement(sum(data.periodic,"duration"),"GB-s","platform duration, already weighted by memory; do not multiply again",13000,6500,account),
-  sqliteRowsRead:measurement(sum(data.periodic,"rowsRead"),"rows","platform periodic rowsRead",5000000,500000,account),
+  sqliteRowsRead:measurement(sum(data.periodic,"rowsRead"),"rows","platform periodic rowsRead",5000000,4900000,account),
   sqliteRowsWritten:measurement(sum(data.periodic,"rowsWritten"),"rows","platform periodic rowsWritten",100000,50000,account),
   sqliteStoredBytes:measurement(storage,"bytes","sum of each namespace peak in this UTC window; not a simultaneous storage total",5000000000,500000000,account)
  };
@@ -97,7 +97,7 @@ export async function collectPlatformMetrics(options:PlatformMetricsOptions,fetc
  const accountMetrics=scope(all,ns.status==="observed"?ns.rows:null,true),projectMetrics=scope(project,projectNamespaces,false);
  const measurements=[...Object.values(accountMetrics),...Object.values(projectMetrics)];
  const missing=measurements.some(v=>v.status!=="observed");
- const nearLimit=Object.values(accountMetrics).some(v=>v.value!==null&&v.value>=v.freeLimit*0.8);
+ const nearLimit=Object.entries(accountMetrics).some(([key,v])=>v.value!==null&&v.value>=(key==="sqliteRowsRead"?v.projectTarget:v.freeLimit*0.8));
  const exceeded=Object.values(projectMetrics).some(v=>v.value!==null&&v.value>=v.projectTarget);
  return{
   version:1,source:"Cloudflare GraphQL Analytics API",observedAt:new Date(now).toISOString(),window,

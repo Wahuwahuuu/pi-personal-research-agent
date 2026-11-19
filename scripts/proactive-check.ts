@@ -298,7 +298,7 @@ try {
   );
   const measured=(limit:boolean)=>{
     const at=new Date().toISOString(),counts=Object.fromEntries(["workerRequests","doRequestUpperEstimate","doDuration","sqliteRowsRead","sqliteRowsWritten","sqliteStoredBytes"].map(k=>[k,{status:"observed",value:1}]));
-    return{version:1,source:"Cloudflare GraphQL Analytics API",accountScope:"a".repeat(64),scriptName:"proactive-check",observedAt:at,window:{day:at.slice(0,10),timezone:"UTC",start:at.slice(0,10)+"T00:00:00.000Z",end:at},account:counts,project:{...counts,sqliteRowsRead:{status:"observed",value:limit?500000:1}}};
+    return{version:1,source:"Cloudflare GraphQL Analytics API",accountScope:"a".repeat(64),scriptName:"proactive-check",observedAt:at,window:{day:at.slice(0,10),timezone:"UTC",start:at.slice(0,10)+"T00:00:00.000Z",end:at},account:counts,project:{...counts,sqliteRowsRead:{status:"observed",value:limit?4900000:1}}};
   };
   const sourceBefore=sourceCalls;
   await api("platform","POST",{requestId:crypto.randomUUID(),report:measured(true)});
