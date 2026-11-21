@@ -8,7 +8,7 @@ import {SnapshotManager} from "./snapshots.ts";
 import { bindNodeAccount } from "./account-binding.ts";
 import {DesktopNotices} from "./desktop-notices.ts";
 import {INBOX_NOTICE_CAPABILITY} from "../src/inbox-notices.ts";
-import {catalogRegistrationIssues, persistentRegistrationIssue, reconnectDelay} from "./registration-policy.ts";
+import {catalogRegistrationIssues, persistentRegistrationIssue, reconnectDelay, connectionIssue} from "./registration-policy.ts";
 import { createLocalReading } from "../packages/research/local-reading.ts";
 import { readingSources, withReadingSources } from "../src/reading-sources.ts";
 import { nodeCatalog, catalogTransfer } from "./catalog.ts";
@@ -454,7 +454,7 @@ function connect() {
     const rejected = response.statusCode === 401 || response.statusCode === 403;
     registrationFailed(rejected ? "DEVICE_CREDENTIAL_REJECTED" : "NODE_REGISTRATION_FAILED", rejected);
   });
-  ws.on("error", () => {});
+  ws.on("error", error => {if(socket===ws&&!registrationBlocked)registrationError=connectionIssue(error);});
   ws.on("close", (code, reason) => {
     clearTimeout(deadline);
     clearInterval(heartbeat);

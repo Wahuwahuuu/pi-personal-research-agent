@@ -8,7 +8,15 @@ import {basename, dirname, join, resolve} from "node:path";
 import {tmpdir} from "node:os";
 import {WebSocketServer, type WebSocket} from "ws";
 import assert from "node:assert/strict";
-import {persistentRegistrationIssue, reconnectDelay} from "../local/registration-policy.ts";
+import {persistentRegistrationIssue, reconnectDelay, connectionIssue} from "../local/registration-policy.ts";
+
+test("connection failures expose fixed diagnostic codes without upstream messages or credentials",()=>{
+ for(const [code,expected] of [["ECONNREFUSED","NODE_CONNECTION_REFUSED"],["EAI_AGAIN","NODE_DNS_FAILED"],["ETIMEDOUT","NODE_CONNECTION_TIMEOUT"],["CERT_HAS_EXPIRED","NODE_TLS_FAILED"],["ECONNRESET","NODE_NETWORK_INTERRUPTED"]])
+   assert.equal(connectionIssue(Object.assign(new Error("credential-bearing upstream text"),{code})),expected);
+ assert.equal(connectionIssue(new Error("Opening handshake has timed out")),"NODE_CONNECTION_TIMEOUT");
+ assert.equal(connectionIssue(new Error("credential-bearing upstream text")),"NODE_CONNECTION_FAILED");
+ assert.equal(persistentRegistrationIssue(connectionIssue({code:"ECONNREFUSED"})),undefined);
+});
 
 test("consecutive incomplete registrations back off to thirty seconds", () => {
   assert.deepEqual(Array.from({length: 9}, (_, n) => reconnectDelay(n)), [1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000, 30000]);
@@ -21,6 +29,30 @@ test("only diagnosed permanent registration errors can surface remote error code
   for (const code of ["INVALID_FRAME", "CATALOG_INCOMPLETE", "untrusted message", {}, null]) {
     assert.equal(persistentRegistrationIssue(code), undefined);
   }
+});
+
+test("a refused connection is visible in the real node status and remains retryable",{timeout:15000},async()=>{
+ const dir=await mkdtemp(join(tmpdir(),"pra-node-refused-"));
+ const freePort=async()=>{const server=createServer();await new Promise<void>(ok=>server.listen(0,"127.0.0.1",ok));const port=(server.address() as AddressInfo).port;await new Promise<void>(ok=>server.close(()=>ok()));return port;};
+ const remote=await freePort(),port=await freePort(),config=join(dir,"node.json"),token=randomUUID()+randomUUID();
+ assert.notEqual(remote,port);
+ await writeFile(config,JSON.stringify({endpoint:"http://127.0.0.1:"+remote,fixture:true,proxy:"",port,dataDir:dir}));
+ const child=spawn(process.execPath,[resolve("local/node.ts"),config],{windowsHide:true,stdio:"ignore",env:{...process.env,PRA_LOCAL_TOKEN:token,PRA_DEVICE_TOKEN:randomUUID()+randomUUID()}});
+ try{
+  let found=false;const until=Date.now()+7000;
+  do{
+   const state=await fetch("http://127.0.0.1:"+port+"/local/status",{headers:{Authorization:"Bearer "+token}}).then(r=>r.json() as Promise<{error:string;phase:string;connected:boolean;ready:boolean}>).catch(()=>undefined);
+   if(state?.error==="NODE_CONNECTION_REFUSED"){
+    assert.equal(state.phase,"reconnecting");assert.equal(state.connected,false);assert.equal(state.ready,false);found=true;break;
+   }
+   await new Promise(ok=>setTimeout(ok,40));
+  }while(Date.now()<until);
+  assert.equal(found,true);
+ }finally{
+  if(child.exitCode===null){const closed=new Promise(ok=>child.once("exit",ok));child.kill();await closed;}
+  assert.equal(dirname(dir),resolve(tmpdir()));assert.ok(basename(dir).startsWith("pra-node-refused-"));
+  await rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100});
+ }
 });
 
 test("a real node stays offline on a catalog conflict, then accepts a manual registration and clears readiness on disconnect", {timeout: 15000}, async () => {
