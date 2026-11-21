@@ -4,6 +4,7 @@ import type {PaperCoverage} from './selected-scope.ts';
 import {citationIds} from './p2-r2.ts';
 import {decodeCandidateJSON,MAX_ANSWER_CHARACTERS} from './candidate-json.ts';
 import {inspectCitationAttribution,type ClaimAttribution} from './citation-attribution.ts';
+import {inspectQuoteAttribution} from './quote-attribution.ts';
 import {executionFromOutput,type TurnExecution} from './turn-execution.ts';
 import {splitAnswerControl,displayPaperTitles} from '../web/answer-format.js';
 
@@ -132,6 +133,11 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
     if(/^\[\s*cite\s*:/iu.test(marker)||wide!==undefined){citationIssues.push(id);return '〔引用未定位〕';}
     return marker;
   });
+  if(kind==='paper_fact'){
+    const quoted=inspectQuoteAttribution(body,context.evidence);body=quoted.answer;citationIssues.push(...quoted.issues);
+    if(quoted.corrected)adaptations.push('exact_quote_source_corrected');
+    if(quoted.issues.length){notices.push('部分逐字引文未与所引原文匹配，已标记待核对');adaptations.push('exact_quote_source_mismatch_flagged');}
+  }
   const attribution=kind==='paper_fact'&&(['answer','partial'].includes(status)||citationIds(body).length>0)?inspectCitationAttribution(body,context.evidence):{answer:body,checks:[],issues:[]};
   body=attribution.answer;citationIssues.push(...attribution.issues);
   if(attribution.issues.length){notices.push('部分关键数值尚未在其引用原文中找到对应依据，已在文中标出');adaptations.push('claim_value_source_mismatch_flagged');}
@@ -144,7 +150,7 @@ export function prepareWorkbenchAnswer(output:string,context:WorkbenchContext):W
     if(source.text.indexOf(entry.quote,offset+1)>=0){adaptations.push('ambiguous_quote_offset_omitted');continue;}
     const start=Array.from(source.text.slice(0,offset)).length;quotes.push({chunk_id:entry.chunk_id,quote:entry.quote,start,end:start+Array.from(entry.quote).length});
   }
-  if(citationIssues.some(issue=>!issue.startsWith('metric_source_mismatch:')))notices.push('部分引用未能定位到原文，已取消对应链接');
+  if(citationIssues.some(issue=>!issue.startsWith('metric_source_mismatch:')&&!issue.startsWith('exact_quote_source_mismatch:')))notices.push('部分引用未能定位到原文，已取消对应链接');
   const positive=status==='answer'||status==='partial',missing=kind==='paper_fact'&&positive&&!ids.length;
   if(missing){citationIssues.push('missing_visible_citation');notices.push('这份回答尚未关联到论文原文，其中的研究结论需要进一步核对');}
   if(!context.allowAnswer&&status==='answer'){status='partial';notices.push('现有依据尚未覆盖全部问题，当前保留已生成的回答');}
