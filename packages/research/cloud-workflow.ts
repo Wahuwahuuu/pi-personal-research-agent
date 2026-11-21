@@ -187,27 +187,39 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   const ordered=m?m.window(30000,checkedFinal?"checked_first":"retrieval_rank"):[...new Set([...freshIds,...c.evidence.map(e=>e.chunk_id)])].map(id=>byId.get(id)!).filter(Boolean);
   // Present the originals as possible sources. Only the model can select a citation for its claim.
   const firstCandidates = new Set<string>();
-  const candidates = new Map<string, {values:Set<string>; lists:string[][]}>();
+  const candidates = new Map<string, {values:Set<string>; units:Set<string>; lists:string[][]}>();
   const repair = w.citationRepair;
   const repairClaims = (repair?.claims ?? []).map(check => {
     const visibleCandidates: Record<string,string[]> = {};
+    const unitSources: Record<string,string[]> = {};
     for (const value of check.unmatched_values ?? []) {
+      if (check.unit_unconfirmed_values?.includes(value)) {
+        const visibleUnits: string[] = [];
+        unitSources[value] = visibleUnits;
+        for (const id of [...new Set(check.citations)].filter(id => byId.has(id))) {
+          firstCandidates.add(id);
+          const candidate = candidates.get(id) ?? {values:new Set<string>(), units:new Set<string>(), lists:[] as string[][]};
+          candidate.units.add(value);
+          candidate.lists.push(visibleUnits);
+          candidates.set(id, candidate);
+        }
+      }
       const visibleIds: string[] = [];
       visibleCandidates[value] = visibleIds;
       const ids = [...new Set(check.candidate_sources?.[value] ?? [])].filter(id => byId.has(id));
       if (ids.length) firstCandidates.add(ids[0]);
       for (const id of ids) {
-        const candidate = candidates.get(id) ?? {values:new Set<string>(), lists:[] as string[][]};
+        const candidate = candidates.get(id) ?? {values:new Set<string>(), units:new Set<string>(), lists:[] as string[][]};
         candidate.values.add(value);
         candidate.lists.push(visibleIds);
         candidates.set(id, candidate);
       }
     }
-    return {...check, candidate_sources:visibleCandidates};
+    return {...check, candidate_sources:visibleCandidates, unit_check_sources:unitSources};
   });
   if (repair) {
     payload.citation_repair = {answer:repair.answer, claims:repairClaims,
-      instruction:"The previous answer contains unverified references. Read the visible excerpts tagged values_to_verify, check the paper, metric, unit and experimental conditions, then copy the exact answer_citation or citation from the relevant excerpt. A matching number alone cannot support a claim. State the gap if no excerpt supports it."};
+      instruction:"The previous answer contains unverified references. First inspect the cited originals tagged units_to_verify: the number may occur there, but this is not permission to add a percent sign. Preserve their original notation and experimental conditions, retrieve the missing unit definition if needed, or omit an unnecessary metric. Do not repeat the same unverified percentage. Then inspect values_to_verify candidates, checking the paper, metric, unit and conditions before copying their answer_citation. A matching number elsewhere cannot support a claim. Address the user's actual question and state any remaining gap; do not expand the answer with unrelated benchmark numbers."};
   }
   const cited = repair ? citationIds(normalizeVisibleCitationGroups(repair.answer,byId)) : [];
   const preferred = new Set([...firstCandidates, ...cited.filter(id=>byId.has(id)), ...candidates.keys()]);
@@ -237,7 +249,8 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   for(const source of [...repairSources,...ordered.filter(e=>!preferred.has(e.chunk_id))]){
     const label = labels.get(source.chunk_id), candidate = candidates.get(source.chunk_id);
     const projectedSource = {...source, ...(label ? {answer_citation:"[cite:"+label+"]",source_ref:label} : {}),
-      ...(candidate ? {values_to_verify:[...candidate.values]} : {})};
+      ...(candidate?.values.size ? {values_to_verify:[...candidate.values]} : {}),
+      ...(candidate?.units.size ? {units_to_verify:[...candidate.units]} : {})};
     const size=byteSize(projectedSource)+1;if(evidenceBytes+size>22000)continue;
     const candidateLists = candidate?.lists ?? [];
     for (const ids of candidateLists) ids.push(source.chunk_id);

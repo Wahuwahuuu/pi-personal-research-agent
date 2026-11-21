@@ -578,6 +578,32 @@ test("citation repair shows the original numerical candidate with a copyable mar
   assert.equal(out.status,"waiting_user","a matching candidate cannot silently repair a citation or validate the answer");
 });
 
+test("unit repair prioritizes the cited original without treating another percentage as proof",async()=>{
+ const {inspectCitationAttribution}=await import("../packages/research/internal/agent/citation-attribution.ts");
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));c.calls=5;
+ const source=(id:string,text:string)=>({paper_id:"fixture-paper",paragraph_id:"p",chunk_id:id,index_version:c.catalog.indexVersion,section:"Results",start:0,end:text.length,text});
+ c.evidence=[source("other-condition","An unrelated result is 61.2%."),source("cited-original","Reported recall is 61.2 on dataset A.")];
+ const answer="The reported recall is 61.2% [cite:cited-original].";
+ const checks=inspectCitationAttribution(answer,new Map(c.evidence.map(e=>[e.chunk_id,e]))).checks;
+ w.citationRepair={answer,claims:checks};const archived=structuredClone(w.citationRepair);
+ const prompt=JSON.parse(workflowPrompt(w,c));
+ assert.equal(prompt.evidence[0].chunk_id,"cited-original");
+ assert.deepEqual(prompt.evidence[0].units_to_verify,["61.2%"]);
+ assert.deepEqual(prompt.citation_repair.claims[0].unit_check_sources,{"61.2%":["cited-original"]});
+ assert.deepEqual(prompt.citation_repair.claims[0].candidate_sources,{"61.2%":["other-condition"]});
+ assert.deepEqual(w.citationRepair,archived);
+ assert.match(prompt.citation_repair.instruction,/not permission to add a percent sign/);
+ const original=c.evidence[1],oversized={...original,text:"Reported recall is 61.2 on dataset A. "+"x".repeat(24000)};
+ oversized.end=oversized.text.length;c.evidence=[c.evidence[0],oversized];
+ const bounded=JSON.parse(workflowPrompt(w,c));
+ assert.deepEqual(bounded.citation_repair.claims[0].unit_check_sources,{"61.2%":[]});
+ assert.ok(!bounded.evidence.some((e:any)=>e.chunk_id==="cited-original"));
+ assert.ok(Buffer.byteLength(JSON.stringify(bounded))<=40000);
+ c.evidence=[c.evidence[0],original];
+ workflowPrompt(w,c);
+ c.calls=6;assert.equal(advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer})).status,"waiting_user");
+});
+
 test("automatic routing keeps ungrounded discovery rewrites out of cloud-only conversations",()=>{
  const request="Please use a shorter introduction next time.";
  for(const discovery_request_quote of [undefined,"nonexistent scientific topic"]){
