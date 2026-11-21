@@ -5,6 +5,7 @@ function control(value){
   return object(value.execution)&&['working','complete','partial','clarification'].includes(value.execution.state)
     ||typeof value.answer_kind==='string'&&['complete','answer','partial','clarification','refusal'].includes(value.status)&&typeof value.needs_sources==='boolean';
 }
+const trailingControl=(value,prefix)=>control(value)||(object(value)&&typeof value.answer==='string'&&!!value.answer.trim()&&value.answer.trim()===prefix.trim()&&control({...value,answer:''}));
 const parse=value=>{try{return JSON.parse(value);}catch{return undefined;}};
 const footer=text=>!text.trim()||/^(?:原文关联说明|本轮说明)：/u.test(text.trimStart());
 
@@ -14,12 +15,12 @@ export function splitAnswerControl(text,{streaming=false,parseObject=parse}={}){
   if(control(whole))return {body:'',control:whole};
   for(const match of text.matchAll(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?:\r?\n|$)/gmi)){
     const value=parseObject(match[1]),tail=text.slice(match.index+match[0].length);
-    if(control(value)&&footer(tail))return {body:(text.slice(0,match.index).trimEnd()+(tail.trim()?'\n\n'+tail.trimStart():'')).trimEnd(),control:value};
+    if(trailingControl(value,text.slice(0,match.index))&&footer(tail))return {body:(text.slice(0,match.index).trimEnd()+(tail.trim()?'\n\n'+tail.trimStart():'')).trimEnd(),control:value};
   }
   const open=/^```(?:json)?[ \t]*\r?\n([^]*)$/gmi;
-  for(const match of text.matchAll(open)){const value=parseObject(match[1]);if(control(value))return {body:text.slice(0,match.index).trimEnd(),control:value};}
+  for(const match of text.matchAll(open)){const value=parseObject(match[1]);if(trailingControl(value,text.slice(0,match.index)))return {body:text.slice(0,match.index).trimEnd(),control:value};}
   const start=text.lastIndexOf('\n{');
-  if(start>=0){const value=parseObject(text.slice(start+1).trim());if(control(value))return {body:text.slice(0,start).trimEnd(),control:value};}
+  if(start>=0){const value=parseObject(text.slice(start+1).trim());if(trailingControl(value,text.slice(0,start)))return {body:text.slice(0,start).trimEnd(),control:value};}
   if(streaming){
     const pending=/^```(?:json)?[ \t]*\r?\n\s*\{[^]*$/gmi;
     for(const match of text.matchAll(pending))if(!/^```/mu.test(match[0].slice(match[0].indexOf('\n')+1)))return {body:text.slice(0,match.index).trimEnd()};
