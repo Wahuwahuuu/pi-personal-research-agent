@@ -3,6 +3,17 @@ import assert from "node:assert/strict";
 import {cloudMemory,newCloudMemory} from "../packages/research/cloud-memory.ts";
 import {DomainMemory} from "../packages/research/internal/agent/domain-memory.ts";
 const papers=[{paper_id:"a",title:"Synthetic paper",abstract:"Abstract."}];
+test("recall preserves bounded provenance without treating old or user-edited findings as verified",async()=>{
+ const state=newCloudMemory(),service=cloudMemory(state,papers,"owner");
+ const entry=await service.save({kind:"reading",content:"A prior research finding",paper_ids:["a"]});
+ Object.assign(state.entries[0],{category:"conclusion",sourceStatus:"needs_review",semanticStatus:"user_modified",privateTrace:"not for context"});
+ const recalled=(await service.recall("prior research",["a"])).items.find(e=>e.id===entry.id)!;
+ assert.equal(recalled.sourceStatus,"needs_review");assert.equal(recalled.semanticStatus,"user_modified");assert.equal(recalled.category,"conclusion");
+ assert.ok(!JSON.stringify(recalled).includes("privateTrace"));
+ delete state.entries[0].sourceStatus;delete state.entries[0].semanticStatus;
+ const legacy=(await service.recall("prior research",["a"])).items[0];
+ assert.equal(legacy.sourceStatus,undefined);assert.equal(legacy.semanticStatus,undefined);
+});
 test("cloud memory reuses automatic preference and reading rules and survives restoration",async()=>{
  const state=newCloudMemory(),m=cloudMemory(state,papers,"owner");
  const d=new DomainMemory("v");

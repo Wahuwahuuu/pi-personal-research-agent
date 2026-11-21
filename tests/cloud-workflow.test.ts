@@ -5,6 +5,13 @@ import {newWorkflow,advanceWorkflow,interruptWorkflow,reserveComparisonCheck,wor
 const catalog=await nodeCatalog(undefined,true);
 function setup(input="Explain the method"):WorkflowContext{return {id:"turn1",input,calls:1,evidence:[],catalog,conversation:{id:"c",title:"research",projectId:"p",scope:[],created:0,history:[]},memories:[],operations:[]};}
 const prepared=(intent="answer",targets:string[]=[])=>JSON.stringify({intent,targets,rewrite:"Explain the method",queries:[],constraints:[]});
+test("model memory context retains source provenance while distinguishing text validity from semantic support",()=>{
+ const context=setup("What did we conclude?"),w=newWorkflow();
+ context.memories=[{kind:"reading",content:"Prior finding",category:"conclusion",sourceStatus:"stale",semanticStatus:"user_modified",paper_ids:["fixture-paper"]}];
+ const prompt=JSON.parse(workflowPrompt(w,context));
+ assert.equal(prompt.memory[0].sourceStatus,"stale");assert.equal(prompt.memory[0].semanticStatus,"user_modified");
+ assert.deepEqual(prompt.memory[0].paper_ids,["fixture-paper"]);assert.match(prompt.memory_rule,/NOT semantic proof/);
+});
 test("preparation uses migrated NLU and survives checkpoints; tools remain model-selected",()=>{
  const c=setup(),w=newWorkflow();
  assert.equal(JSON.parse(workflowPrompt(w,c)).stage,"prepare");

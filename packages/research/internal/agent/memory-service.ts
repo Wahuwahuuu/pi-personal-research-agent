@@ -12,7 +12,15 @@ import type {ReadingNote,DomainState} from "./domain-memory.ts";
 import {isConversationalInput} from "./question-preparation.ts";
 import {readingTopic,readingMemoryContent,type MemoryDigest} from "./memory-synthesis.ts";
 const sha=(text:string)=>createHash("sha256").update(text).digest("hex");
-export interface LongMemoryEntry {id:string;kind:'preference'|'note'|'reading';content:string;paper_ids:string[];source_session:string;source_turn:string;created_at:string;updated_at:string;slot:string;edited:boolean;score?:number}
+export interface MemoryProvenance {category?:'preference'|'constraint'|'conclusion'|'question'|'reading';sourceStatus?:'verified'|'stale'|'unavailable'|'needs_review';semanticStatus?:'unreviewed'|'user_modified'}
+export function memoryProvenance(row:Record<string,unknown>):MemoryProvenance {
+ const out:MemoryProvenance={};
+ if(['preference','constraint','conclusion','question','reading'].includes(String(row.category)))out.category=row.category as MemoryProvenance['category'];
+ if(['verified','stale','unavailable','needs_review'].includes(String(row.sourceStatus)))out.sourceStatus=row.sourceStatus as MemoryProvenance['sourceStatus'];
+ if(['unreviewed','user_modified'].includes(String(row.semanticStatus)))out.semanticStatus=row.semanticStatus as MemoryProvenance['semanticStatus'];
+ return out;
+}
+export interface LongMemoryEntry extends MemoryProvenance {id:string;kind:'preference'|'note'|'reading';content:string;paper_ids:string[];source_session:string;source_turn:string;created_at:string;updated_at:string;slot:string;edited:boolean;score?:number}
 export interface MemoryRecall {status:'ready'|'disabled'|'unavailable';items:LongMemoryEntry[];note:string}
 export interface MemoryPage {backend:'qdrant-edge'|'cloud-sqlite';entries:LongMemoryEntry[];next_cursor:string|null;total:number}
 export interface MemoryOwner {id:string;enabled:boolean}
@@ -29,7 +37,7 @@ export class LongTermMemory {
   private clean(text:string){const safe=redactText(text,this.secrets).trim();if(!safe||safe!==text.trim()||credential.test(safe))throw new RuntimeFailure('INVALID_INPUT','记忆中含有密钥、口令或凭证，请移除后再保存。');return safe;}
   private entry(raw:unknown):LongMemoryEntry{
     const row=object(raw);if(typeof row.id!=='string'||!uuid.test(row.id)||!['preference','note','reading'].includes(String(row.kind))||typeof row.content!=='string'||Array.from(row.content).length>1200||!Array.isArray(row.paper_ids)||row.paper_ids.some(id=>typeof id!=='string'||!this.papers.has(id))||!['source_session','source_turn','created_at','updated_at','slot'].every(key=>typeof row[key]==='string'))throw new RuntimeFailure('INVALID_RESPONSE','Invalid memory result');
-    this.clean(row.content);return {id:row.id,kind:row.kind as LongMemoryEntry['kind'],content:row.content,paper_ids:row.paper_ids as string[],source_session:row.source_session as string,source_turn:row.source_turn as string,created_at:row.created_at as string,updated_at:row.updated_at as string,slot:row.slot as string,edited:row.edited===true,...(typeof row.score==='number'?{score:row.score}:{})};
+    this.clean(row.content);return {...memoryProvenance(row),id:row.id,kind:row.kind as LongMemoryEntry['kind'],content:row.content,paper_ids:row.paper_ids as string[],source_session:row.source_session as string,source_turn:row.source_turn as string,created_at:row.created_at as string,updated_at:row.updated_at as string,slot:row.slot as string,edited:row.edited===true,...(typeof row.score==='number'?{score:row.score}:{})};
   }
   async list(cursor?:string):Promise<MemoryPage>{const data=await this.operation({action:'list',...(cursor?{cursor}:{})});if(!['qdrant-edge','cloud-sqlite'].includes(String(data.backend))||!Array.isArray(data.entries)||data.entries.length>100||!Number.isSafeInteger(data.total)||data.next_cursor!==null&&(typeof data.next_cursor!=='string'||!uuid.test(data.next_cursor)))throw new RuntimeFailure('INVALID_RESPONSE','Invalid memory page');return {backend:data.backend as MemoryPage['backend'],entries:data.entries.map(row=>this.entry(row)),total:Number(data.total),next_cursor:data.next_cursor as string|null};}
   async recall(question:string,scope:readonly string[],signal?:AbortSignal):Promise<MemoryRecall>{
