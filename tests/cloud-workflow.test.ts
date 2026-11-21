@@ -346,7 +346,7 @@ test("imported indexed text remains discoverable when independent abstract metad
  const preparation=JSON.parse(workflowPrompt(w,c));
  assert.deepEqual(preparation.catalog.map((p:any)=>[p.paper_id,p.independent_abstract,p.indexed_text]),[["body",false,true],["both",true,false]]);
  advanceWorkflow(w,c,prepared("single_paper_qa",["body"]));
- const agent=JSON.parse(workflowPrompt(w,c));assert.deepEqual(agent.reading_availability,[{paper_id:"body",independent_abstract:false,indexed_text:true}]);
+ const agent=JSON.parse(workflowPrompt(w,c));assert.deepEqual(agent.reading_availability,[{paper_id:"body",title:c.catalog.papers.find(p=>p.paper_id==="body")!.title,independent_abstract:false,indexed_text:true}]);
  assert.match(agent.reading_rule,/omitting section/);assert.ok(!JSON.stringify(agent.reading_availability).includes("hidden"));
  assert.deepEqual(workflowTools(w,2),["search_papers","retrieve_chunks"]);
 });
@@ -794,3 +794,14 @@ test("empty published catalogs and offline routing never prepare a paperless too
     }
   }
 });
+
+ test("agent paper identity survives checkpoint independently of workspace labels",()=>{
+ const c=setup(),w=newWorkflow();
+ c.catalog={...c.catalog,papers:c.catalog.papers.map(p=>({...p,title:"🧪".repeat(250)}))};
+ c.conversation.title="Workspace label";
+ advanceWorkflow(w,c,prepared("answer",[c.catalog.papers[0].paper_id]));
+ const prompt=JSON.parse(workflowPrompt(JSON.parse(JSON.stringify(w)),c));
+ assert.equal(prompt.reading_availability[0].title,"🧪".repeat(200));
+ assert.match(prompt.reading_rule,/never paper titles/);
+ assert.ok(Buffer.byteLength(JSON.stringify(prompt.reading_availability))<=2500);
+ });

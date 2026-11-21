@@ -131,11 +131,11 @@ function repairAnswerFormat(w:ResearchWorkflow,c:WorkflowContext):{answer?:strin
 }
 const byteSize=(v:unknown)=>new TextEncoder().encode(JSON.stringify(v)).length;
 function boundedItems<T>(items:readonly T[],maximum:number):T[]{const result:T[]=[];let used=2;for(const item of items){const n=byteSize(item)+1;if(used+n<=maximum){result.push(item);used+=n;}}return result;}
-const READING_AVAILABILITY_RULE="Independent abstract metadata and indexed paper text are separate capabilities. If independent_abstract=false and indexed_text=true, read the existing paper with retrieve_chunks(query, paper_ids), omitting section; do not request an unavailable abstract, infer the body is absent, or invent abstract citation IDs. Empty section results are not proof the whole paper is unavailable. Catalog metadata is navigation, not source evidence.";
+const READING_AVAILABILITY_RULE="Independent abstract metadata and indexed paper text are separate capabilities. If independent_abstract=false and indexed_text=true, read the existing paper with retrieve_chunks(query, paper_ids), omitting section; do not request an unavailable abstract, infer the body is absent, or invent abstract citation IDs. Empty section results are not proof the whole paper is unavailable. Catalog metadata is navigation, not source evidence. Use the catalog title for paper identity; project and conversation titles are user workspace labels, never paper titles.";
 function readingAvailability(w:ResearchWorkflow,c:WorkflowContext){
  const indexed=new Set(c.catalog.evidence.map(e=>e.paper_id)),selected=new Set(targets(w));
  return c.catalog.papers.filter(p=>(!c.conversation.scope.length||c.conversation.scope.includes(p.paper_id))&&(!selected.size||selected.has(p.paper_id)))
-  .map(p=>({paper_id:p.paper_id,independent_abstract:!!p.abstract.trim(),indexed_text:indexed.has(p.paper_id)}));
+  .map(p=>({paper_id:p.paper_id,title:Array.from(p.title).slice(0,200).join(""),independent_abstract:!!p.abstract.trim(),indexed_text:indexed.has(p.paper_id)}));
 }
 export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations?:unknown,options:{systemInstructionProvided?:boolean}={}):string{
   if(w.phase==="memory"){
