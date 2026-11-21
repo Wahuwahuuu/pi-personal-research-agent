@@ -384,8 +384,12 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     }
     if(declared?.state!=="working"&&!answer)return repairAnswerFormat(w,c);
     w.answerRepairPending=undefined;
+    // A known invalid source needs repair, not a paid semantic check to rediscover the failure.
+    // Missing citations alone can be a legitimate bounded gap; keep its normal completion path.
+    const sourceRepair=!userReply&&answer&&visible.length>0&&answer.citationIssues.some(issue=>issue!=="missing_visible_citation");
+    if(sourceRepair&&answer&&!declared)declared={state:"working",remaining_needs:[answer.citationIssues.some(issue=>issue.startsWith("metric_source_mismatch:"))?"核对回答中的数值、单位及其原文依据":"定位回答引用的真实原文"],needs_sources:true,origin:"host"};
     const m=comparison(w,c),revision=c.evidence.map(e=>e.chunk_id).sort().join(",");
-    if(!userReply&&m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}
+    if(!sourceRepair&&!userReply&&m&&c.evidence.length&&c.calls<=4&&w.comparisonRevision!==revision){w.phase="comparison";return {};}
     if(!declared&&c.calls<6){w.phase="completion";return {};}
   }
   if(!declared){

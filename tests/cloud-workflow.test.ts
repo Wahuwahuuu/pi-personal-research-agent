@@ -43,6 +43,23 @@ test("completion guard rejects invented citations and carries no-progress state 
  assert.equal(outcome.status,"waiting_user");assert.equal(restored.execution.stop_reason,"no_execution_progress");
  assert.ok(!outcome.answer?.includes("[cite:made-up]"));
 });
+test("known invalid sources go directly to repair without spending a semantic completion request",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ c.evidence=[{paper_id:"fixture-paper",chunk_id:"method",paragraph_id:"p",section:"Methods",text:"The method combines two encoders.",start:0,end:33}];
+ c.calls=3;advanceWorkflow(w,c,"Accuracy reached 98% [cite:method].");
+ assert.equal(w.phase,"agent");assert.equal(w.execution?.origin,"host");
+ assert.ok(w.citationRepair);assert.equal(w.citationRepair.claims.length,1);
+ const restored=JSON.parse(JSON.stringify(w));c.calls=4;
+ const repaired=advanceWorkflow(restored,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"The method combines two encoders. [cite:method]"}));
+ assert.equal(repaired.status,"completed");assert.equal(c.calls,4);
+});
+test("source repair cannot escape the request cap or mark an invalid final answer complete",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ c.evidence=[{paper_id:"fixture-paper",chunk_id:"method",paragraph_id:"p",section:"Methods",text:"Two encoders.",start:0,end:13}];
+ c.calls=6;const result=advanceWorkflow(w,c,"Accuracy reached 98% [cite:method].");
+ assert.equal(result.status,"waiting_user");assert.equal(w.execution?.stop_reason,"remaining_allowance");
+ assert.match(result.answer!,/依据待核对/);
+});
 test("a readable clarification waits for the user before checking completion or comparison",()=>{
  for(const hasEvidence of [false,true])for(const execution of [undefined,{state:"complete",remaining_needs:[],needs_sources:true},{state:"clarification",remaining_needs:["Choose the comparison dimension"],needs_sources:true}]){
   const c=setup("Compare the selected papers"),w=newWorkflow();
