@@ -61,6 +61,17 @@ test("numeric model diagnostics retain interruption and unknown after restart wi
   task.calls=3;assert.equal(taskTimings(state,task).modelCallsWithoutTiming,1);
 });
 const config={authorized:"explicitly-authorized",apiKey:"synthetic-secret-only",baseUrl:"https://model.invalid/v1",modelId:"timing"};
+test("stage accounting snapshots admission, survives restart and leaves historical stages unknown",()=>{
+  const {state,task}=fixture();task.workflow={phase:"prepare",warnings:[]};task.calls=1;beginModelTiming(task,"mock");
+  task.workflow.phase="completion";beginModelTiming(task,"mock");
+  assert.equal(task.modelTimings!.length,1);assert.equal(task.modelTimings![0].stage,"prepare");
+  task.calls=2;beginModelTiming(task,"mock");
+  const restored=JSON.parse(JSON.stringify(task));finishModelTiming(restored,2,{status:"response_received",elapsedMs:42});
+  restored.modelTimings.push({call:3,mode:"live",status:"interrupted",elapsedMs:null});
+  const report=taskTimings(state,restored);
+  assert.deepEqual(report.modelStages,[{stage:"prepare",calls:1,measured:0,elapsedMs:0,pending:1},{stage:"completion",calls:1,measured:1,elapsedMs:42,pending:0},{stage:"unknown",calls:1,measured:0,elapsedMs:0,pending:0}]);
+  assert.ok(!JSON.stringify(report.modelStages).includes("private"));
+});
 test("model round trip excludes admission and billing and keeps mock measurements labelled by their caller",async()=>{
   let now=0,seen:ModelMeasurement|undefined;
   const models=liveModels(config,()=>{now=1000;},(_u,t)=>{seen=t;now=9000;},async()=>{

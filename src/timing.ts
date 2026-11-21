@@ -9,6 +9,8 @@ export interface ModelCallTiming {
   mode: "mock" | "live";
   status: ModelMeasurement["status"] | "pending";
   elapsedMs: number | null;
+  stage?: "prepare" | "agent" | "completion" | "comparison" | "translation" | "memory" | "select" | "assess" | "unknown";
+  segment?: number;
 }
 export interface ToolTiming {
   dispatches: number;
@@ -21,8 +23,11 @@ export const elapsed = (start: number, end: number): number | null =>
 
 export function beginModelTiming(task: Task, mode: ModelCallTiming["mode"]) {
   task.modelTimings ??= [];
+  const phase=task.proactive?.stage;
+  const workflow=task.workflow?.phase;
+  const stage:ModelCallTiming["stage"]=phase==="select"||phase==="assess"?phase:workflow&&workflow!=="finished"?workflow:"unknown";
   if (!task.modelTimings.some(row => row.call === task.calls))
-    task.modelTimings.push({call: task.calls, mode, status: "pending", elapsedMs: null});
+    task.modelTimings.push({call: task.calls, mode, status: "pending", elapsedMs: null,stage,segment:task.goal?.segments.at(-1)?.index??1});
   return task.calls;
 }
 export function finishModelTiming(task: Task, call: number, measurement?: ModelMeasurement) {
@@ -53,9 +58,17 @@ export function toolMeasurement(op: Operation) {
   };
 }
 export function taskTimings(state: State, task: Task) {
+  const stages=new Map<string,{stage:string;calls:number;measured:number;elapsedMs:number;pending:number}>();
+  for(const row of task.modelTimings??[]){
+    const stage=row.stage??"unknown",value=stages.get(stage)??{stage,calls:0,measured:0,elapsedMs:0,pending:0};
+    value.calls++;if(row.status==="pending")value.pending++;
+    if(row.elapsedMs!==null){value.measured++;value.elapsedMs+=row.elapsedMs;}
+    stages.set(stage,value);
+  }
   return {
     taskId: task.id,
     model: task.modelTimings ?? [],
+    modelStages:[...stages.values()],
     modelCallsWithoutTiming: Math.max(0, task.calls - (task.modelTimings?.length ?? 0)),
     tools: state.operations.filter(op => op.taskId === task.id).map(toolMeasurement),
     clock: "cloud-io-wall",
