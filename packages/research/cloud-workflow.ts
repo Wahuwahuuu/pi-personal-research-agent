@@ -1,4 +1,5 @@
 import {citationLabels,expandVisibleCitations,type VisibleCitations} from "./visible-citations.ts";
+import {citationRepairTargets,applyCitationRepairs} from "./citation-repair.ts";
 import type {MemoryProvenance} from "./internal/agent/memory-service.ts";
 import {citationIds} from "./internal/agent/p2-r2.ts";
 import type {ClaimAttribution} from "./internal/agent/citation-attribution.ts";
@@ -10,7 +11,7 @@ import {TRANSLATION_INSTRUCTION,parseTranslations,type TranslationSource} from "
 import {DomainMemory,type DomainState,type DialogueRecord} from "./internal/agent/domain-memory.ts";
 import {parseQuestionPreparation,planPreparedRetrieval,QUESTION_PREPARATION_INSTRUCTION,type PreparedQuestion} from "./internal/agent/question-preparation.ts";
 import {TurnExecutionTracker,executionFromOutput,parseTurnExecution,COMPLETION_CHECK_INSTRUCTION,TURN_EXECUTION_INSTRUCTION,type TurnExecution} from "./internal/agent/turn-execution.ts";
-import {hasWorkbenchProse,prepareWorkbenchAnswer,normalizeVisibleCitationGroups,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer,type WorkbenchContext} from "./internal/agent/workbench-answer.ts";
+import {hasWorkbenchProse,readWorkbenchDraft,prepareWorkbenchAnswer,normalizeVisibleCitationGroups,WORKBENCH_ANSWER_INSTRUCTION,type WorkbenchAnswer,type WorkbenchContext} from "./internal/agent/workbench-answer.ts";
 import {MultiPaperComparison,COMPARISON_CHECK_INSTRUCTION,type ComparisonReport} from "./internal/agent/multi-paper.ts";
 import {TaskProgressTracker,GOAL_PROGRESS_INSTRUCTION,type TaskProgress} from "./internal/agent/task-progress.ts";
 import type {Chunk,Paper,EvidenceIdentity} from "./internal/agent/contracts.ts";
@@ -46,8 +47,9 @@ const PERSONAL_CONTEXT_ROUTING = "For this personal agent, classify what the use
 const automaticRouting=(w:ResearchWorkflow)=>w.automatic&&w.phase==="prepare"?PERSONAL_CONTEXT_ROUTING+"\n":"";
 const ANSWER_FORMAT_REPAIR_INSTRUCTION="Rewrite the response as ordinary Markdown with exact citations. Do not use a JSON envelope or execution metadata. Answer the original question from the visible evidence and state actual gaps.";
 const VISIBLE_CITATION_INSTRUCTION="When a visible excerpt has answer_citation, copy that short marker exactly for that excerpt in your answer. Copy its source_ref for execution.goal_updates.source_ids, exact_quotes.chunk_id and paper_coverage.citations. The host resolves both to the permanent source ID. Do not manually retype a long chunk_id when its short source_ref is available. Paper IDs remain unchanged. Use only excerpts actually visible in this step. Preserve the source's numerical notation and units: a bare number is not permission to append a percent sign. Report only metrics needed to answer the user's request, with their experimental conditions.";
-const CITATION_REPAIR_INSTRUCTION="This step repairs a rejected draft. The draft is not authoritative evidence. Resolve every item in citation_repair before returning it: verify the value AND its unit in the cited original, or remove an unnecessary numerical detail while retaining the requested explanation. If a required fact cannot be verified, state that specific gap without asserting the unsupported value. Never copy unresolved_references; locate the needed original with the available tools or use a currently visible source that actually supports the claim. Archived references not visible in this step are not usable evidence. Keep the answer focused on all parts of the original request; do not add unrequested benchmark numbers. Return the corrected full answer with honest execution status, not a plan to fix it.";
-const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+VISIBLE_CITATION_INSTRUCTION+"\n"+(w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION)+(w.citationRepair?"\n"+CITATION_REPAIR_INSTRUCTION:"");
+const CITATION_REPAIR_INSTRUCTION="This step repairs a rejected draft. The draft is not authoritative evidence. Resolve every item in citation_repair before returning it: verify the value AND its unit in the cited original, or remove an unnecessary numerical detail while retaining the requested explanation. If a required fact cannot be verified, state that specific gap without asserting the unsupported value. Never copy unresolved_references; locate the needed original with the available tools or use a currently visible source that actually supports the claim. Archived references not visible in this step are not usable evidence. Keep the answer focused on all parts of the original request; do not add unrequested benchmark numbers. Return actual corrections with honest execution status, not a plan to fix the draft.";
+const CITATION_EDIT_CONTRACT='For a targeted correction, return JSON {"execution":{"state":"complete|partial|working","remaining_needs":[],"needs_sources":true},"citation_repairs":[{"target":"exact repair_id","replacement":"corrected text including its supporting citation"}]}. Each replacement changes only that numbered claim or reference in the stored draft; leave supported parts untouched. A reference replacement must itself be an exact visible citation marker. An empty replacement removes an unnecessary detail, never a requested answer. Do not repeat the whole draft when these edits suffice. If the required correction has no repair_id or the answer needs wider revision, return the ordinary full answer envelope instead.';
+const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+VISIBLE_CITATION_INSTRUCTION+"\n"+(w.citationRepair?CITATION_REPAIR_INSTRUCTION+"\n"+CITATION_EDIT_CONTRACT:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION);
 export function workflowInstruction(w:ResearchWorkflow):string{
  const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:agentInstruction(w);
  return automaticRouting(w)+(w.cloudOnly&&!(w.automatic&&w.phase==="prepare")?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals. For greetings and capabilities, answer briefly without citation markers or made-up source examples.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
@@ -190,7 +192,8 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Present the originals as possible sources. Only the model can select a citation for its claim.
   const firstCandidates = new Set<string>();
   const candidates = new Map<string, {values:Set<string>; units:Set<string>; lists:string[][]}>();
-  const repair = w.citationRepair;
+  const repair = w.citationRepair?{...w.citationRepair,answer:readWorkbenchDraft(w.citationRepair.answer)??w.citationRepair.answer}:undefined;
+  const repairTargets=repair?citationRepairTargets(repair.answer,repair.claims,new Set(byId.keys())):[];
   const repairClaims = (repair?.claims ?? []).map(check => {
     const visibleCandidates: Record<string,string[]> = {};
     const unitSources: Record<string,string[]> = {};
@@ -217,10 +220,12 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
         candidates.set(id, candidate);
       }
     }
-    return {...check, candidate_sources:visibleCandidates, unit_check_sources:unitSources};
+    return {...check, repair_id:repairTargets.find(t=>t.kind==="claim"&&t.original===check.claim)?.id, candidate_sources:visibleCandidates, unit_check_sources:unitSources};
   });
   if (repair) {
-    payload.citation_repair = {answer:repair.answer, claims:repairClaims,
+    payload.answer_contract=CITATION_EDIT_CONTRACT;
+    if(c.calls>=5)payload.final_instruction="No requests remain after this one. Do not call tools. Return actual citation_repairs with honest execution status, or a corrected full answer only when targeted edits cannot express it. Preserve the user's required answers and state real unresolved gaps.";
+    payload.citation_repair = {answer:repair.answer, claims:repairClaims,reference_targets:repairTargets.filter(t=>t.kind==="reference").map(t=>({repair_id:t.id,marker:t.original})),
       instruction:"The previous answer contains unverified references. First inspect the cited originals tagged units_to_verify: the number may occur there, but this is not permission to add a percent sign. Preserve their original notation and experimental conditions, retrieve the missing unit definition if needed, or omit an unnecessary metric. Do not repeat the same unverified percentage. Then inspect values_to_verify candidates, checking the paper, metric, unit and conditions before copying their answer_citation. A matching number elsewhere cannot support a claim. Address the user's actual question and state any remaining gap; do not expand the answer with unrelated benchmark numbers."};
   }
   const cited = repair ? citationIds(normalizeVisibleCitationGroups(repair.answer,byId)) : [];
@@ -379,6 +384,20 @@ export function advanceWorkflow(w:ResearchWorkflow,c:WorkflowContext,output:stri
     output=w.candidate??"";
   }else{
     output=expandVisibleCitations(output,w);
+    if(w.citationRepair){
+      let raw:Record<string,unknown>|undefined;
+      try{raw=stageObject(output);}catch{}
+      if(raw&&Object.hasOwn(raw,"citation_repairs")){
+        const repair=w.citationRepair;
+        try{
+          const answer=applyCitationRepairs(repair.answer,citationRepairTargets(repair.answer,repair.claims,new Set(c.evidence.map(e=>e.chunk_id))),raw.citation_repairs);
+          output=JSON.stringify({execution:raw.execution,answer});
+        }catch{
+          w.warnings.push("INVALID_CITATION_REPAIR: use each supplied repair_id once; otherwise return a corrected full answer.");
+          output=JSON.stringify({execution:{state:"working",remaining_needs:["修正引用编辑格式并核对依据"],needs_sources:true},answer:readWorkbenchDraft(repair.answer)??repair.answer});
+        }
+      }
+    }
     declared=executionFromOutput(output);
   }
   if(w.cloudOnly&&declared)declared.needs_sources=false;

@@ -73,6 +73,19 @@ test("known invalid sources go directly to repair without spending a semantic co
  const repaired=advanceWorkflow(restored,c,JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer:"The method combines two encoders. [cite:method]"}));
  assert.equal(repaired.status,"completed");assert.equal(c.calls,4);
 });
+
+test("targeted citation edits are validated as a whole answer and cannot silently fix unsupported values",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ c.evidence=[{paper_id:"fixture-paper",chunk_id:"source",paragraph_id:"p",section:"Results",text:"Accuracy is 83.2. The encoder is frozen.",start:0,end:39}];
+ c.calls=3;advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[]},answer:"The encoder is frozen [cite:source]. Accuracy reached 83.2% [cite:source]."}));
+ const prompt=JSON.parse(workflowPrompt(w,c)),target=prompt.citation_repair.claims[0].repair_id;
+ assert.ok(target);assert.match(prompt.answer_contract,/citation_repairs/);
+ c.calls=4;
+ const wrong=structuredClone(w);
+ assert.notEqual(advanceWorkflow(wrong,c,JSON.stringify({execution:{state:"complete",remaining_needs:[]},citation_repairs:[{target,replacement:"Accuracy reached 83.2% [cite:source]."}]})).status,"completed");
+ const corrected=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[]},citation_repairs:[{target,replacement:"Accuracy is reported as 83.2 [cite:source]."}]}));
+ assert.equal(corrected.status,"completed");assert.equal(corrected.answer,"The encoder is frozen [cite:source]. Accuracy is reported as 83.2 [cite:source].");
+});
 test("source repair cannot escape the request cap or mark an invalid final answer complete",()=>{
  const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
  c.evidence=[{paper_id:"fixture-paper",chunk_id:"method",paragraph_id:"p",section:"Methods",text:"Two encoders.",start:0,end:13}];

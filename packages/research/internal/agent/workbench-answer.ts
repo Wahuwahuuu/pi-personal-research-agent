@@ -98,6 +98,9 @@ export function normalizeVisibleCitationGroups(text:string,evidence:{has(id:stri
 /** Use the same complete-body boundary before scheduling a completion check. */
 export function hasWorkbenchAnswer(output:string):boolean{return !!bodyFrom(output,[])?.body.trim();}
 
+/** Extract readable prose with the same envelope rules used by normal answer validation. */
+export function readWorkbenchDraft(output:string):string|undefined{return bodyFrom(output,[])?.body;}
+
 /** A user-facing question or saved draft needs prose rather than serialized protocol fields. */
 export function hasWorkbenchProse(answer:WorkbenchAnswer):boolean {
   if(answer.adaptations.includes('structured_answer_body_preserved')||/<\/?(?:think|thinking|analysis)>/iu.test(answer.original))return false;
