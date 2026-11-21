@@ -30,6 +30,19 @@ test("valid conversational answers need no fabricated paper citation",()=>{
  assert.equal(out.status,"completed");assert.equal(c.conversation.history.length,1);
  assert.equal(w.progress?.phase,"completed");
 });
+
+test("ordinary research reserves its last request for checking while a known repair can still reread",()=>{
+ const w=newWorkflow(),c=setup();advanceWorkflow(w,c,prepared());
+ assert.deepEqual(workflowTools(w,3),["search_papers","retrieve_chunks"]);
+ c.calls=4;assert.deepEqual(workflowTools(w,4),[]);
+ assert.match(JSON.parse(workflowPrompt(w,c)).draft_instruction,/full answer now/);
+ w.citationRepair={answer:"Unverified claim [cite:missing]",claims:[]};
+ assert.deepEqual(workflowTools(w,4),["search_papers","retrieve_chunks"]);
+ assert.equal(JSON.parse(workflowPrompt(w,c)).draft_instruction,undefined);
+ assert.deepEqual(workflowTools(w,5),[]);assert.deepEqual(workflowTools(w,6),[]);
+ w.phase="comparison";assert.deepEqual(workflowTools(w,4),[]);
+ w.phase="agent";w.cloudOnly=true;assert.deepEqual(workflowTools(w,3),[]);
+});
 test("plain Markdown goes through original semantic completion check; budget exhaustion stays partial",()=>{
  const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
  c.calls=2;advanceWorkflow(w,c,"I will search for this.");
