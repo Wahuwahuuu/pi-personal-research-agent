@@ -95,7 +95,7 @@ test("old aggregate usage is imported once, conservatively includes interrupted 
 test("input and billing output guards reject without leaking money reservations over repeated attempts",()=>{
  for(const kind of ["input","output"] as const)for(let round=0;round<10;round++){
   const {db,shared:s}=setup();
-  s.validation.import("legacy",{requests:20,input:kind==="input"?5999999:0,output:kind==="output"?999999:0});
+  s.validation.import("legacy",{requests:20,input:kind==="input"?VALIDATION_LIMITS.input-1:0,output:kind==="output"?VALIDATION_LIMITS.output-1:0});
   assert.equal(s.reserve("a",request("last",1,1),now).ok,true);
   for(let i=0;i<5;i++)assert.deepEqual(s.reserve("b",request("over"+i,1,1),now),{ok:false,error:"VALIDATION_BUDGET"});
   assert.equal(s.calls("b").items.length,0);assert.equal(s.validation.snapshot().requests,21);
@@ -118,7 +118,7 @@ test("approved request ceiling preserves an exhausted historical counter instead
  const reopened=new SharedBudget(port);assert.deepEqual(reopened.snapshot(now).validation,before.validation);assert.equal(reopened.snapshot(now).estimatedSpent,before.estimatedSpent);
  assert.equal(reopened.reserve('a',request('continuation',1,1),now).ok,true);reopened.settle('a','continuation',{input:1,output:1});
  const after=reopened.snapshot(now);assert.equal(after.validation.requests,501);assert.equal(after.validation.input,1252001);assert.equal(after.validation.output,102049);
- assert.deepEqual(after.validation.limits,{requests:900,input:6000000,output:1000000});assert.equal(after.limit,50);assert.equal(after.backgroundLimit,20);
+ assert.deepEqual(after.validation.limits,{requests:1500,input:12000000,output:2000000});assert.equal(after.limit,50);assert.equal(after.backgroundLimit,20);
  assert.deepEqual(port.sql.exec('SELECT * FROM pra_validation_imports ORDER BY owner').toArray(),priorRows);assert.ok(after.estimatedSpent>=before.estimatedSpent);db.close();
 });
 

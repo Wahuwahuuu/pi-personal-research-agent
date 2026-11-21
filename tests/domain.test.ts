@@ -1,3 +1,4 @@
+import {VALIDATION_LIMITS} from "../src/validation-limits.ts";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -117,7 +118,7 @@ test("20 budget loop cases stop at six model calls", () => {
 test("budget reserves unknown billed output conservatively", () => {
   const s = initialState(),
     t = submit(s, "q", "r", "chat");
-  s.usage.output = 999990;
+  s.usage.output = VALIDATION_LIMITS.output - 10;
   assert.throws(() => reserve(s, t, 100, 20));
   assert.equal(t.calls, 0);
 });

@@ -254,10 +254,10 @@ test("budget exhaustion inside Pi checkpoints the same goal and never resets tot
 
 test("validation output exhaustion respects the active research phase before opening another segment",()=>{
  const {s,t}=fixture();t.calls=6;t.workflow={phase:"agent",warnings:[]};
- s.usage.output=995000;
+ s.usage.output=VALIDATION_LIMITS.output-5000;
  handleModelBudget(s,t);
  assert.equal(t.error,"VALIDATION_BUDGET");assert.equal(t.status,"waiting_user");assert.equal(t.goal!.segments.length,1);
- assert.equal(s.usage.output,995000);assert.equal(t.calls,6);
+ assert.equal(s.usage.output,VALIDATION_LIMITS.output-5000);assert.equal(t.calls,6);
 });
 
 test("only the head of a blocked Pi conversation is eligible to wake the scheduler", () => {
