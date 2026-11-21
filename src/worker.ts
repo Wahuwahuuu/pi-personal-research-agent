@@ -1,3 +1,4 @@
+import {toolDispatchFrame} from "./tool-deadline.ts";
 import {createHash} from "node:crypto";
 import {INBOX_NOTICE_CAPABILITY, inboxNoticeBatch, type InboxNoticePage} from "./inbox-notices.ts";
 import {catalogTextPages, catalogUploadText} from "./research-catalog.ts";
@@ -1798,7 +1799,7 @@ export class PersonalAgent extends DurableObject<Env> {
           op.attempts = (op.attempts ?? 0) + 1;
           t.operationId = op.id;
           this.save();
-          this.send(dev, { type: "operation", operation: op });
+          this.send(dev, toolDispatchFrame(op));
         }
       }
     }
@@ -2131,7 +2132,7 @@ export class PersonalAgent extends DurableObject<Env> {
                 op.deadline = Date.now() + TOOL_TIMEOUT_MS;
                 t.status = "waiting_device";
                 this.save();
-                this.send(dev, { type: "operation", operation: op });
+                this.send(dev, toolDispatchFrame(op));
               }
             }
           }

@@ -66,12 +66,14 @@ test("a real node stays offline on a catalog conflict, then accepts a manual reg
   await new Promise<void>(done => probe.close(() => done()));
   const token = randomUUID() + randomUUID(), config = join(dir, "node.json");
   let connections = 0, confirms = 0, uploads = 0, release = false, current: WebSocket | undefined;
+  const toolFrames: any[] = [];
   cloud.on("connection", socket => {
     const attempt = ++connections;
     current = socket;
     socket.on("message", raw => {
       if (raw.toString() === "ping") return socket.send("pong");
       const frame = JSON.parse(raw.toString());
+      if (["result", "operation_error"].includes(frame.type)) toolFrames.push(frame);
       if (frame.type === "hello") socket.send(JSON.stringify({type: "hello_ack", accountScope: "a".repeat(64), catalogMatch: release ? frame.catalogDigest : undefined}));
       if (frame.type === "catalog_confirm") {
         confirms++;
@@ -117,6 +119,17 @@ test("a real node stays offline on a catalog conflict, then accepts a manual reg
     assert.ok(first.startup.firstReadySentMs! >= first.startup.firstCatalogAckMs!);
     assert.ok(first.startup.startedAtMs + first.startup.firstReadySentMs! <= Date.now() + 5);
     assert.equal(connections, 2);
+    for (const timeoutMs of ["invalid", 10000]) {
+      const id = randomUUID();
+      current!.send(JSON.stringify({type:"operation", timeoutMs, operation:{id, taskId:"clock-check", indexVersion:"fixture-v1", tool:"search_papers", params:{query:"evidence"}, deadline:Date.now()-300000}}));
+      const end = Date.now()+2000;
+      while (!toolFrames.some(frame=>frame.operationId===id)&&Date.now()<end) await new Promise(done=>setTimeout(done,20));
+      const frame = toolFrames.find(frame=>frame.operationId===id);
+      assert.ok(frame);
+      assert.equal(frame.type, timeoutMs === "invalid" ? "operation_error" : "result");
+      if (timeoutMs === "invalid") assert.equal(frame.code,"INVALID_OPERATION");
+      else assert.equal(frame.indexVersion,"fixture-v1");
+    }
     current!.close(1012);
     await waitFor(s => !s.ready && !s.connected && s.phase === "reconnecting");
     const again = await waitFor(s => s.ready && s.connected);

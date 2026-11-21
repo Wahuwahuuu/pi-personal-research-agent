@@ -1,3 +1,4 @@
+import {localToolTimeout} from "../src/tool-deadline.ts";
 import {applicationIdentity} from "./application-identity.ts";
 import {controlKey,requestStop} from "./lifecycle.ts";
 import {ReaderQueue} from "./reader-queue.ts";
@@ -226,7 +227,8 @@ function desktop(count: number) {
     p.once("exit", code => { if (code !== 0) console.error("DESKTOP_NOTIFICATION_FAILED"); });
   }
 }
-async function execute(op: Operation) {
+async function execute(op: Operation, relativeTimeout?: unknown) {
+  const timeoutMs = localToolTimeout(op?.deadline, relativeTimeout);
   if(op&&db.prepare("SELECT id FROM deleted_operations WHERE id=?").get(op.id))return;
   const old = db.prepare("SELECT id,frame FROM outbox WHERE id=?").get(op.id) as
     { id: string; frame: string } | undefined;
@@ -241,7 +243,7 @@ async function execute(op: Operation) {
     !op ||
     !(snapshots?snapshots.retained().includes(op.indexVersion):op.indexVersion===indexVersion) ||
     !["search_papers", "retrieve_chunks"].includes(op.tool) ||
-    !Number.isFinite(op.deadline)
+    timeoutMs === undefined
   ) {
     send({
       type: "operation_error",
@@ -256,7 +258,7 @@ async function execute(op: Operation) {
   active = { id: op.id, abort };
   const timeout = setTimeout(
     () => abort.abort("tool_deadline"),
-    Math.max(1, Math.min(180000, op.deadline - Date.now())),
+    timeoutMs,
   );
   try {
     const scopedCatalog=snapshots?(await snapshots.runtime(op.indexVersion)).catalog:catalog;
@@ -435,7 +437,7 @@ function connect() {
         send({type:"purged",deletionId:m.deletionId,operationIds:m.operationIds});
       } else if (m.type === "ack")
         db.prepare("UPDATE outbox SET acked=1 WHERE id=?").run(m.operationId);
-      else if (m.type === "operation") void execute(m.operation);
+      else if (m.type === "operation") void execute(m.operation, m.timeoutMs);
       else if (m.type === "cancel" && active && active.id === m.operationId)
         active.abort.abort();
       else if (m.type === "notice" || m.type === "inbox_notices") {
