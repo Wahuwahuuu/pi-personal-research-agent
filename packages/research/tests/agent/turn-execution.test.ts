@@ -23,6 +23,24 @@ test('no execution progress terminates working steps while real tool progress re
   const stopped=tracker.decide({...working,remaining_needs:[...working.remaining_needs]},{...facts,progress_key:'source-b'});assert.equal(stopped.state,'partial');assert.equal(stopped.stop_reason,'no_execution_progress');
 });
 
+test('citation repair progress is monotone, persisted and subordinate to the request cap',()=>{
+ const declared:TurnExecution={state:'complete',remaining_needs:[],needs_sources:true};
+ const facts={progress_key:'same-originals',source_count:1,cited_source_count:1,retrieval_attempts:1,successful_retrievals:1,running_tools:0,can_continue:true};
+ const issues=(...values:string[])=>values.map(v=>'metric_source_mismatch:'+v);
+ const first=new TurnExecutionTracker();
+ assert.equal(first.decide(declared,{...facts,citation_issues:issues('5%','6%','7%')}).state,'working');
+ const restored=new TurnExecutionTracker(JSON.parse(JSON.stringify(first.snapshot())));
+ assert.equal(restored.decide(declared,{...facts,citation_issues:issues('5%','6%')}).state,'working');
+ assert.equal(restored.snapshot().bestCitationIssueCount,2);
+ const renamed=restored.decide(declared,{...facts,citation_issues:issues('8%','9%')});
+ assert.equal(renamed.stop_reason,'no_execution_progress');
+ assert.equal(restored.decide(declared,{...facts,citation_issues:issues('1%','2%','3%')}).stop_reason,'no_execution_progress');
+ assert.equal(restored.decide(declared,{...facts,citation_issues:issues('5%','6%')}).stop_reason,'no_execution_progress');
+ assert.equal(restored.decide(declared,{...facts,citation_issues:issues('5%'),can_continue:false}).stop_reason,'remaining_allowance');
+ const legacy=new TurnExecutionTracker({lastProgress:facts.progress_key,noProgress:1,decisions:1});
+ assert.equal(legacy.decide(declared,{...facts,citation_issues:issues('5%')}).stop_reason,'no_execution_progress');
+});
+
 test('plain intermediate prose is assessed by task meaning and continues into an actual tool call',async()=>{
   const f=await setup([reply(JSON.stringify(preparation)),reply('对象已经准备好，下一步处理对应章节。'),
     reply(JSON.stringify({state:'working',remaining_needs:['读取具体方法并解释'],needs_sources:true})),

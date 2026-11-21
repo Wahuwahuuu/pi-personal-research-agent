@@ -41,9 +41,10 @@ export function executionFromOutput(output:string):TurnExecution|undefined{
 export class TurnExecutionTracker {
   private lastProgress:string|undefined;
   private noProgress=0;
+  private bestCitationIssueCount:number|undefined;
   decisions=0;
-  constructor(restored?:{lastProgress?:string;noProgress:number;decisions:number}){if(restored){this.lastProgress=restored.lastProgress;this.noProgress=restored.noProgress;this.decisions=restored.decisions;}}
-  snapshot(){return {lastProgress:this.lastProgress,noProgress:this.noProgress,decisions:this.decisions};}
+  constructor(restored?:{lastProgress?:string;noProgress:number;decisions:number;bestCitationIssueCount?:number}){if(restored){this.lastProgress=restored.lastProgress;this.noProgress=restored.noProgress;this.decisions=restored.decisions;this.bestCitationIssueCount=restored.bestCitationIssueCount;}}
+  snapshot(){return {lastProgress:this.lastProgress,noProgress:this.noProgress,decisions:this.decisions,bestCitationIssueCount:this.bestCitationIssueCount};}
   decide(declared:TurnExecution,facts:ExecutionFacts):TurnExecution{
     this.decisions++;
     let result={...declared,remaining_needs:[...declared.remaining_needs]};
@@ -58,8 +59,12 @@ export class TurnExecutionTracker {
       if(facts.running_tools)checks.push('等待正在执行的工具完成');
       result={...result,state:'working',remaining_needs:[...new Set([...result.remaining_needs,...checks])]};
     }
+    const sameSources=this.lastProgress===facts.progress_key;
+    const issueCount=facts.citation_issues===undefined?undefined:new Set(facts.citation_issues).size;
+    const repaired=sameSources&&issueCount!==undefined&&this.bestCitationIssueCount!==undefined&&issueCount<this.bestCitationIssueCount;
+    if(!sameSources||this.bestCitationIssueCount===undefined||repaired)this.bestCitationIssueCount=issueCount;
     if(result.state!=='working'){this.lastProgress=facts.progress_key;this.noProgress=0;return result;}
-    this.noProgress=this.lastProgress===facts.progress_key?this.noProgress+1:1;
+    this.noProgress=sameSources&&!repaired?this.noProgress+1:1;
     this.lastProgress=facts.progress_key;
     if(!facts.can_continue||this.noProgress>=2)return {...result,state:'partial',stop_reason:!facts.can_continue?'remaining_allowance':'no_execution_progress'};
     return result;

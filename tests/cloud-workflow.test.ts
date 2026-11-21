@@ -67,6 +67,20 @@ test("source repair cannot escape the request cap or mark an invalid final answe
  assert.equal(result.status,"waiting_user");assert.equal(w.execution?.stop_reason,"remaining_allowance");
  assert.match(result.answer!,/依据待核对/);
 });
+
+test("verified citation repairs can progress on the same sources across checkpoints",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared());
+ const text="Reported recall is 5, accuracy is 6 and precision is 7 on A.";
+ c.evidence=[{paper_id:"fixture-paper",chunk_id:"results",paragraph_id:"p",section:"Results",text,start:0,end:text.length}];
+ const response=(answer:string)=>JSON.stringify({execution:{state:"complete",remaining_needs:[],needs_sources:true},answer});
+ c.calls=3;assert.equal(advanceWorkflow(w,c,response("Reported recall is 5%, accuracy is 6% and precision is 7% on A. [cite:results]")).status,undefined);
+ const restored=JSON.parse(JSON.stringify(w));c.calls=4;
+ assert.equal(advanceWorkflow(restored,c,response("Reported recall is 5%, accuracy is 6% and precision is 7 on A. [cite:results]")).status,undefined);
+ assert.equal(restored.execution.state,"working");
+ c.calls=5;
+ assert.equal(advanceWorkflow(restored,c,response(text+" [cite:results]")).status,"completed");
+ assert.equal(c.calls,5);
+});
 test("a readable clarification waits for the user before checking completion or comparison",()=>{
  for(const hasEvidence of [false,true])for(const execution of [undefined,{state:"complete",remaining_needs:[],needs_sources:true},{state:"clarification",remaining_needs:["Choose the comparison dimension"],needs_sources:true}]){
   const c=setup("Compare the selected papers"),w=newWorkflow();
