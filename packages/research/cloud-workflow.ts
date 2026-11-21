@@ -45,7 +45,7 @@ export interface WorkflowContext {
 const PERSONAL_CONTEXT_ROUTING = "For this personal agent, classify what the user is asking to do, not the research vocabulary in the message. Use intent=session_update for ordinary conversation and for recalling, explaining or correcting the user's saved preferences, project scope, decisions, constraints and unresolved questions. Answer those from the visible project, dialogue and personal memory; missing personal context calls for clarification, not literature discovery. Do not expand a question about the user's own decisions into questions about standard scientific practice. Use research intents when the user requests new papers, paper originals or verification of scientific claims; remembered findings never replace source evidence. A request about the length, detail, language or structure of your reply is a conversation update. Respect the latest instruction for this turn. When choosing find_papers, include discovery_request_quote, an exact substring of the current message asking to find sources or naming the subject the user wants literature about. Format instructions alone do not name a literature topic. If no topic is available, acknowledge the instruction or ask for the missing subject. Do not require a manual chat/research mode.";
 const automaticRouting=(w:ResearchWorkflow)=>w.automatic&&w.phase==="prepare"?PERSONAL_CONTEXT_ROUTING+"\n":"";
 const ANSWER_FORMAT_REPAIR_INSTRUCTION="Rewrite the response as ordinary Markdown with exact citations. Do not use a JSON envelope or execution metadata. Answer the original question from the visible evidence and state actual gaps.";
-const VISIBLE_CITATION_INSTRUCTION="When a visible excerpt has answer_citation, copy that short marker exactly for that excerpt in your answer. The host resolves it to the permanent source ID. Use the full chunk_id for structured metadata. Use only excerpts actually visible in this step.";
+const VISIBLE_CITATION_INSTRUCTION="When a visible excerpt has answer_citation, copy that short marker exactly for that excerpt in your answer. Copy its source_ref for execution.goal_updates.source_ids, exact_quotes.chunk_id and paper_coverage.citations. The host resolves both to the permanent source ID. Do not manually retype a long chunk_id when its short source_ref is available. Paper IDs remain unchanged. Use only excerpts actually visible in this step.";
 const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+VISIBLE_CITATION_INSTRUCTION+"\n"+(w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION);
 export function workflowInstruction(w:ResearchWorkflow):string{
  const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:agentInstruction(w);
@@ -216,7 +216,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // The remaining 8 KB is reserved for the locked Pi system/tool envelope; the
   // adapter still validates the entire request against its unchanged 48 KB limit.
   const labels = citationLabels(c.id, c.catalog.indexVersion, new Set(byId.keys()));
-  const evidence:(Chunk & {answer_citation?:string})[]=[];
+  const evidence:(Chunk & {answer_citation?:string;source_ref?:string})[]=[];
   const window={archived:c.evidence.length,visible:0,omitted:c.evidence.length,instruction:"Only whole visible sources support new citations. Omitted sources remain archived. Refine the query or paginate to read needed omitted passages; do not pretend all archived sources are visible."};
   payload.evidence=evidence;payload.evidence_window=window;
   // Persist the complete coverage record. Project its references against the same window as the answer.
@@ -236,7 +236,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   let evidenceBytes=2;
   for(const source of [...repairSources,...ordered.filter(e=>!preferred.has(e.chunk_id))]){
     const label = labels.get(source.chunk_id), candidate = candidates.get(source.chunk_id);
-    const projectedSource = {...source, ...(label ? {answer_citation:"[cite:"+label+"]"} : {}),
+    const projectedSource = {...source, ...(label ? {answer_citation:"[cite:"+label+"]",source_ref:label} : {}),
       ...(candidate ? {values_to_verify:[...candidate.values]} : {})};
     const size=byteSize(projectedSource)+1;if(evidenceBytes+size>22000)continue;
     const candidateLists = candidate?.lists ?? [];
