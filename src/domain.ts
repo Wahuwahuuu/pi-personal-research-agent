@@ -64,6 +64,7 @@ export interface Task {
 export interface Operation {
   timing?: ToolTiming;
   deliveryVersion?: 1;
+  lastTimeoutAt?: number;
   id: string;
   taskId: string;
   tool: Tool;
@@ -294,10 +295,20 @@ export function validateEvidence(tool: Tool, value: unknown, version: string) {
       throw new Problem("INVALID_CITATION_RANGE");
   }
 }
-export function expire(s: State, now = Date.now()): Operation[] {
+export const TOOL_TIMEOUT_MS = 60_000;
+export const NODE_HEARTBEAT_CAPABILITY = "heartbeat-30s-v1";
+export const NODE_HEARTBEAT_MS = 30_000;
+export function toolRecoveryDeadline(deadline: number, lastHeartbeat?: number | null): number {
+  // Undefined means the node did not negotiate heartbeats. Null means it has sent none.
+  if (lastHeartbeat === undefined || (lastHeartbeat !== null && lastHeartbeat >= deadline - TOOL_TIMEOUT_MS)) return deadline;
+  // Leave time for the recovery alarm to run before the one-minute limit.
+  return deadline - 5000;
+}
+export function expire(s: State, now = Date.now(), lastHeartbeat?: number | null): Operation[] {
   const expired: Operation[] = [];
   for (const op of s.operations) {
-    if (op.state === "sent" && op.deadline <= now) {
+    if (op.state === "sent" && toolRecoveryDeadline(op.deadline, lastHeartbeat) <= now) {
+      op.lastTimeoutAt = now;
       expired.push(op);
       op.state = "pending";
       const t = getTask(s, op.taskId);

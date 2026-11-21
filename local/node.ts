@@ -23,7 +23,7 @@ import { createServer,type IncomingMessage,type ServerResponse } from "node:http
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { PythonBridge, type PythonConfig } from "./python.ts";
-import { validateEvidence, type Operation } from "../src/domain.ts";
+import { NODE_HEARTBEAT_CAPABILITY, NODE_HEARTBEAT_MS, validateEvidence, type Operation } from "../src/domain.ts";
 interface Config {
   configurationVersion?:1;
   endpoint: string;
@@ -354,7 +354,7 @@ function connect() {
     }
     pong = false;
     ws.send("ping");
-  }, 30000);
+  }, NODE_HEARTBEAT_MS);
   ws.on("open", () => {
     expectAck(30_000);
     send({
@@ -364,7 +364,7 @@ function connect() {
       indexVersion: offeredVersion, catalogDigest: offeredTransfer.digest,
       retainedIndexes:snapshots?.retained()??[indexVersion],
       tools: ["search_papers", "retrieve_chunks"],
-      capabilities: [INBOX_NOTICE_CAPABILITY, "scoped-search-v1", "reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
+      capabilities: [INBOX_NOTICE_CAPABILITY, NODE_HEARTBEAT_CAPABILITY, "scoped-search-v1", "reader-v1", "reader-purge-v1", "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1",...(cloudImports?["library-v1"]:[])],
       readerPort: config.port ?? 48731,
     });
   });

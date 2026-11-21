@@ -8,6 +8,7 @@ import {
   operation,
   acceptResult,
   expire,
+  toolRecoveryDeadline,
   reserve,
   settle,
   memory,
@@ -81,6 +82,23 @@ test("30 offline expiries and cancelled late results", () => {
     assert.equal(t.calls, 0);
     cancel(s, t.id);
     assert.equal(acceptResult(s, o.id, "v1", {}), "discarded");
+  }
+});
+test("only a negotiated silent device enters recovery before the execution deadline", () => {
+  const sentAt = 10_000, deadline = sentAt + 60_000;
+  assert.equal(toolRecoveryDeadline(deadline), deadline);
+  assert.equal(toolRecoveryDeadline(deadline, sentAt), deadline);
+  assert.equal(toolRecoveryDeadline(deadline, sentAt + 30_000), deadline);
+  for (const lastHeartbeat of [null, sentAt - 1]) {
+    const s = initialState(), task = submit(s, "read", "r", "research");
+    const op = operation(s, task, "v1", "search_papers", {});
+    op.state = "sent"; op.deadline = deadline;
+    op.timing = {dispatches: 1, firstDispatchedAt: sentAt};
+    assert.deepEqual(expire(s, deadline - 5001, lastHeartbeat), []);
+    assert.deepEqual(expire(s, deadline - 5000, lastHeartbeat), [op]);
+    assert.equal(op.lastTimeoutAt, deadline - 5000);
+    assert.equal(op.deadline, deadline);
+    assert.equal(task.calls, 0);
   }
 });
 test("20 budget loop cases stop at six model calls", () => {

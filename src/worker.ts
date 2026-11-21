@@ -23,7 +23,7 @@ import {arxivVersion,originalPdfUrl} from "../packages/research/source-links.ts"
 import {DeviceIndexes} from "./device-indexes.ts";
 import {PLATFORM_STOPS,applyPlatformWait,type PlatformStatus} from "./platform-resources.ts";
 import {configureTask,segmentUsage,currentInstruction,checkpoint,nextSegment,pauseTask,resumeTask,amendTask,answerResearchQuestion,orderedTasks,nextResearchTurn} from "./task-control.ts";
-import {hasContinuationBudget,taskAllowance} from "./domain.ts";
+import {hasContinuationBudget, taskAllowance, TOOL_TIMEOUT_MS, NODE_HEARTBEAT_CAPABILITY, toolRecoveryDeadline} from "./domain.ts";
 import {MemoryIndex} from "./memory-index.ts";
 import {digestEntries,storeReadingEntries} from "../packages/research/memory.ts";
 import {canSaveTaskAnswer,ARTIFACT_REVISION_BODY_LIMIT, ARTIFACT_TITLE_LIMIT} from "./artifact-contract.ts";
@@ -533,6 +533,11 @@ export class PersonalAgent extends DurableObject<Env> {
       const a = ws.deserializeAttachment();
       return ws.readyState === WebSocket.OPEN && a?.ready && this.validHash(a.hash, "device");
     });
+  }
+  private toolHeartbeat(ws: WebSocket | undefined): number | null | undefined {
+    if (ws?.deserializeAttachment()?.capabilities?.includes(NODE_HEARTBEAT_CAPABILITY))
+      return this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? null;
+    return undefined;
   }
   connectedDevice(capability?:string) {
     return this.ctx.getWebSockets("device").find(ws=>{
@@ -1263,7 +1268,7 @@ export class PersonalAgent extends DurableObject<Env> {
         a.tools = ["search_papers", "retrieve_chunks"];
         a.capabilities = Array.isArray(m.capabilities)
           ? m.capabilities.filter((v: unknown) =>
-              [SCOPED_RESEARCH_CAPABILITY, "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1", "reader-purge-v1", INBOX_NOTICE_CAPABILITY].includes(
+              [SCOPED_RESEARCH_CAPABILITY, "abstract-v1", "scientific-html-v1", "scientific-html-v2", "pdf-public-v1", "library-v1", "reader-v1", "reader-purge-v1", INBOX_NOTICE_CAPABILITY, NODE_HEARTBEAT_CAPABILITY].includes(
                 String(v),
               ),
             )
@@ -1789,7 +1794,7 @@ export class PersonalAgent extends DurableObject<Env> {
           this.deletions.custody.dispatch(op,attachment.hash);
           markToolDispatch(op);
           op.state = "sent";
-          op.deadline = Date.now() + 60000;
+          op.deadline = Date.now() + TOOL_TIMEOUT_MS;
           op.attempts = (op.attempts ?? 0) + 1;
           t.operationId = op.id;
           this.save();
@@ -1995,7 +2000,9 @@ export class PersonalAgent extends DurableObject<Env> {
     if (this.recoveryBlocked||this.busy) return Date.now() + 1000;
     this.busy = true;
     try {
-      const expired = expire(this.state);
+      const now = Date.now();
+      const checkHeartbeat = this.state.operations.some(op => op.state === "sent" && op.deadline > now && toolRecoveryDeadline(op.deadline, null) <= now);
+      const expired = expire(this.state, now, checkHeartbeat ? this.toolHeartbeat(this.device()) : undefined);
       if (expired.length) {
         this.save();
         for (const ws of this.ctx.getWebSockets("device")) {
@@ -2121,7 +2128,7 @@ export class PersonalAgent extends DurableObject<Env> {
                 this.deletions.custody.dispatch(op,a.hash);
                 markToolDispatch(op);
                 op.state = "sent";
-                op.deadline = Date.now() + 60000;
+                op.deadline = Date.now() + TOOL_TIMEOUT_MS;
                 t.status = "waiting_device";
                 this.save();
                 this.send(dev, { type: "operation", operation: op });
@@ -2221,12 +2228,12 @@ export class PersonalAgent extends DurableObject<Env> {
       this.dispatchNotices();
       const importDeadline=this.libraryJobs.nextDeadline();
       const budgetWake=this.proactive.nextBudgetWake();
+      const sentTools = this.state.operations.filter(op => op.state === "sent");
+      const heartbeat = sentTools.length ? this.toolHeartbeat(dev) : undefined;
       const times = [
         ...(budgetWake===undefined?[]:[this.resources.blocked?Math.max(Date.now()+60000,budgetWake):budgetWake]),
         ...(importDeadline===undefined?[]:[importDeadline]),
-        ...this.state.operations
-          .filter((o) => o.state === "sent")
-          .map((o) => o.deadline),
+        ...sentTools.map(op => toolRecoveryDeadline(op.deadline, heartbeat)),
         ...this.state.plans.filter((p) => p.enabled).map((p) => this.resources.blocked?Math.max(Date.now()+60000,p.next):p.next),
         ...(this.state.tasks.some(t=>t.platformWait)?[Date.now()+60000]:[]),
       ];
