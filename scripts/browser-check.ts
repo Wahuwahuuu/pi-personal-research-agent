@@ -6,6 +6,7 @@ import {verifyProjectRecords} from "./project-records-browser.ts";
 import {verifyProjectDiscussions} from "./project-discussions-browser.ts";
 import {verifyRetentionBrowser} from "./retention-browser.ts";
 import {verifyChangeFeedBrowser} from "./change-feed-browser.ts";
+import {verifyPreviewBrowser} from "./preview-browser.ts";
 import {verifyContextWindowBrowser} from "./context-window-browser.ts";
 import {verifyConversationControlBrowser} from "./conversation-control-browser.ts";
 import {verifyRecoveryBrowser} from "./recovery-browser.ts";
@@ -270,6 +271,16 @@ try {
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
     checks.push(...(await verifyContextWindowBrowser(base,page,api,screenshot)).checks);
+  }else if(process.env.PRA_BROWSER_SCOPE==="preview"){
+    await api("login","POST",{token:admin});
+    await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});
+    const metrics=[];
+    for(const width of [1440,390]) {
+      await page.setViewportSize({width,height:width===390?844:900});
+      metrics.push({width,...await verifyPreviewBrowser(base,page,api)});
+    }
+    await writeFile(resolve(directory,"preview-metrics.json"),JSON.stringify(metrics,null,2));
+    checks.push("twenty preview frames update the task without overview or message requests; terminal refresh and late preview rejection pass");
   }else if(process.env.PRA_BROWSER_SCOPE==="controls"){
     await api("login","POST",{token:admin});
     await api("settings","PATCH",{requestId:crypto.randomUUID(),onboarded:true});

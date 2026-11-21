@@ -266,7 +266,7 @@ export class PersonalAgent extends DurableObject<Env> {
             if(reservationId){this.queueBill(reservationId,{input:0,output:0});await this.flushBills();}
             reservationId=undefined;timingCall=undefined;throw error;
           }
-          showPreview=bindResearchPreview(t,()=>this.state,()=>this.publish());
+          showPreview=bindResearchPreview(t,()=>this.state,()=>this.publishPreview(t));
         };
         const after = async (usage?: { input: number; output: number }, timing?: ModelMeasurement) => {
           showPreview=undefined;
@@ -506,10 +506,24 @@ export class PersonalAgent extends DurableObject<Env> {
       if (sent) ws.serializeAttachment({...attachment, lastNoticeBatch: batch});
     }
   }
+  private publishPreview(task: import("./domain.ts").Task) {
+    for (const ws of this.ctx.getWebSockets("ui")) {
+      const attachment = ws.deserializeAttachment();
+      if (!this.validHash(attachment?.hash ?? "", "user")) { ws.close(1008, "expired"); continue; }
+      if (attachment?.view === 3) {
+        this.send(ws, { type: "task-preview", id: task.id, conversationId: task.conversationId,
+          operation: task.modelOperation, updated: task.updated, text: task.preview });
+      } else {
+        this.send(ws, attachment?.view === 2
+          ? { type: "change", readerChanged: false, cursor: this.repository.cursor(), active: activeTasks(this.state).map(taskSummary) }
+          : { type: "state", state: this.snapshot() });
+      }
+    }
+  }
   publish(readerChanged = false) {
     for (const ws of this.ctx.getWebSockets("ui")) {
       if(!this.validHash(ws.deserializeAttachment()?.hash??"","user")){ws.close(1008,"expired");continue;}
-      this.send(ws,ws.deserializeAttachment()?.view===2?{type:"change",readerChanged,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      this.send(ws,ws.deserializeAttachment()?.view>=2?{type:"change",readerChanged,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     }
   }
   device() {
@@ -1186,10 +1200,11 @@ export class PersonalAgent extends DurableObject<Env> {
         ws.close(1000, "replaced");
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [kind]);
-    const view=kind==="ui"&&new URL(r.url).searchParams.get("version")==="2"?2:1;
+    const requestedView = new URL(r.url).searchParams.get("version");
+    const view=kind==="ui"&&requestedView==="3"?3:kind==="ui"&&requestedView==="2"?2:1;
     pair[1].serializeAttachment({kind, hash, ready: false, view, recoverOperations: kind === "device"});
     if (kind === "ui")
-      this.send(pair[1],view===2?{type:"change",readerChanged:false,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      this.send(pair[1],view>=2?{type:"change",readerChanged:false,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
   private catalogManifest(version: string) {

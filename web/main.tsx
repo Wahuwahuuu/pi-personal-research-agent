@@ -1,4 +1,5 @@
 import {RecoveryCheckpoints} from "./RecoveryCheckpoints.tsx";
+import {isTaskPreview, type TaskPreview} from "./task-preview.ts";
 import {ReaderAction} from "./ReaderAction.tsx";
 import {deviceView} from "./device-state.ts";
 import { MemoryView } from "./Memory.tsx";
@@ -234,6 +235,7 @@ function Workspace({
 }) {
   const route = useRoute(),
     [revision, setRevision] = useState(0),
+    [previews, setPreviews] = useState<Record<string, TaskPreview>>({}),
     [error, setError] = useState(""),
     [menu, setMenu] = useState(false),
     [evidence, setEvidence] = useState<Evidence>(),
@@ -294,11 +296,12 @@ function Workspace({
       if (done || ws?.readyState === WebSocket.OPEN || ws?.readyState === WebSocket.CONNECTING) return;
       setConnection("connecting");
       const socket = ws = new WebSocket(
-        location.origin.replace(/^http/, "ws") + "/api/events?version=2",
+        location.origin.replace(/^http/, "ws") + "/api/events?version=3",
       );
       socket.onopen = () => {
         if (done || ws !== socket) return;
         delay = 1000;
+        setPreviews({});
         setReaderUpdates(previous => ({subscribed:false, revision:previous.revision+1}));
         setConnection("online");
         // Reload authoritative pages even for resetRequired or an empty delta.
@@ -311,6 +314,12 @@ function Workspace({
         if (done || ws !== socket) return;
         try {
           const change = JSON.parse(event.data);
+          if (isTaskPreview(change)) {
+            setPreviews(previous => Object.fromEntries(
+              [...Object.entries(previous).filter(([id]) => id !== change.id).slice(-49), [change.id, change]],
+            ));
+            return;
+          }
           if (change?.type === "change" && typeof change.readerChanged === "boolean") {
             setReaderUpdates(previous => previous.subscribed && !change.readerChanged ? previous : {
               subscribed:true, revision:previous.revision + (change.readerChanged ? 1 : 0),
@@ -464,6 +473,7 @@ function Workspace({
       key={route.id ?? "new"}
       id={route.id}
       turnId={route.turnId}
+      previews={previews}
       {...props!}
       onSource={(source, task, catalog) => setEvidence({ source, task, catalog })}
     />

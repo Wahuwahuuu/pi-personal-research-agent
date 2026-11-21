@@ -1,4 +1,5 @@
 import {ComparisonEvidence} from "./ComparisonEvidence.tsx";
+import {withTaskPreview, type TaskPreview} from "./task-preview.ts";
 import {artifactKinds, canSaveTaskAnswer, type ArtifactKind} from "../src/artifact-contract.ts";
 import {artifactLabels} from "./types.ts";
 import {deviceView} from "./device-state.ts";
@@ -73,6 +74,7 @@ function SaveAnswer({task, run, refresh}: {task: Task; run: Run; refresh: () => 
 
 export function Chat({
   id,
+  previews = {},
   turnId,
   data,
   revision,
@@ -81,6 +83,7 @@ export function Chat({
   onSource,
 }: {
   id?: string;
+  previews?: Record<string, TaskPreview>;
   turnId?: string;
   data: Overview;
   revision: number;
@@ -123,7 +126,7 @@ export function Chat({
       if (!draft) bottom.current?.scrollIntoView({block:"end",behavior:"instant"});
     }
   }, [id, turnId, messages.value?.items.length]);
-  const rows = [...older, ...(messages.value?.items ?? [])],
+  const rows = [...older, ...(messages.value?.items ?? [])].map(t => withTaskPreview(t, previews[t.id])),
     conversation = messages.value?.conversation,
     active = rows.filter(
       (t) => !t.control && !["completed", "failed", "cancelled"].includes(t.status),
