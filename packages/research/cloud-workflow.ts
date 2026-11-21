@@ -46,7 +46,8 @@ const PERSONAL_CONTEXT_ROUTING = "For this personal agent, classify what the use
 const automaticRouting=(w:ResearchWorkflow)=>w.automatic&&w.phase==="prepare"?PERSONAL_CONTEXT_ROUTING+"\n":"";
 const ANSWER_FORMAT_REPAIR_INSTRUCTION="Rewrite the response as ordinary Markdown with exact citations. Do not use a JSON envelope or execution metadata. Answer the original question from the visible evidence and state actual gaps.";
 const VISIBLE_CITATION_INSTRUCTION="When a visible excerpt has answer_citation, copy that short marker exactly for that excerpt in your answer. Copy its source_ref for execution.goal_updates.source_ids, exact_quotes.chunk_id and paper_coverage.citations. The host resolves both to the permanent source ID. Do not manually retype a long chunk_id when its short source_ref is available. Paper IDs remain unchanged. Use only excerpts actually visible in this step.";
-const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+VISIBLE_CITATION_INSTRUCTION+"\n"+(w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION);
+const CITATION_REPAIR_INSTRUCTION="This step repairs a rejected draft. The draft is not authoritative evidence. Resolve every item in citation_repair before returning it: verify the value AND its unit in the cited original, or remove an unnecessary numerical detail while retaining the requested explanation. If a required fact cannot be verified, state that specific gap without asserting the unsupported value. Never copy unresolved_references; locate the needed original with the available tools or use a currently visible source that actually supports the claim. Archived references not visible in this step are not usable evidence. Keep the answer focused on all parts of the original request; do not add unrequested benchmark numbers. Return the corrected full answer with honest execution status, not a plan to fix it.";
+const agentInstruction=(w:ResearchWorkflow)=>WORKBENCH_ANSWER_INSTRUCTION+"\n"+VISIBLE_CITATION_INSTRUCTION+"\n"+(w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:TURN_EXECUTION_INSTRUCTION+"\n"+GOAL_PROGRESS_INSTRUCTION)+(w.citationRepair?"\n"+CITATION_REPAIR_INSTRUCTION:"");
 export function workflowInstruction(w:ResearchWorkflow):string{
  const instruction=w.phase==="memory"?MEMORY_SYNTHESIS_INSTRUCTION:w.phase==="prepare"?QUESTION_PREPARATION_INSTRUCTION+" For comparisons include comparison_dimensions for the requested axes.":w.phase==="comparison"?COMPARISON_CHECK_INSTRUCTION+" Copy paper_id and dimension exactly from response_template; do not rename them.":w.phase==="completion"?COMPLETION_CHECK_INSTRUCTION:w.phase==="translation"?TRANSLATION_INSTRUCTION:agentInstruction(w);
  return automaticRouting(w)+(w.cloudOnly&&!(w.automatic&&w.phase==="prepare")?"Cloud-only conversation: use visible conversation and personal memory; local paper tools are unavailable. Do not claim to have read new paper originals. For greetings and capabilities, answer briefly without citation markers or made-up source examples.\n":"")+"The host is executing the "+w.phase+" stage. Follow this stage's output contract, not a previous stage's answer contract.\n"+instruction;
@@ -179,7 +180,7 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   // Results remain complete in durable storage. The model sees each whole source at most once.
   const delivered=(observations as any)?.observations??[];
   const projected=delivered.map((o:any)=>({...o,result:{...o.result,...(o.result?.chunks?{chunks:undefined,chunk_ids:o.result.chunks.map((e:any)=>e.chunk_id)}:{})}}));
-  const payload:any={stage:"agent",instruction:options.systemInstructionProvided?undefined:agentInstruction(w),...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Put a matching [cite:chunk_id] directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
+  const payload:any={stage:"agent",instruction:options.systemInstructionProvided?undefined:agentInstruction(w),...shared,frame:w.prepared?.frame,retrieval_suggestions:w.prepared?.retrieval_plan,answer_contract:w.answerRepairPending?ANSWER_FORMAT_REPAIR_INSTRUCTION:"Return a single JSON object with execution and answer fields. Execution describes visible task status only, never hidden reasoning. Copy the matching excerpt answer_citation (or [cite:chunk_id] only when no short marker is provided) directly after EACH numerical result in prose, bullets and table cells; a separate quotation at the end does not cite earlier claims.",reading_availability:visibleAvailability,reading_availability_omitted:available.length-visibleAvailability.length,reading_rule:READING_AVAILABILITY_RULE,citation_feedback:w.warnings,progress:w.progress,execution:w.execution,comparison:m?.instruction(c.calls>=5,c.catalog.papers),observations:projected,
     ...(c.calls>=5?{final_instruction:w.answerRepairPending?"No allowance remains for tools or a separate completion check. Give the supported answer and actual gaps as plain Markdown; do not add JSON metadata.":"No allowance remains for further tools or a separate completion check. Return JSON {execution:{state,remaining_needs,needs_sources},answer} with an honest complete or partial state. Answer from actual visible evidence and state gaps explicitly."}:{})};
   const freshIds=delivered.flatMap((o:any)=>(o.result?.chunks??[]).map((e:any)=>e.chunk_id));
   const byId=new Map(c.evidence.map(e=>[e.chunk_id,e]));
@@ -242,6 +243,13 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
   };
   const fits=()=>{
     projectCheckedReferences();
+    if(repair){
+      const visible=new Set(evidence.map(source=>source.chunk_id));
+      const normalized=normalizeVisibleCitationGroups(repair.answer,byId),markers=citationIds(normalized);
+      payload.citation_repair.unresolved_references=[...new Set(markers.filter(id=>!byId.has(id)))];
+      payload.citation_repair.archived_references=[...new Set(markers.filter(id=>byId.has(id)&&!visible.has(id)))];
+      payload.citation_repair.answer=normalized.replace(/\[cite:([^\]\n]+)\]/g,(marker,id:string)=>visible.has(id)&&labels.has(id)?"[cite:"+labels.get(id)+"]":marker);
+    }
     return byteSize(JSON.stringify(payload))<=40000;
   };
   if(!fits())throw Error("CONTEXT_LIMIT"); // Never silently shorten the user's request or corrections.
@@ -261,7 +269,8 @@ export function workflowPrompt(w:ResearchWorkflow,c:WorkflowContext,observations
       for (const ids of candidateLists) ids.pop();
     }
   }
-  projectCheckedReferences();
+  // Reproject after a rejected candidate was popped from the evidence window.
+  if(!fits())throw Error("CONTEXT_LIMIT");
   w.visibleSourceIds=evidence.map(e=>e.chunk_id);
   w.citationLabels=evidence.some(e=>e.answer_citation) ? w.visibleSourceIds.map(id=>labels.get(id)??"") : undefined;
   return JSON.stringify(payload);

@@ -351,6 +351,26 @@ test("repair priority never truncates oversized evidence or invents a source for
  const p=JSON.parse(workflowPrompt(w,c));assert.deepEqual(p.evidence.map((e:any)=>e.chunk_id),["small"]);assert.equal(p.evidence[0].text,"whole");assert.equal(p.evidence_window.omitted,1);
 });
 
+test("citation repair projects only visible identities and keeps the rejected draft immutable",()=>{
+ const c=setup(),w=newWorkflow();advanceWorkflow(w,c,prepared("answer",["fixture-paper"]));c.calls=3;
+ const id="permanent-index:paper:paragraph:characters-0-37",oversized="permanent-index:paper:oversized-0-24000";
+ c.evidence=[{paper_id:"fixture-paper",paragraph_id:"p",chunk_id:id,index_version:c.catalog.indexVersion,section:"body",start:0,end:36,text:"The method combines frozen encoders."},
+  {paper_id:"fixture-paper",paragraph_id:"q",chunk_id:oversized,index_version:c.catalog.indexVersion,section:"body",start:0,end:24000,text:"x".repeat(24000)}];
+ w.citationRepair={answer:`Accuracy reached 93% [cite:${id}]. Other details [cite:${oversized}] [cite:ref-123456789abc].`,claims:[]};
+ const stored=structuredClone(w.citationRepair),p=JSON.parse(workflowPrompt(w,c,{},{systemInstructionProvided:true}));
+ assert.deepEqual(w.citationRepair,stored);assert.equal(p.evidence.length,1);
+ assert.ok(p.citation_repair.answer.includes(p.evidence[0].answer_citation));
+ assert.deepEqual(p.citation_repair.unresolved_references,["ref-123456789abc"]);
+ assert.deepEqual(p.citation_repair.archived_references,[oversized]);
+ assert.match(workflowInstruction(w),/repairs a rejected draft/);
+ assert.ok(Buffer.byteLength(JSON.stringify(p))<=40000);
+ const marker=p.evidence[0].answer_citation;
+ const invalid=structuredClone(w);
+ assert.notEqual(advanceWorkflow(invalid,c,JSON.stringify({execution:{state:"complete",remaining_needs:[]},answer:`Accuracy reached 93% ${marker}.`})).status,"completed");
+ const result=advanceWorkflow(w,c,JSON.stringify({execution:{state:"complete",remaining_needs:[]},answer:`The method combines frozen encoders. ${marker}`}));
+ assert.equal(result.status,"completed");assert.ok(result.answer?.includes(`[cite:${id}]`));assert.ok(!result.answer?.includes("ref-"));
+});
+
 
 test("explicit grouped citations normalize only when every full source ID is visible",async()=>{
  const {prepareWorkbenchAnswer}=await import("../packages/research/internal/agent/workbench-answer.ts");
