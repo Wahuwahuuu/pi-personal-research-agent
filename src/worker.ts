@@ -523,7 +523,9 @@ export class PersonalAgent extends DurableObject<Env> {
   publish(readerChanged = false) {
     for (const ws of this.ctx.getWebSockets("ui")) {
       if(!this.validHash(ws.deserializeAttachment()?.hash??"","user")){ws.close(1008,"expired");continue;}
-      this.send(ws,ws.deserializeAttachment()?.view>=2?{type:"change",readerChanged,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      const view = ws.deserializeAttachment()?.view;
+      this.send(ws,view>=2?{type:"change",readerChanged,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary),
+        ...(view===3?{deviceState:this.deviceState()}:{})}:{type:"state",state:this.snapshot()});
     }
   }
   device() {
@@ -1204,7 +1206,8 @@ export class PersonalAgent extends DurableObject<Env> {
     const view=kind==="ui"&&requestedView==="3"?3:kind==="ui"&&requestedView==="2"?2:1;
     pair[1].serializeAttachment({kind, hash, ready: false, view, recoverOperations: kind === "device"});
     if (kind === "ui")
-      this.send(pair[1],view>=2?{type:"change",readerChanged:false,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary)}:{type:"state",state:this.snapshot()});
+      this.send(pair[1],view>=2?{type:"change",readerChanged:false,cursor:this.repository.cursor(),active:activeTasks(this.state).map(taskSummary),
+        ...(view===3?{deviceState:this.deviceState()}:{})}:{type:"state",state:this.snapshot()});
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
   private catalogManifest(version: string) {

@@ -47,6 +47,22 @@ export async function verifyPreviewBrowser(base: string, page: Page,
     await page.waitForTimeout(1200);
     const control={overview:counts.overview-original.overview,messages:counts.messages-original.messages};
     assert.ok(control.overview>0&&control.messages>0);
+    const state={type:"change",cursor:1,active:[],readerChanged:false,
+      deviceState:{connected:true,ready:true,canImport:true,phase:"ready"}};
+    socket!.send(JSON.stringify(state));
+    await page.waitForTimeout(1400);
+    const beforeRepeated={...counts};
+    for(let i=0;i<20;i++) {
+      socket!.send(JSON.stringify(state));
+      await page.waitForTimeout(110);
+    }
+    await page.waitForTimeout(1200);
+    const repeated={overview:counts.overview-beforeRepeated.overview,messages:counts.messages-beforeRepeated.messages};
+    assert.deepEqual(repeated,{overview:0,messages:0});
+    socket!.send(JSON.stringify({...state,deviceState:{connected:false,ready:false,canImport:false,phase:"offline"}}));
+    await expect.poll(()=>counts.overview).toBeGreaterThan(beforeRepeated.overview);
+    await expect.poll(()=>counts.messages).toBeGreaterThan(beforeRepeated.messages);
+    await page.waitForTimeout(300);
     const baseline={...counts};
     for(let i=0;i<20;i++) {
       socket!.send(JSON.stringify({type:"task-preview",id:task.id,conversationId:task.conversationId,
@@ -67,7 +83,7 @@ export async function verifyPreviewBrowser(base: string, page: Page,
       operation:"preview-check",updated:task.updated,text:"Late answer"}));
     await page.waitForTimeout(150);
     await expect(page.locator(".stream-preview")).toHaveCount(0);
-    return {frames:20,control,preview,terminal,latePreviewRejected:true};
+    return {frames:20,control,repeated,preview,terminal,deviceOnlyRefresh:true,latePreviewRejected:true};
   } finally {
     page.off("request",count);
     await page.unroute(path);

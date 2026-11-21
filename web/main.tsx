@@ -1,5 +1,6 @@
 import {RecoveryCheckpoints} from "./RecoveryCheckpoints.tsx";
 import {isTaskPreview, type TaskPreview} from "./task-preview.ts";
+import {changeFingerprint} from "./change-notification.ts";
 import {ReaderAction} from "./ReaderAction.tsx";
 import {deviceView} from "./device-state.ts";
 import { MemoryView } from "./Memory.tsx";
@@ -284,6 +285,7 @@ function Workspace({
       ws: WebSocket | undefined,
       reconnect: ReturnType<typeof setTimeout>,
       update: ReturnType<typeof setTimeout> | undefined,
+      lastChange: string | undefined,
       delay = 1000;
     const changed = () => {
       if (!update)
@@ -302,6 +304,7 @@ function Workspace({
         if (done || ws !== socket) return;
         delay = 1000;
         setPreviews({});
+        lastChange = undefined;
         setReaderUpdates(previous => ({subscribed:false, revision:previous.revision+1}));
         setConnection("online");
         // Reload authoritative pages even for resetRequired or an empty delta.
@@ -325,7 +328,10 @@ function Workspace({
               subscribed:true, revision:previous.revision + (change.readerChanged ? 1 : 0),
             });
           }
-        } catch { /* A full refresh also recovers older or unrecognized event frames. */ }
+          const fingerprint = changeFingerprint(change);
+          if (fingerprint !== undefined && fingerprint === lastChange) return;
+          lastChange = fingerprint;
+        } catch { lastChange = undefined; /* Recover malformed frames through an authoritative refresh. */ }
         changed();
       };
       socket.onerror = () => socket.close();
