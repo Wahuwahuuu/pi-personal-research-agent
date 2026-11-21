@@ -95,9 +95,9 @@ function comparison(w:ResearchWorkflow,c:WorkflowContext){
   if(w.comparison){m.applyCheck(w.comparison,new Map(c.evidence.map(e=>[e.chunk_id,e])));}
   return m;
 }
-/** Reserve the penultimate call for the independent coverage check once each target has returned source text. */
+/** Check coverage as soon as every target has returned text, leaving time to repair the eventual answer. */
 export function reserveComparisonCheck(workflow: ResearchWorkflow, context: WorkflowContext): void {
-  if (context.calls !== 4 || workflow.phase !== "agent" || workflow.cloudOnly ||
+  if (context.calls < 2 || context.calls > 4 || workflow.phase !== "agent" || workflow.cloudOnly ||
       workflow.comparison || workflow.citationRepair || workflow.answerRepairPending) return;
   const workspace = comparison(workflow, context);
   if (!workspace || workspace.baselineMissing.length) return;

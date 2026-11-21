@@ -568,8 +568,10 @@ test("two remaining calls can verify a comparison before the final answer even i
   context.evidence=evidence;
   context.operations=papers.map(p=>({tool:"retrieve_chunks",params:{paper_ids:[p.paper_id],query:"method"},state:"done"}));
   context.calls=3;
-  reserveComparisonCheck(workflow,context);
-  assert.equal(workflow.phase,"agent");
+  const early=structuredClone(workflow);
+  reserveComparisonCheck(early,context);
+  assert.equal(early.phase,"comparison","do not wait until the penultimate call when both originals are already available");
+  assert.equal(JSON.parse(workflowPrompt(early,context)).remaining_model_requests,3);
   reserveComparisonCheck(workflow,{...context,calls:5});
   assert.equal(workflow.phase,"agent","the last call remains available for an answer");
   context.calls=4;
