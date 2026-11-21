@@ -51,6 +51,7 @@ export interface Task {
   preview?: string;
   modelFailure?: string;
   modelFailureDetail?: ToolCallFailureDetail;
+  modelToolRepairs?: {call:number;detail:"undeclared_tool"}[];
   error?: string;
   evidence?: unknown;
   operationId?: string;

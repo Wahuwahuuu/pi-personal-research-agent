@@ -43,6 +43,7 @@ import {requireScopedResearchNode,SCOPED_RESEARCH_CAPABILITY,SCOPED_RESEARCH_UPD
 import {assertModelSubmission} from "./provider-context.ts";
 import {managedRuntimeSettings} from "./runtime-settings.ts";
 import {newWorkflow,workflowPrompt,workflowDialogue,workflowInstruction,workflowTools,advanceWorkflow,interruptWorkflow,reserveComparisonCheck,beginMemory,skipMemory,type WorkflowContext} from "../packages/research/cloud-workflow.ts";
+import {scheduleRejectedToolRepair} from "./model-tool-recovery.ts";
 import { readingSources, withReadingSources } from "./reading-sources.ts";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createResearchRegistry } from "./research-durable.ts";
@@ -1750,6 +1751,8 @@ export class PersonalAgent extends DurableObject<Env> {
       } else if(t.modelFailure&&BUDGET_STOPS.has(t.modelFailure)) {
         t.status="waiting_user";t.error=t.modelFailure;t.updated=Date.now();this.proactive.budgetWait(t);
         if(t.origin!=="schedule")notice(this.state,"budget:"+t.id,"任务已因预算或费率检查暂停，已完成的研究仍保留。");
+      } else if(!this.proactive.control(t)&&scheduleRejectedToolRepair(t)) {
+        checkpoint(t,"rejected_tool_correction");
       } else if(!t.modelFailure&&result.reason==="interrupted"&&t.workflow&&
                 ["prepare","agent","comparison","completion"].includes(t.workflow.phase)&&!this.proactive.control(t)){
         const partial=interruptWorkflow(t.workflow,this.workflowContext(t));
